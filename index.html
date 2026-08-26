@@ -6,7 +6,7 @@
 <title>Quản trị mục tiêu Đối tác/NCC · Doanh số &amp; Chiết khấu</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Playfair+Display:wght@700;800;900&display=swap" rel="stylesheet">
 <style>
   :root{
     --ink:#12172B;
@@ -32,6 +32,9 @@
     --font-tabular: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
     /* Chỉ dùng cho khối nhập mã/JSON (VD cấu hình Firebase) — nơi cần font monospace thật sự */
     --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Courier New', monospace;
+    /* Chỉ dùng cho tiêu đề màn hình đăng nhập — font serif đậm tạo điểm nhấn "thương hiệu" khác biệt
+       so với phần còn lại của app (vẫn dùng Inter). */
+    --font-login-title: 'Playfair Display', Georgia, 'Times New Roman', serif;
   }
 
   *{ box-sizing:border-box; }
@@ -305,7 +308,7 @@
   .contract-badge .cnt-extra{ font-weight:600; opacity:0.75; }
 
   .modal-overlay{
-    position:fixed; inset:0; background:rgba(18,23,43,0.5); z-index:100;
+    position:fixed; inset:0; background:rgba(18,23,43,0.5); z-index:10000;
     display:flex; align-items:flex-start; justify-content:center; padding:5vh 16px;
     overflow-y:auto;
   }
@@ -478,33 +481,88 @@
     .topbar{ padding:14px 16px; }
   }
 
-  /* ---------- Login gate ---------- */
+  /* ---------- Login gate (dark theme) ---------- */
   .login-screen{
     position:fixed; inset:0; z-index:9999; overflow:auto;
     min-height:100vh; display:flex; align-items:center; justify-content:center;
-    background:var(--paper); padding:20px;
+    padding:20px;
+    background-color:#0A0E1E;
+    background-image:
+      linear-gradient(rgba(255,255,255,0.045) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,0.045) 1px, transparent 1px),
+      radial-gradient(circle at 50% 18%, rgba(99,91,255,0.22), transparent 60%);
+    background-size:34px 34px, 34px 34px, 100% 100%;
   }
   .login-card{
-    width:100%; max-width:420px; background:var(--panel); border:1px solid var(--line);
-    border-radius:14px; padding:32px 30px; box-shadow:0 20px 50px rgba(18,23,43,0.08);
+    width:100%; max-width:440px;
+    background:linear-gradient(180deg, rgba(30,34,58,0.92), rgba(18,21,38,0.92));
+    border:1px solid rgba(255,255,255,0.08);
+    border-radius:20px; padding:40px 36px 34px;
+    box-shadow:0 30px 70px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.02) inset;
+    text-align:center;
   }
-  .login-card .mark{ font-family:var(--font-display); line-height:1.3; margin-bottom:2px; }
-  .login-card .mark .l1{ display:block; font-weight:700; font-size:22px; letter-spacing:0.04em; text-transform:uppercase; }
-  .login-card .mark .l2{ display:block; font-weight:500; font-size:15px; letter-spacing:0.01em; color:var(--slate); margin-top:2px; }
-  .login-card .sub{ font-size:12px; color:var(--slate); margin-bottom:22px; }
-  .login-list{ display:flex; flex-direction:column; gap:8px; margin-bottom:18px; }
-  .login-user{
-    display:flex; align-items:center; justify-content:space-between; gap:10px;
-    padding:11px 14px; border:1px solid var(--line); border-radius:9px; cursor:pointer;
-    background:#fff;
+  .login-card .login-icon{
+    width:64px; height:64px; margin:0 auto 20px; border-radius:16px;
+    background:linear-gradient(145deg,#7C6CF6,#4E3FD9);
+    display:flex; align-items:center; justify-content:center;
+    box-shadow:0 10px 26px rgba(90,73,238,0.45);
   }
-  .login-user:hover{ border-color:var(--gold); background:var(--gold-soft); }
-  .login-user .name{ font-weight:600; }
-  .login-user .role{ font-size:11px; color:var(--slate); }
-  .login-divider{ display:flex; align-items:center; gap:10px; margin:18px 0 14px; color:var(--slate); font-size:11px; text-transform:uppercase; letter-spacing:.08em;}
-  .login-divider::before, .login-divider::after{ content:""; flex:1; height:1px; background:var(--line); }
+  .login-card .login-icon svg{ width:30px; height:30px; }
+  .login-card .mark{ font-family:var(--font-login-title); line-height:1.25; margin-bottom:6px; }
+  .login-card .mark .l1{
+    display:block; font-weight:800; font-size:24px; letter-spacing:0.02em; text-transform:uppercase;
+    color:#F5F4FF;
+  }
+  .login-card .mark .l2{ display:block; font-weight:400; font-size:14px; letter-spacing:0.01em; color:#8B90B3; margin-top:6px; font-family:var(--font-body); }
+  .login-card .sub{ font-size:12px; color:#8B90B3; margin-bottom:26px; }
+  .login-form{ text-align:left; display:flex; flex-direction:column; gap:16px; }
+  .login-field label{
+    display:block; font-size:10.5px; font-weight:700; letter-spacing:0.08em; text-transform:uppercase;
+    color:#9297B8; margin-bottom:7px;
+  }
+  .login-field input{
+    width:100%; padding:12px 14px; border-radius:10px;
+    background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.09);
+    color:#F1F1FA; font-size:13.5px; font-family:var(--font-body);
+    transition:border-color .12s ease, background .12s ease;
+  }
+  .login-field input::placeholder{ color:#5B6084; }
+  .login-field input:focus{ outline:none; border-color:#7C6CF6; background:rgba(124,108,246,0.08); }
+  .login-submit{
+    margin-top:6px; align-self:flex-start;
+    display:inline-flex; align-items:center; gap:8px;
+    padding:11px 22px; border:none; border-radius:10px; cursor:pointer;
+    background:linear-gradient(135deg,#6C5CE7,#4E3FD9); color:#fff;
+    font-family:var(--font-body); font-weight:700; font-size:13.5px;
+    box-shadow:0 10px 22px rgba(90,73,238,0.35);
+    transition:filter .12s ease, transform .12s ease;
+  }
+  .login-submit:hover{ filter:brightness(1.08); }
+  .login-submit:active{ transform:translateY(1px); }
+  .login-error{
+    font-size:12px; color:#FF8A80; background:rgba(255,90,74,0.1); border:1px solid rgba(255,90,74,0.25);
+    border-radius:8px; padding:8px 10px; margin-top:2px; display:none;
+  }
+  .login-error.show{ display:block; }
+  .login-card .helper{ color:#7A80A3; text-align:left; }
+  .login-card .helper b{ color:#B7BBDD; }
 
   /* ---------- Account / role chrome ---------- */
+  .user-chip-wrap{ position:relative; }
+  .user-menu{
+    position:absolute; right:0; top:calc(100% + 8px); z-index:60;
+    min-width:190px; background:#fff; border:1px solid var(--line); border-radius:10px;
+    box-shadow:0 16px 34px rgba(18,23,43,0.16); overflow:hidden; display:none;
+  }
+  .user-menu.open{ display:block; }
+  .user-menu button{
+    display:flex; align-items:center; gap:9px; width:100%; text-align:left;
+    padding:10px 14px; background:none; border:none; cursor:pointer;
+    font-size:13px; color:var(--ink); font-family:var(--font-body);
+  }
+  .user-menu button:hover{ background:var(--paper); }
+  .user-menu button.danger{ color:var(--rust); }
+  .user-menu .menu-divider{ height:1px; background:var(--line); margin:4px 0; }
   .user-chip{
     display:flex; align-items:center; gap:8px; padding:6px 12px 6px 6px; border-radius:999px;
     background:#fff; border:1px solid var(--line); font-size:12.5px; cursor:pointer;
@@ -556,7 +614,10 @@
       </div>
       <div class="topbar-right">
         <span class="storage-pill" id="storagePill"><span class="blip"></span><span>Đang tải…</span></span>
-        <div class="user-chip" id="userChip"></div>
+        <div class="user-chip-wrap">
+          <div class="user-chip" id="userChip"></div>
+          <div class="user-menu" id="userMenu"></div>
+        </div>
       </div>
     </div>
     <div id="subTabBar"></div>
@@ -608,6 +669,16 @@ function attachMoneyFormatting(el){
 }
 const uid = (() => { let n = Date.now()%1000000; return (prefix)=> prefix+'_'+(++n).toString(36); })();
 const todayISO = () => new Date().toISOString().slice(0,10);
+// Bỏ dấu tiếng Việt + chuẩn hoá thành gợi ý "tên tài khoản" (username) không dấu, không khoảng trắng,
+// dùng khi Admin để trống ô Tài khoản lúc thêm mới — Admin vẫn có thể sửa lại tuỳ ý.
+function slugifyUsername(str){
+  return String(str||'')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+    .replace(/đ/gi, d=> d==='đ'?'d':'D')
+    .trim().toLowerCase()
+    .replace(/[^a-z0-9]+/g,'.')
+    .replace(/^\.+|\.+$/g,'');
+}
 const toDate = s => s ? new Date(s+'T00:00:00') : null;
 
 function eomonth(d, addMonths){
@@ -652,6 +723,14 @@ const SESSION_KEY = 'nccapp:session:v1';      // personal: {currentUserId}
 const FB_CONFIG_KEY = 'nccapp:firebaseConfig:v1'; // cấu hình Firebase (dùng chung để cả nhóm tự kết nối)
 const FB_DISABLED_KEY = 'nccapp:firebaseDisabled:v1'; // đánh dấu "đã chủ động ngắt" để không tự nối lại cấu hình mặc định
 const FB_PATH = 'ncc_app_data/shared_state'; // đường dẫn node trong Realtime Database
+// Mật khẩu "hàng rào mềm" khi chọn danh tính đăng nhập — LƯU Ý: đây KHÔNG phải bảo mật thật sự,
+// vì app chạy tĩnh trên trình duyệt (không có server) nên ai xem được mã nguồn trang cũng đọc được giá trị này.
+// Chỉ nhằm chặn việc bấm nhầm/chọn nhầm danh tính của người dùng thông thường trong nội bộ.
+// - ADMIN_PASSWORD: mật khẩu mặc định dùng cho tài khoản Admin gốc (u_admin) khi tài khoản đó CHƯA được
+//   gán mật khẩu riêng ở trường account.password (tương thích ngược với dữ liệu cũ trước khi có tính năng này).
+// - Mọi tài khoản (Admin, Quản lý, Nhân viên) đều có thể được gán một mật khẩu riêng ở tab "Quản trị tài khoản"
+//   (trường account.password). Nếu account.password để trống → đăng nhập không cần mật khẩu, như trước đây.
+const ADMIN_PASSWORD = 'Hungthinh123';
 let storageMode = 'memory'; // 'firebase' | 'cloud' | 'local' | 'memory'
 let storageBackend = null;  // 'window.storage' | 'localStorage' | null
 let lastSavedJson = null;   // để nhận biết sự kiện Realtime Database nào là do chính mình vừa ghi
@@ -1304,7 +1383,7 @@ function seedState(){
   suppliers.forEach(s=> monitoring[s.id] = 'Cần xác nhận');
 
   const accounts = [
-    {id:'u_admin', name:'Quản trị viên', role:'Admin', unit:'', createdAt: todayISO()},
+    {id:'u_admin', name:'Quản trị viên', username:'admin', role:'Admin', unit:'', password: ADMIN_PASSWORD, createdAt: todayISO()},
   ];
 
   /* ---- Ngân hàng (đối tác cho vay) — khớp bảng chính sách Tháng 5/2026 ---- */
@@ -1412,7 +1491,7 @@ const EDIT_PERMS = {
   transactions: ['Admin','Quản lý','Nhân viên'],
   reconcile:    ['Admin','Quản lý'],
   monitor:      ['Admin','Quản lý'],   // chọn chu kỳ theo dõi / ngày báo cáo
-  settings:     ['Admin','Quản lý'],   // danh sách đơn vị
+  settings:     ['Admin'],   // danh sách đơn vị — cả tab Cài đặt giờ chỉ Admin xem/sửa được (mục "Hệ thống")
   accounts:     ['Admin'],             // quản trị tài khoản
   nh_suppliers:    ['Admin','Quản lý'],
   nh_policies:     ['Admin','Quản lý'],
@@ -1615,8 +1694,8 @@ const TABS = [
   {id:'bh_allocation', label:'Phân bổ đơn vị', section:'Bảo hiểm', hidden:true, parent:'bh_transactions'},
   {id:'bh_reconcile', label:'Đối soát CK', section:'Bảo hiểm', hidden:true, parent:'bh_transactions'},
   {id:'accounts', label:'Quản trị tài khoản', section:'Hệ thống', roles:['Admin']},
-  {id:'activityLog', label:'Nhật ký hoạt động', section:'Hệ thống', roles:['Admin','Quản lý']},
-  {id:'settings', label:'Cài đặt', section:'Hệ thống'},
+  {id:'activityLog', label:'Nhật ký hoạt động', section:'Hệ thống', roles:['Admin']},
+  {id:'settings', label:'Cài đặt', section:'Hệ thống', roles:['Admin']},
 ];
 let activeTab = 'dashboard';
 let txUnitFilter = '';
@@ -1716,12 +1795,58 @@ function bindSubTabs(c){
 
 function renderUserChip(){
   const chip = document.getElementById('userChip');
+  const menu = document.getElementById('userMenu');
   const u = currentUser();
-  if(!u){ chip.innerHTML=''; return; }
+  if(!u){ chip.innerHTML=''; menu.innerHTML=''; menu.classList.remove('open'); return; }
   const initials = u.name.trim().split(/\s+/).slice(-1)[0].slice(0,1).toUpperCase();
   chip.innerHTML = `<span class="user-avatar">${initials}</span><span>${u.name}${u.unit?' <span class="role-tag">· '+u.unit+'</span>':''}</span><span class="role-badge ${roleBadgeClass(u.role)}">${u.role}</span>`;
-  chip.onclick = ()=>{ currentUserId = null; saveSession(); renderAll(); };
-  chip.title = 'Bấm để đổi người dùng';
+  chip.title = 'Bấm để xem tuỳ chọn tài khoản';
+  menu.innerHTML = `
+    <button type="button" id="menuChangePw">🔑 Đổi mật khẩu</button>
+    <div class="menu-divider"></div>
+    <button type="button" id="menuLogout" class="danger">↩ Đăng xuất</button>
+  `;
+  chip.onclick = (e)=>{ e.stopPropagation(); menu.classList.toggle('open'); };
+  menu.querySelector('#menuChangePw').onclick = (e)=>{ e.stopPropagation(); menu.classList.remove('open'); openChangePasswordModal(u.id); };
+  menu.querySelector('#menuLogout').onclick = (e)=>{ e.stopPropagation(); menu.classList.remove('open'); currentUserId = null; saveSession(); renderAll(); };
+}
+
+/* Đổi mật khẩu cho chính tài khoản đang đăng nhập (mọi vai trò đều dùng được, kể cả Admin).
+   Nếu tài khoản CHƯA có mật khẩu, không yêu cầu nhập mật khẩu hiện tại — chỉ cần đặt mật khẩu mới. */
+function openChangePasswordModal(accId){
+  const acc = state.accounts.find(a=>a.id===accId);
+  if(!acc) return;
+  const currentPw = acc.password || (acc.role==='Admin' ? ADMIN_PASSWORD : '');
+  openModal('Đổi mật khẩu', `Tài khoản "${acc.name}" — mật khẩu mới sẽ dùng ngay từ lần đăng nhập sau.`,
+    `<div class="form-grid">
+       ${currentPw ? `<div class="field" style="grid-column:1/-1"><label>Mật khẩu hiện tại</label><input id="cp_old" type="password" placeholder="Nhập mật khẩu hiện tại"></div>` : ''}
+       <div class="field" style="grid-column:1/-1"><label>Mật khẩu mới</label><input id="cp_new" type="password" placeholder="Để trống nếu muốn BỎ mật khẩu"></div>
+       <div class="field" style="grid-column:1/-1"><label>Nhập lại mật khẩu mới</label><input id="cp_new2" type="password" placeholder="Gõ lại mật khẩu mới"></div>
+       <div class="login-error" id="cp_err" style="display:none"></div>
+       <button class="btn btn-primary" id="cpSubmitBtn" style="grid-column:1/-1">Lưu mật khẩu mới</button>
+     </div>`,
+    (body)=>{
+      const oldInp = body.querySelector('#cp_old');
+      const newInp = body.querySelector('#cp_new');
+      const new2Inp = body.querySelector('#cp_new2');
+      const err = body.querySelector('#cp_err');
+      const showErr = (msg)=>{ err.textContent = msg; err.style.display='block'; };
+      const submit = ()=>{
+        err.style.display='none';
+        if(currentPw && oldInp.value !== currentPw){ showErr('Sai mật khẩu hiện tại.'); oldInp.focus(); return; }
+        if(newInp.value !== new2Inp.value){ showErr('Hai ô mật khẩu mới không khớp.'); new2Inp.focus(); return; }
+        acc.password = newInp.value;
+        // Admin gốc: nếu người dùng đổi mật khẩu (kể cả để trống), ghi luôn vào account.password
+        // để không còn phụ thuộc ADMIN_PASSWORD mặc định nữa.
+        logActivity('update','Tài khoản', `Tự đổi mật khẩu tài khoản "${acc.name}" (${newInp.value ? 'đặt mật khẩu mới' : 'bỏ mật khẩu'})`);
+        toast(newInp.value ? 'Đã đổi mật khẩu' : 'Đã bỏ mật khẩu cho tài khoản này');
+        closeModal();
+        renderAll();
+      };
+      body.querySelector('#cpSubmitBtn').addEventListener('click', submit);
+      [oldInp, newInp, new2Inp].forEach(inp=> inp && inp.addEventListener('keydown', e=>{ if(e.key==='Enter') submit(); }));
+      (oldInp||newInp).focus();
+    });
 }
 
 function renderAll(){
@@ -1768,7 +1893,7 @@ function renderAll(){
   saveState();
 }
 
-/* ---------------------------- Màn hình đăng nhập (chọn danh tính) ---------------------------- */
+/* ---------------------------- Màn hình đăng nhập (username + mật khẩu) ---------------------------- */
 function renderLoginScreen(){
   document.querySelector('.shell').style.display='none';
   let screen = document.getElementById('loginScreen');
@@ -1781,57 +1906,62 @@ function renderLoginScreen(){
   const accounts = state.accounts;
   screen.innerHTML = `
     <div class="login-card">
+      <div class="login-icon">
+        <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M3 3v16a2 2 0 0 0 2 2h16" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M7 15l4-4 3 3 6-7" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </div>
       <div class="mark"><span class="l1">Quản trị</span><span class="l2">Mục tiêu Đối tác/NCC</span></div>
-      <div class="sub">Chọn tên của bạn để tiếp tục — mọi thao tác sẽ được ghi vào Nhật ký hoạt động.</div>
-      <div class="login-list" id="loginList">
-        ${accounts.map(a=>`
-          <div class="login-user" data-uid="${a.id}">
-            <div><div class="name">${a.name}</div><div class="role">${a.role}${a.unit?' · '+a.unit:''}</div></div>
-            <span class="role-badge ${roleBadgeClass(a.role)}">${a.role}</span>
-          </div>`).join('')}
-      </div>
-      <div class="login-divider">hoặc thêm người mới</div>
-      <div class="form-grid">
-        <div class="field" style="grid-column:1/-1"><label>Tên của bạn</label><input id="login_name" placeholder="VD: Nguyễn Văn A"></div>
-        <div class="field"><label>Vai trò</label>
-          <select id="login_role">
-            <option>Nhân viên</option><option>Quản lý</option><option>Admin</option>
-          </select>
+      <div class="sub">Đăng nhập bằng tên tài khoản để tiếp tục — mọi thao tác sẽ được ghi vào Nhật ký hoạt động.</div>
+      <div class="login-form">
+        <div class="login-field">
+          <label>Tên đăng nhập</label>
+          <input id="li_username" placeholder="Nhập tên tài khoản" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
         </div>
-        <div class="field">
-          <label>Đơn vị phụ trách</label>
-          <input id="login_unit" list="login_unit_list" placeholder="Gõ tên đơn vị thực tế, để trống nếu không có">
-          ${unitDatalistHTML('login_unit_list')}
+        <div class="login-field">
+          <label>Mật khẩu</label>
+          <input id="li_password" type="password" placeholder="Nhập mật khẩu (nếu tài khoản có đặt)" autocomplete="current-password">
         </div>
-        <button class="btn btn-primary" id="loginCreateBtn" style="height:38px;grid-column:1/-1">Tạo &amp; vào ứng dụng</button>
+        <div class="login-error" id="li_error"></div>
+        <button class="login-submit" id="li_submit" type="button">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M10 17l5-5-5-5" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M15 12H3" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          Đăng nhập
+        </button>
       </div>
-      <div class="helper">Đây là hệ thống dùng chung trong nội bộ, không có mật khẩu — việc chọn đúng tên/đơn vị giúp Nhật ký hoạt động chính xác, tự khoá đúng đơn vị khi Nhân viên nhập Doanh số, và Admin phân quyền đúng người. Gõ tên đơn vị mới nếu chưa có trong danh sách — hệ thống sẽ tự thêm vào.</div>
+      <div class="helper" style="margin-top:22px">Chưa có tài khoản? Chỉ <b>Admin</b> mới tạo được tài khoản mới — liên hệ Admin để được tạo ở tab "Quản trị tài khoản". Tài khoản nào được Admin đặt mật khẩu thì cần nhập đúng mật khẩu, tài khoản không đặt mật khẩu thì để trống ô mật khẩu cũng đăng nhập được.</div>
     </div>
   `;
-  screen.querySelectorAll('.login-user').forEach(el=>{
-    el.addEventListener('click', ()=>{
-      currentUserId = el.dataset.uid;
-      saveSession();
-      screen.remove();
-      renderAll();
-    });
-  });
-  document.getElementById('loginCreateBtn').addEventListener('click', ()=>{
-    const name = document.getElementById('login_name').value.trim();
-    if(!name){ toast('Nhập tên trước đã'); return; }
-    const role = document.getElementById('login_role').value;
-    const unit = ensureUnit(document.getElementById('login_unit').value);
-    const acc = {id:uid('u'), name, role, unit, createdAt: todayISO()};
-    state.accounts.push(acc);
+  const userInput = screen.querySelector('#li_username');
+  const pwInput = screen.querySelector('#li_password');
+  const errBox = screen.querySelector('#li_error');
+  const showErr = (msg)=>{ errBox.textContent = msg; errBox.classList.add('show'); };
+  const clearErr = ()=>{ errBox.classList.remove('show'); };
+  const submit = ()=>{
+    clearErr();
+    const typed = userInput.value.trim().toLowerCase();
+    if(!typed){ showErr('Nhập tên đăng nhập trước đã.'); userInput.focus(); return; }
+    // So khớp theo "Tài khoản" (username) — tài khoản cũ chưa được gán username riêng thì tự dùng
+    // Tên hiển thị làm tên đăng nhập, để tương thích ngược với dữ liệu tạo trước khi có trường này.
+    const acc = accounts.find(a=> (a.username ? a.username.trim().toLowerCase() : a.name.trim().toLowerCase()) === typed);
+    if(!acc){ showErr('Không tìm thấy tài khoản này. Kiểm tra lại tên hoặc liên hệ Admin.'); return; }
+    // Yêu cầu mật khẩu nếu tài khoản có đặt mật khẩu riêng (mọi vai trò), hoặc tài khoản Admin gốc
+    // chưa được gán mật khẩu riêng thì vẫn dùng ADMIN_PASSWORD mặc định (tương thích ngược).
+    const requiredPw = acc.password || (acc.role==='Admin' ? ADMIN_PASSWORD : '');
+    if(requiredPw && pwInput.value !== requiredPw){ showErr('Sai mật khẩu.'); pwInput.value=''; pwInput.focus(); return; }
     currentUserId = acc.id;
-    logActivity('create','Tài khoản', `Tự tạo tài khoản "${name}" (${role}${unit?', '+unit:''})`);
     saveSession();
     screen.remove();
     renderAll();
-  });
+  };
+  screen.querySelector('#li_submit').addEventListener('click', submit);
+  [userInput, pwInput].forEach(inp=> inp.addEventListener('keydown', e=>{ if(e.key==='Enter') submit(); }));
+  userInput.focus();
 }
-
-
 /* ---------------------------- Dashboard ---------------------------- */
 function renderDashboard(c){
   setTitle('Dashboard', 'Tổng quan doanh số & chiết khấu toàn hệ thống — ngày báo cáo '+ (toDate(state.reportDate)||new Date()).toLocaleDateString('vi-VN'));
@@ -2127,7 +2257,7 @@ function wireCellEdits(tbl, arr, entityName, labelFn){
       if(el.classList.contains('pct')) el.value = round2(val*100);
       if(entityName) logActivity('update', entityName, `${labelFn?labelFn(item):item.id}: ${el.dataset.field} "${before}" → "${val}"`);
       saveState();
-      if(['name','supplierId','type','threshold','rate','startDate','endDate'].includes(el.dataset.field)) renderAll();
+      if(['name','supplierId','type','threshold','rate','startDate','endDate','confirmed'].includes(el.dataset.field)) renderAll();
     });
   });
 }
@@ -2795,6 +2925,21 @@ function bankLoanSum(bankId, from, to, unit){
   }
   return total;
 }
+// Đếm số hồ sơ vay THỰC SỰ khớp điều kiện (đúng NH + trạng thái "Đã giải ngân" + trong khoảng ngày) —
+// dùng để hiện chú thích chẩn đoán ngay trong bảng Đối soát CK, giúp thấy ngay lý do 1 kỳ ra 0đ
+// (VD: đúng ngân hàng nhưng chưa hồ sơ nào "Đã giải ngân" trong khoảng ngày đó → 0 hồ sơ khớp).
+function bankTxMatchCount(bankId, from, to, unit){
+  let n=0;
+  for(const t of state.bankTransactions){
+    if(t.bankId!==bankId || t.status!=='Đã giải ngân') continue;
+    if(unit && t.unit!==unit) continue;
+    const d = toDate(t.date);
+    if(from && d<from) continue;
+    if(to && d>to) continue;
+    n++;
+  }
+  return n;
+}
 function bankCommissionSum(bankId, from, to, unit){
   let total=0;
   for(const t of state.bankTransactions){
@@ -2811,11 +2956,21 @@ function allTimeBankLoan(bankId, unit){ return bankLoanSum(bankId,null,null,unit
 function allTimeBankCommission(bankId, unit){ return bankCommissionSum(bankId,null,null,unit); }
 function bankReconCalc(r){
   const from=toDate(r.fromDate), to=toDate(r.toDate);
-  if(!r.bankId||!from||!to) return {loan:0, totalDue:0, received:0, diff:0, stillOwed:0};
+  if(!r.bankId||!from||!to) return {loan:0, totalDue:0, dueForCalc:0, received:0, diff:0, stillOwed:0, matchCount:0, totalTxForBank:0};
   const loan = bankLoanSum(r.bankId, from, to);
-  const totalDue = bankCommissionSum(r.bankId, from, to);
+  const totalDue = bankCommissionSum(r.bankId, from, to); // số hệ thống TỰ TÍNH từ Doanh số × Chính sách CK
+  const matchCount = bankTxMatchCount(r.bankId, from, to);
+  // Tổng số hồ sơ (mọi trạng thái, mọi ngày) đang gán cho đúng ngân hàng này — để phân biệt 2 tình huống:
+  // "ngân hàng này chưa có hồ sơ nào cả" (totalTxForBank=0, nhiều khả năng ghi nhầm module/NH khác)
+  // với "có hồ sơ nhưng không khớp trạng thái/khoảng ngày của kỳ đối soát" (totalTxForBank>0, matchCount=0).
+  const totalTxForBank = state.bankTransactions.filter(t=>t.bankId===r.bankId).length;
+  const confirmed = Number(r.confirmed)||0;
+  // "NH xác nhận": nếu ngân hàng đã xác nhận 1 số hoa hồng cụ thể (có thể lệch với số hệ thống tự tính do
+  // phí, làm tròn, điều chỉnh...) thì ƯU TIÊN dùng số NH xác nhận làm chuẩn để tính Chênh lệch/Còn phải thu.
+  // Nếu NH chưa xác nhận (để 0), vẫn dùng số hệ thống tự tính như trước.
+  const dueForCalc = confirmed>0 ? confirmed : totalDue;
   const received = reconReceivedTotal(r);
-  return {loan, totalDue, received, diff:received-totalDue, stillOwed:Math.max(0,totalDue-received)};
+  return {loan, totalDue, dueForCalc, received, diff:received-dueForCalc, stillOwed:Math.max(0,dueForCalc-received), matchCount, totalTxForBank};
 }
 
 const BANK_TX_STATUSES = ['Đang xử lý','Đã duyệt','Đã giải ngân','Từ chối'];
@@ -3076,6 +3231,7 @@ function renderBankTransactions(c){
 }
 function renderBankTxTable(editable){
   const tbl = document.getElementById('btxTable');
+  if(!tbl) return;
   const note = document.getElementById('btxFilterNote');
   const unitFilter = (bankTxUnitFilter||'').trim().toLowerCase();
   const bankFilter = (bankTxBankFilter||'').trim().toLowerCase();
@@ -3237,7 +3393,9 @@ function renderBankReconcile(c){
       </div>
     </div>` : lockedNote('Bạn đang xem ở chế độ chỉ đọc — chỉ Admin/Quản lý mới thêm/sửa kỳ đối soát.')}
     <div class="panel">
-      <div class="panel-head"><div><h2>Tất cả kỳ đối soát</h2></div></div>
+      <div class="panel-head"><div><h2>Tất cả kỳ đối soát</h2>
+        <div class="desc">"Số tiền giải ngân" &amp; "Hoa hồng phải hưởng" tự lấy từ tab <b>Doanh số</b> — chỉ tính hồ sơ trạng thái <b>"Đã giải ngân"</b>, đúng ngân hàng và nằm trong khoảng Từ ngày–Đến ngày của kỳ này. Nếu 2 cột này ra 0đ dù bạn đã có hồ sơ vay, kiểm tra lại: hồ sơ đã chuyển trạng thái "Đã giải ngân" chưa, ngày giải ngân có nằm trong khoảng của kỳ không, và đúng ngân hàng đang chọn. Khi NH đã xác nhận số hoa hồng thực tế (cột "NH xác nhận" khác 0), hệ thống ưu tiên dùng số đó thay cho số tự tính để ra "Chênh lệch"/"Còn phải thu".</div>
+      </div></div>
       <div class="panel-body flush"><div class="tbl-wrap"><table class="data" id="bankReconTable"></table></div></div>
     </div>
   `;
@@ -3260,6 +3418,7 @@ function renderBankReconcile(c){
 }
 function renderBankReconTable(editable){
   const tbl = document.getElementById('bankReconTable');
+  if(!tbl) return;
   if(state.bankReconciliations.length===0){
     tbl.outerHTML = `<div class="empty"><div class="big">Chưa có kỳ đối soát nào</div>${editable?'Thêm kỳ đối soát ở form phía trên.':''}</div>`; return;
   }
@@ -3267,7 +3426,7 @@ function renderBankReconTable(editable){
   tbl.innerHTML = `
     <thead><tr>
       <th>Kỳ</th><th class="wrap">Ngân hàng</th><th>Từ ngày</th><th>Đến ngày</th>
-      <th class="num">Số tiền giải ngân</th><th class="num">Hoa hồng phải hưởng</th>
+      <th class="num">Số tiền giải ngân</th><th class="num">Hoa hồng phải hưởng<br><span style="font-weight:400;text-transform:none;font-size:10px">(hệ thống tự tính)</span></th>
       <th class="num money-col">NH xác nhận</th><th class="num money-col">Đã nhận</th>
       <th class="num">Chênh lệch</th><th class="num">Còn phải thu</th><th>Trạng thái</th><th></th>
     </tr></thead>
@@ -3275,13 +3434,13 @@ function renderBankReconTable(editable){
       const b = bankById(r.bankId);
       const rc = bankReconCalc(r);
       const payments = ensureReconciliationPayments(r);
-      const status = reconStatus(rc.totalDue, rc.received);
+      const status = reconStatus(rc.dueForCalc, rc.received);
       const expanded = bankReconExpanded.has(r.id);
       const mainRow = `<tr>
         <td>${r.period}</td>
         <td class="wrap">${b?b.name:'<em>(đã xoá)</em>'}</td>
         <td>${r.fromDate}</td><td>${r.toDate}</td>
-        <td class="num">${fmt(rc.loan)}</td>
+        <td class="num">${fmt(rc.loan)}${rc.matchCount===0 ? `<div style="font-size:10px;font-weight:400;color:var(--rust)">${rc.totalTxForBank===0 ? `NH này chưa có hồ sơ vay nào ở tab Doanh số` : `0/${rc.totalTxForBank} hồ sơ khớp "Đã giải ngân" &amp; khoảng ngày`}</div>` : `<div style="font-size:10px;font-weight:400;color:var(--slate)">${rc.matchCount} hồ sơ khớp</div>`}</td>
         <td class="num" style="font-weight:700">${fmt(rc.totalDue)}</td>
         <td class="num money-col"><input class="cell-edit money" data-field="confirmed" data-id="${r.id}" type="text" inputmode="numeric" value="${formatMoneyValue(r.confirmed)}" ${dis}></td>
         <td class="num money-col">
@@ -4553,10 +4712,11 @@ function renderAccounts(c){
   c.innerHTML = `
     <div class="panel">
       <div class="panel-head"><div><h2>Thêm tài khoản</h2>
-      <div class="desc">Không có mật khẩu — đây là hệ thống nội bộ dùng chung, chọn tên là vào được ngay. Gõ tên đơn vị thực tế để tự khoá đúng đơn vị khi tài khoản đó nhập Doanh số — đơn vị mới sẽ tự được thêm vào hệ thống.</div></div></div>
+      <div class="desc">Đây là nơi DUY NHẤT tạo được tài khoản mới — màn đăng nhập không còn cho tự tạo. Gõ tên đơn vị thực tế để tự khoá đúng đơn vị khi tài khoản đó nhập Doanh số — đơn vị mới sẽ tự được thêm vào hệ thống.</div></div></div>
       <div class="panel-body">
         <div class="form-grid">
-          <div class="field"><label>Tên</label><input id="af_name" placeholder="VD: Trần Thị B"></div>
+          <div class="field"><label>Tên hiển thị</label><input id="af_name" placeholder="VD: Trần Thị B"></div>
+          <div class="field"><label>Tài khoản (đăng nhập)</label><input id="af_username" placeholder="VD: tranthib — để trống sẽ tự gợi ý theo Tên"></div>
           <div class="field"><label>Vai trò</label>
             <select id="af_role">${ROLES.map(r=>`<option>${r}</option>`).join('')}</select>
           </div>
@@ -4565,8 +4725,13 @@ function renderAccounts(c){
             <input id="af_unit" list="af_unit_list" placeholder="Gõ tên đơn vị thực tế...">
             ${unitDatalistHTML('af_unit_list')}
           </div>
+          <div class="field">
+            <label>Mật khẩu (tuỳ chọn)</label>
+            <input id="af_password" type="password" autocomplete="new-password" placeholder="Để trống nếu không cần mật khẩu">
+          </div>
           <button class="btn btn-primary" id="addAccountBtn">+ Thêm tài khoản</button>
         </div>
+        <div class="helper">Mỗi tài khoản có <b>Tên hiển thị</b> (hiện trên giao diện, Nhật ký hoạt động...) và <b>Tài khoản</b> riêng (dùng để gõ vào ô "Tên đăng nhập" ở màn đăng nhập) — hai thứ có thể khác nhau, ví dụ Tên hiển thị "Thủ kho TTB" nhưng Tài khoản đăng nhập là "thukhottb". Đặt mật khẩu cho tài khoản nào thì tài khoản đó sẽ phải nhập đúng mật khẩu ở màn đăng nhập. Để trống ô mật khẩu = đăng nhập không cần mật khẩu (như trước đây). Đây vẫn là "hàng rào mềm" — không phải bảo mật thật sự vì app chạy tĩnh trên trình duyệt.</div>
       </div>
     </div>
     <div class="panel">
@@ -4601,25 +4766,39 @@ function renderAccounts(c){
   document.getElementById('addAccountBtn').addEventListener('click', ()=>{
     const name = document.getElementById('af_name').value.trim();
     if(!name){ toast('Nhập tên trước đã'); return; }
+    let username = document.getElementById('af_username').value.trim();
+    if(!username) username = slugifyUsername(name);
+    if(!username){ toast('Không tạo được tên tài khoản — nhập tay ở ô "Tài khoản"'); return; }
+    if(state.accounts.some(a=>a.username && a.username.toLowerCase()===username.toLowerCase())){
+      toast(`Tài khoản "${username}" đã tồn tại — đổi tên tài khoản khác`); return;
+    }
     const role = document.getElementById('af_role').value;
     const unit = ensureUnit(document.getElementById('af_unit').value);
-    const acc = {id:uid('u'), name, role, unit, createdAt: todayISO()};
+    const password = document.getElementById('af_password').value;
+    const acc = {id:uid('u'), name, username, role, unit, password, createdAt: todayISO()};
     state.accounts.push(acc);
-    logActivity('create','Tài khoản', `Thêm tài khoản "${name}" (${role}${unit?', '+unit:''})`);
+    logActivity('create','Tài khoản', `Thêm tài khoản "${name}" (đăng nhập: ${username}; ${role}${unit?', '+unit:''}${password?', có mật khẩu':''})`);
     toast('Đã thêm tài khoản'+(unit?` — đơn vị "${unit}"`:''));
     renderAll();
   });
 
   const tbl = document.getElementById('accountsTable');
   tbl.innerHTML = `
-    <thead><tr><th>Tên</th><th>Vai trò</th><th>Đơn vị phụ trách</th><th>Ngày tạo</th><th></th></tr></thead>
+    <thead><tr><th>Tên hiển thị</th><th>Tài khoản (đăng nhập)</th><th>Vai trò</th><th>Đơn vị phụ trách</th><th>Mật khẩu</th><th>Ngày tạo</th><th></th></tr></thead>
     <tbody>${state.accounts.map(a=>`
       <tr>
         <td><input class="cell-edit" data-field="name" data-id="${a.id}" value="${escAttr(a.name)}"></td>
+        <td><input class="cell-edit" data-field="username" data-id="${a.id}" value="${escAttr(a.username||'')}" placeholder="— Chưa đặt (dùng Tên) —" style="min-width:130px"></td>
         <td><select class="cell-edit" data-field="role" data-id="${a.id}">${ROLES.map(r=>`<option ${a.role===r?'selected':''}>${r}</option>`).join('')}</select></td>
         <td>
           <input class="cell-edit" data-field="unit" data-id="${a.id}" list="rowunit_${a.id}" value="${escAttr(a.unit||'')}" placeholder="— Không gán —">
           ${unitDatalistHTML('rowunit_'+a.id)}
+        </td>
+        <td>
+          <div style="display:flex; align-items:center; gap:4px">
+            <input class="cell-edit" type="password" autocomplete="new-password" data-field="password" data-id="${a.id}" value="${escAttr(a.password||'')}" placeholder="— Không đặt —" style="min-width:110px">
+            <button type="button" class="row-del" data-toggle-pw="${a.id}" title="Xem/ẩn mật khẩu" style="flex:0 0 auto; color:var(--slate)">👁</button>
+          </div>
         </td>
         <td>${a.createdAt||''}</td>
         <td>${a.id===currentUserId?'<span class="tag gold">Bạn</span>':`<button class="row-del" data-del="${a.id}">✕</button>`}</td>
@@ -4631,9 +4810,27 @@ function renderAccounts(c){
       const before = acc[el.dataset.field];
       let val = el.value;
       if(el.dataset.field==='unit') val = ensureUnit(val);
+      if(el.dataset.field==='username'){
+        val = val.trim();
+        if(val && state.accounts.some(o=>o.id!==acc.id && o.username && o.username.toLowerCase()===val.toLowerCase())){
+          toast(`Tài khoản "${val}" đã được dùng cho người khác — chọn tên khác`);
+          el.value = before||''; return;
+        }
+      }
       acc[el.dataset.field] = val;
-      logActivity('update','Tài khoản', `Sửa tài khoản "${acc.name}" (${el.dataset.field}: "${before||'(trống)'}" → "${val||'(trống)'}")`);
+      // Không ghi giá trị mật khẩu (cũ/mới) ra Nhật ký hoạt động — chỉ ghi nhận CÓ thay đổi mật khẩu hay không.
+      const logMsg = el.dataset.field==='password'
+        ? `Sửa tài khoản "${acc.name}" (${val ? 'đặt/đổi mật khẩu' : 'xoá mật khẩu'})`
+        : `Sửa tài khoản "${acc.name}" (${el.dataset.field}: "${before||'(trống)'}" → "${val||'(trống)'}")`;
+      logActivity('update','Tài khoản', logMsg);
       renderAll();
+    });
+  });
+  tbl.querySelectorAll('[data-toggle-pw]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      const input = tbl.querySelector(`input[data-field="password"][data-id="${btn.dataset.togglePw}"]`);
+      if(!input) return;
+      input.type = input.type==='password' ? 'text' : 'password';
     });
   });
   tbl.querySelectorAll('[data-del]').forEach(btn=>{
@@ -4730,6 +4927,12 @@ function migrateCleanupUnitsV1(){
 }
 
 (async function init(){
+  // Đóng menu tài khoản (Đổi mật khẩu / Đăng xuất) khi bấm ra ngoài — gắn đúng 1 lần, không phụ
+  // thuộc vào renderUserChip() để tránh cộng dồn listener sau mỗi lần renderAll().
+  document.addEventListener('click', (e)=>{
+    const menu = document.getElementById('userMenu');
+    if(menu && menu.classList.contains('open') && !e.target.closest('.user-chip-wrap')) menu.classList.remove('open');
+  });
   const [shared, session] = await Promise.all([loadShared(), loadSession()]);
   state = shared ? Object.assign(seedState(), shared) : seedState();
   if(!state.accounts || state.accounts.length===0) state.accounts = seedState().accounts;
