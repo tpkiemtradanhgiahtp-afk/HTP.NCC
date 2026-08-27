@@ -779,6 +779,9 @@ async function connectFirebase(config){
     const ref = db.ref(FB_PATH);
     const snap = await ref.once('value'); // kiểm tra kết nối thực sự hoạt động (bắt lỗi rules/permission sớm)
     fb.db = db; fb.ref = ref; fb.status = 'connected';
+    // Lưu lại luôn kết quả lần đọc này để loadShared() dùng lại — tránh phải once('value') tải lại
+    // toàn bộ dữ liệu THÊM 1 lần nữa ngay sau đó (trước đây mỗi lần mở trang tải dữ liệu 2 lần liên tiếp).
+    fb.initialSnapshotVal = snap.exists() ? snap.val() : null;
     if(fb.unsub) fb.unsub();
     const listener = ref.on('value', snapshot=>{
       if(!snapshot.exists()) return;
@@ -877,13 +880,10 @@ async function loadShared(){
   if(fbConfig){
     const res = await connectFirebase(fbConfig);
     if(res.ok){
-      try{
-        const snap = await fb.ref.once('value');
-        if(snap.exists()){
-          const data = snap.val();
-          if(data && data.json){ lastSavedJson = data.json; return JSON.parse(data.json); }
-        }
-      }catch(e){}
+      // Dùng lại dữ liệu đã đọc được ngay trong connectFirebase() (kiểm tra kết nối) thay vì gọi
+      // once('value') tải lại toàn bộ dữ liệu thêm 1 lần nữa — mỗi lần mở trang tiết kiệm được 1 lượt tải full state.
+      const data = fb.initialSnapshotVal;
+      if(data && data.json){ lastSavedJson = data.json; return JSON.parse(data.json); }
       return null; // node Realtime Database chưa có -> sẽ được tạo ở lần saveState() đầu tiên
     }
     // kết nối thất bại -> rơi xuống tầng dự phòng bên dưới, lỗi đã lưu ở fb.error để hiện ở Cài đặt
@@ -923,6 +923,10 @@ function saveState(){
   clearTimeout(saveTimer);
   saveTimer = setTimeout(async ()=>{
     const json = JSON.stringify(state);
+    // Dữ liệu không đổi so với lần đồng bộ gần nhất (vd: chỉ chuyển tab, mở/đóng chi tiết, lọc — không sửa
+    // gì cả) -> bỏ qua, không ghi lại lên Firebase. Đây là nguyên nhân chính gây tốn dung lượng Firebase vì
+    // renderAll() được gọi rất thường xuyên (kể cả khi không có gì thay đổi) và luôn kèm theo saveState().
+    if(json === lastSavedJson) return;
     if(fb.status==='connected' && fb.ref){
       try{
         lastSavedJson = json;
@@ -934,15 +938,17 @@ function saveState(){
     try{
       if(window.storage && typeof window.storage.set==='function'){
         await window.storage.set(STORE_KEY, json, true);
+        lastSavedJson = json;
         setStoragePill('cloud'); return;
       }
     }catch(e){ /* fall through */ }
     try{
       localStorage.setItem(STORE_KEY, json);
+      lastSavedJson = json;
       setStoragePill('local'); return;
     }catch(e){ /* fall through */ }
     setStoragePill('memory');
-  }, 300);
+  }, 800);
 }
 async function saveSession(){
   const json = JSON.stringify({currentUserId});
@@ -1483,8 +1489,10 @@ let state = null;
 let currentUserId = null;
 
 /* ---------------------------- Phân quyền (tài khoản & vai trò) ---------------------------- */
-const ROLES = ['Admin','Quản lý','Nhân viên'];
-// Các tab/khu vực mà mỗi vai trò được phép SỬA (mọi vai trò đã đăng nhập đều XEM được tất cả).
+const ROLES = ['Admin','Quản lý','Nhân viên','Đối tác'];
+// Các tab/khu vực mà mỗi vai trò được phép SỬA (mọi vai trò đã đăng nhập đều XEM được tất cả tab mình thấy).
+// LƯU Ý: vai trò "Đối tác" CỐ Ý không xuất hiện trong bất kỳ danh sách nào dưới đây -> không có quyền sửa ở
+// bất cứ khu vực nào (chỉ xem), trừ 1 ngoại lệ tự xác nhận hoa hồng của chính mình xử lý riêng ở render.
 const EDIT_PERMS = {
   suppliers:    ['Admin','Quản lý'],
   policies:     ['Admin','Quản lý'],
@@ -1503,6 +1511,61 @@ const EDIT_PERMS = {
   bh_reconcile:    ['Admin','Quản lý'],
   bh_allocation:   ['Admin','Quản lý'],  // nhập DT dịch vụ/sửa chữa theo hãng theo tháng
 };
+
+/* ---------------------------- Phân quyền theo MODULE (mức giao diện) ----------------------------
+   Độc lập với vai trò: quyết định tài khoản đó có THẤY (được dùng) module nào trong 3 module lớn hay
+   không — dùng cho trường hợp 1 người chỉ làm Ngân hàng, không nên thấy/thao tác nhầm sang NCC/Bảo hiểm.
+   - account.modules = mảng con của MODULES id, ví dụ ['ncc','nh'].
+   - Tài khoản CHƯA có trường modules (tạo từ trước khi có tính năng này) mặc định coi như được cấp ĐỦ cả 3
+     module, để không ai bị mất quyền đột ngột ngay sau khi cập nhật app.
+   - Admin luôn thấy đủ mọi module, không bị giới hạn bởi danh sách này, để luôn quản lý được toàn hệ thống.
+   - Đây là chặn Ở GIAO DIỆN (client-side) để tránh nhầm lẫn thao tác nội bộ — KHÔNG phải bảo mật dữ liệu
+     tuyệt đối, vì dữ liệu mọi module vẫn được tải chung về mọi tài khoản đã đăng nhập (theo cơ chế lưu trữ
+     hiện tại). Muốn chặn thật ở mức server cần tách dữ liệu theo module + Firebase Security Rules riêng. */
+const MODULES = [
+  {id:'ncc', label:'NCC Dịch vụ Ô tô - Xe máy'},
+  {id:'nh',  label:'Ngân hàng'},
+  {id:'bh',  label:'Bảo hiểm'},
+];
+function accountModules(a){
+  if(!a || !Array.isArray(a.modules)) return MODULES.map(m=>m.id); // chưa gán -> mặc định đủ cả 3
+  return a.modules;
+}
+function hasModuleAccess(moduleId, account){
+  const a = account || currentUser();
+  if(!a) return false;
+  if(a.role==='Admin') return true;
+  return accountModules(a).includes(moduleId);
+}
+function partnerEntityLabel(a){
+  if(!a || !a.partnerType || !a.partnerId) return '';
+  if(a.partnerType==='ncc'){ const s = supplierById(a.partnerId); return s?s.name:'(đã xoá)'; }
+  if(a.partnerType==='nh'){ const b = bankById(a.partnerId); return b?b.name:'(đã xoá)'; }
+  if(a.partnerType==='bh'){ const i = insurerById(a.partnerId); return i?i.name:'(đã xoá)'; }
+  return '';
+}
+function partnerEntityOptions(partnerType){
+  if(partnerType==='ncc') return state.suppliers.map(s=>({id:s.id, name:s.name}));
+  if(partnerType==='nh') return state.banks.map(b=>({id:b.id, name:b.name}));
+  if(partnerType==='bh') return state.insurers.map(i=>({id:i.id, name:i.name}));
+  return [];
+}
+
+/* ---------------------------- Tài khoản Đối tác (NCC/NH/Bảo hiểm tự đăng nhập) ----------------------------
+   account.role === 'Đối tác' + account.partnerType ('ncc'|'nh'|'bh') + account.partnerId (id của đúng
+   NCC/Ngân hàng/NCC bảo hiểm trong state.suppliers/banks/insurers) -> tài khoản đó CHỈ thấy đúng module
+   partnerType, và trong module đó chỉ thấy Chính sách + Doanh số/Đối soát CK của ĐÚNG đối tác mình — không
+   thấy Danh mục (danh sách toàn bộ đối tác), Dashboard, Theo dõi mốc CK, Phân bổ đơn vị (đều là các tab so
+   sánh/liệt kê NHIỀU đối tác cùng lúc, không lọc gọn về "chỉ 1 dòng" được).
+   Ngoại lệ duy nhất được SỬA: ô "xác nhận" hoa hồng của chính họ ở Đối soát CK (xử lý riêng tại từng bảng),
+   mọi thứ khác luôn chỉ xem — vẫn là "hàng rào mềm" ở giao diện như các cơ chế phân quyền khác trong app. */
+function isPartnerAccount(a){ return !!(a && a.role==='Đối tác'); }
+// Trả về hàm lọc theo đúng đối tác đang đăng nhập (hoặc null nếu không phải tài khoản Đối tác -> không lọc gì).
+function partnerScopeFilter(idField){
+  const u = currentUser();
+  if(!isPartnerAccount(u) || !u.partnerId) return null;
+  return (row)=> row[idField]===u.partnerId;
+}
 function currentUser(){ return state.accounts.find(a=>a.id===currentUserId) || null; }
 function currentRole(){ const u = currentUser(); return u ? u.role : null; }
 function canEdit(area){
@@ -1676,23 +1739,23 @@ function fullSupplierCalc(supplierId){
 
 /* ---------------------------- Router / Nav ---------------------------- */
 const TABS = [
-  {id:'dashboard', label:'Dashboard', section:'Tổng quan'},
-  {id:'monitor', label:'Theo dõi mốc CK', section:'Tổng quan'},
-  {id:'suppliers', label:'Danh mục - Chính sách NCC', section:'NCC Dịch vụ Ô tô - Xe máy'},
-  {id:'policies', label:'Chính sách CK', section:'NCC Dịch vụ Ô tô - Xe máy', hidden:true, parent:'suppliers'},
-  {id:'transactions', label:'Doanh số - Đối soát CK - Phân bổ', section:'NCC Dịch vụ Ô tô - Xe máy'},
-  {id:'allocation', label:'Phân bổ đơn vị', section:'NCC Dịch vụ Ô tô - Xe máy', hidden:true, parent:'transactions'},
-  {id:'reconcile', label:'Đối soát CK', section:'NCC Dịch vụ Ô tô - Xe máy', hidden:true, parent:'transactions'},
-  {id:'nh_suppliers', label:'Danh mục - Chính sách NH', section:'Ngân hàng'},
-  {id:'nh_policies', label:'Chính sách CK', section:'Ngân hàng', hidden:true, parent:'nh_suppliers'},
-  {id:'nh_transactions', label:'Doanh số - Đối soát CK - Phân bổ', section:'Ngân hàng'},
-  {id:'nh_allocation', label:'Phân bổ đơn vị', section:'Ngân hàng', hidden:true, parent:'nh_transactions'},
-  {id:'nh_reconcile', label:'Đối soát CK', section:'Ngân hàng', hidden:true, parent:'nh_transactions'},
-  {id:'bh_suppliers', label:'Danh mục - Biểu phí bảo hiểm', section:'Bảo hiểm'},
-  {id:'bh_policies', label:'Biểu phí bảo hiểm', section:'Bảo hiểm', hidden:true, parent:'bh_suppliers'},
-  {id:'bh_transactions', label:'Doanh số - Đối soát CK - Phân bổ', section:'Bảo hiểm'},
-  {id:'bh_allocation', label:'Phân bổ đơn vị', section:'Bảo hiểm', hidden:true, parent:'bh_transactions'},
-  {id:'bh_reconcile', label:'Đối soát CK', section:'Bảo hiểm', hidden:true, parent:'bh_transactions'},
+  {id:'dashboard', label:'Dashboard', section:'Tổng quan', module:'ncc'},
+  {id:'monitor', label:'Theo dõi mốc CK', section:'Tổng quan', module:'ncc'},
+  {id:'suppliers', label:'Danh mục - Chính sách NCC', section:'NCC Dịch vụ Ô tô - Xe máy', module:'ncc'},
+  {id:'policies', label:'Chính sách CK', section:'NCC Dịch vụ Ô tô - Xe máy', hidden:true, parent:'suppliers', module:'ncc', partnerVisible:true, partnerTopLevel:true},
+  {id:'transactions', label:'Doanh số - Đối soát CK - Phân bổ', section:'NCC Dịch vụ Ô tô - Xe máy', module:'ncc', partnerVisible:true},
+  {id:'allocation', label:'Phân bổ đơn vị', section:'NCC Dịch vụ Ô tô - Xe máy', hidden:true, parent:'transactions', module:'ncc'},
+  {id:'reconcile', label:'Đối soát CK', section:'NCC Dịch vụ Ô tô - Xe máy', hidden:true, parent:'transactions', module:'ncc', partnerVisible:true},
+  {id:'nh_suppliers', label:'Danh mục - Chính sách NH', section:'Ngân hàng', module:'nh'},
+  {id:'nh_policies', label:'Chính sách CK', section:'Ngân hàng', hidden:true, parent:'nh_suppliers', module:'nh', partnerVisible:true, partnerTopLevel:true},
+  {id:'nh_transactions', label:'Doanh số - Đối soát CK - Phân bổ', section:'Ngân hàng', module:'nh', partnerVisible:true},
+  {id:'nh_allocation', label:'Phân bổ đơn vị', section:'Ngân hàng', hidden:true, parent:'nh_transactions', module:'nh'},
+  {id:'nh_reconcile', label:'Đối soát CK', section:'Ngân hàng', hidden:true, parent:'nh_transactions', module:'nh', partnerVisible:true},
+  {id:'bh_suppliers', label:'Danh mục - Biểu phí bảo hiểm', section:'Bảo hiểm', module:'bh'},
+  {id:'bh_policies', label:'Biểu phí bảo hiểm', section:'Bảo hiểm', hidden:true, parent:'bh_suppliers', module:'bh', partnerVisible:true, partnerTopLevel:true},
+  {id:'bh_transactions', label:'Doanh số - Đối soát CK - Phân bổ', section:'Bảo hiểm', module:'bh', partnerVisible:true},
+  {id:'bh_allocation', label:'Phân bổ đơn vị', section:'Bảo hiểm', hidden:true, parent:'bh_transactions', module:'bh'},
+  {id:'bh_reconcile', label:'Đối soát CK', section:'Bảo hiểm', hidden:true, parent:'bh_transactions', module:'bh', partnerVisible:true},
   {id:'accounts', label:'Quản trị tài khoản', section:'Hệ thống', roles:['Admin']},
   {id:'activityLog', label:'Nhật ký hoạt động', section:'Hệ thống', roles:['Admin']},
   {id:'settings', label:'Cài đặt', section:'Hệ thống', roles:['Admin']},
@@ -1717,18 +1780,30 @@ function toggleSection(name){
 
 function visibleTabs(){
   const role = currentRole();
-  return TABS.filter(t=> !t.roles || t.roles.includes(role));
+  const acc = currentUser();
+  let tabs = TABS.filter(t=> (!t.roles || t.roles.includes(role)) && (!t.module || hasModuleAccess(t.module, acc)));
+  if(isPartnerAccount(acc)) tabs = tabs.filter(t=>t.partnerVisible===true);
+  return tabs;
+}
+// Danh sách tab thực sự hiển thị ở sidebar (khác visibleTabs() ở chỗ: với tài khoản Đối tác, "Chính sách CK"
+// vốn là tab con ẩn (parent:'suppliers') được hiện lên thành mục gốc, vì "suppliers" (Danh mục toàn bộ đối
+// tác) không hiển thị với họ nên nếu vẫn giữ ẩn thì họ sẽ không có lối vào trang Chính sách CK của mình).
+function navTabs(){
+  const partner = isPartnerAccount(currentUser());
+  return visibleTabs().filter(t=> !t.hidden || (partner && t.partnerTopLevel));
 }
 
 function sidebarActiveId(){
   const t = TABS.find(x=>x.id===activeTab);
-  return (t && t.parent) ? t.parent : activeTab;
+  if(!t) return activeTab;
+  if(t.parent && isPartnerAccount(currentUser()) && t.partnerTopLevel) return t.id; // hiện như mục gốc với Đối tác
+  return t.parent ? t.parent : activeTab;
 }
 
 function renderNav(){
   const nav = document.getElementById('navList');
   const activeId = sidebarActiveId();
-  const tabs = visibleTabs().filter(t=>!t.hidden);
+  const tabs = navTabs();
   let html=''; let i=0;
   while(i<tabs.length){
     const section = tabs[i].section;
@@ -1785,7 +1860,10 @@ SUBTAB_GROUPS.bh_allocation = SUBTAB_GROUPS.bh_transactions;
 function subTabsHTML(){
   const group = SUBTAB_GROUPS[activeTab];
   if(!group) return '';
-  return `<div class="subtabs">${group.map(g=>`<div class="subtab-item ${g.id===activeTab?'active':''}" data-subtab="${g.id}">${g.label}${g.id==='bh_allocation'?insAlertBadgeHTML():''}</div>`).join('')}</div>`;
+  const visibleIds = new Set(visibleTabs().map(t=>t.id));
+  const filtered = group.filter(g=>visibleIds.has(g.id));
+  if(filtered.length<2) return ''; // chỉ còn 0-1 subtab (vd Đối tác bị ẩn bớt) thì khỏi hiện thanh subtab
+  return `<div class="subtabs">${filtered.map(g=>`<div class="subtab-item ${g.id===activeTab?'active':''}" data-subtab="${g.id}">${g.label}${g.id==='bh_allocation'?insAlertBadgeHTML():''}</div>`).join('')}</div>`;
 }
 function bindSubTabs(c){
   c.querySelectorAll('[data-subtab]').forEach(el=>{
@@ -1855,8 +1933,11 @@ function renderAll(){
   // đã có danh tính → dọn màn hình đăng nhập cũ nếu còn sót lại trong DOM
   const staleLoginScreen = document.getElementById('loginScreen');
   if(staleLoginScreen) staleLoginScreen.remove();
-  // nếu đang ở tab mà vai trò hiện tại không được xem, đưa về dashboard
-  if(!visibleTabs().find(t=>t.id===activeTab)) activeTab='dashboard';
+  // nếu đang ở tab mà vai trò/module hiện tại không được xem, đưa về tab đầu tiên họ thực sự thấy được
+  if(!visibleTabs().find(t=>t.id===activeTab)){
+    const first = navTabs()[0];
+    activeTab = first ? first.id : 'dashboard';
+  }
 
   document.querySelector('.shell').style.display='';
   renderUserChip();
@@ -2264,13 +2345,16 @@ function wireCellEdits(tbl, arr, entityName, labelFn){
 
 /* ---------------------------- Chính sách CK ---------------------------- */
 function renderPolicies(c){
-  setTitle('Chính sách CK', state.policies.length+' dòng chính sách — mỗi mốc / mỗi thưởng là 1 dòng riêng');
+  const pf = partnerScopeFilter('supplierId');
+  const policyList = pf ? state.policies.filter(pf) : state.policies;
+  setTitle('Chính sách CK', policyList.length+' dòng chính sách — mỗi mốc / mỗi thưởng là 1 dòng riêng');
   const editable = canEdit('policies');
   const supplierOptions = state.suppliers.map(s=>`<option value="${s.id}">${s.name}</option>`).join('');
 
-  // Cảnh báo xung đột mốc CK cơ bản (trùng mốc / đường cong đi ngược), gộp theo NCC
+  // Cảnh báo xung đột mốc CK cơ bản (trùng mốc / đường cong đi ngược), gộp theo NCC — Đối tác chỉ thấy
+  // cảnh báo của đúng NCC mình (nếu có), không thấy cảnh báo của NCC khác.
   const allConflicts = [];
-  state.suppliers.forEach(s=>{
+  (pf ? state.suppliers.filter(s=>pf({supplierId:s.id})) : state.suppliers).forEach(s=>{
     const warns = tierConflicts(s.id);
     warns.forEach(w=> allConflicts.push(`<b>${s.name}</b>: ${w}`));
   });
@@ -2354,7 +2438,7 @@ function renderPolicies(c){
   if(state.suppliers.length===0){
     tbl.outerHTML = `<div class="empty"><div class="big">Chưa có NCC</div>Thêm NCC ở tab "Danh mục NCC" trước.</div>`; return;
   }
-  if(state.policies.length===0){
+  if(policyList.length===0){
     tbl.outerHTML = `<div class="empty"><div class="big">Chưa có chính sách nào</div>${editable?'Thêm chính sách CK ở form phía trên.':''}</div>`; return;
   }
   tbl.innerHTML = `
@@ -2362,7 +2446,7 @@ function renderPolicies(c){
       <th class="wrap">NCC</th><th>Mã CS</th><th>Loại</th><th>Chu kỳ</th><th class="num money-col">Mốc (VNĐ)</th>
       <th class="num">Tỷ lệ CK</th><th class="num">Thưởng thêm</th><th>Bắt đầu</th><th>Kết thúc</th><th>Phương pháp</th><th class="wrap">Điều kiện</th><th>Phân bổ đơn vị</th><th></th>
     </tr></thead>
-    <tbody>${state.policies.map(p=>{
+    <tbody>${policyList.map(p=>{
       const s = supplierById(p.supplierId);
       const dis = editable?'':'disabled';
       const isBaseTier = p.type==='CK theo doanh số'||p.type==='CK cố định';
@@ -2400,6 +2484,7 @@ function renderPolicies(c){
 
 /* ---------------------------- Doanh số ---------------------------- */
 function canDeleteTx(t){
+  if(isRecordLockedForMe(t, state.reconciliations, 'supplierId')) return false;
   return ['Admin','Quản lý'].includes(currentRole()) || t.createdBy===currentUserId;
 }
 function renderTransactions(c){
@@ -2466,9 +2551,14 @@ function renderTransactions(c){
     const s = supplierById(supplierId);
     const unit = lockedUnit || ensureUnit(document.getElementById('tf_unit').value);
     if(!unit){ toast('Nhập tên đơn vị trước'); return; }
+    const txDate = document.getElementById('tf_date').value || todayISO();
+    if(currentRole()!=='Admin'){
+      const lockR = lockingReconOf({supplierId, date:txDate}, state.reconciliations, 'supplierId');
+      if(lockR){ toast(`Ngày này thuộc kỳ đối soát "${lockR.period}" đã chốt với ${s?s.name:''} — chỉ Admin được ghi nhận thêm`); return; }
+    }
     state.transactions.push({
       id: uid('t'),
-      date: document.getElementById('tf_date').value || todayISO(),
+      date: txDate,
       unit, supplierId,
       doc: document.getElementById('tf_doc').value.trim(),
       category: document.getElementById('tf_cat').value.trim(),
@@ -2490,7 +2580,8 @@ function renderTxTable(editable){
   const note = document.getElementById('txFilterNote');
   const unitFilter = (txUnitFilter||'').trim().toLowerCase();
   const supFilter = (txSupplierFilter||'').trim().toLowerCase();
-  const all = state.transactions.slice().sort((a,b)=> b.date.localeCompare(a.date));
+  const pf = partnerScopeFilter('supplierId');
+  const all = (pf ? state.transactions.filter(pf) : state.transactions).slice().sort((a,b)=> b.date.localeCompare(a.date));
   const sorted = all.filter(t=>{
     if(unitFilter && !(t.unit||'').trim().toLowerCase().includes(unitFilter)) return false;
     if(supFilter){
@@ -2533,6 +2624,7 @@ function renderTxTable(editable){
       const s = supplierById(t.supplierId);
       const net = (Number(t.gross)||0)-(Number(t.returns)||0);
       const creator = state.accounts.find(a=>a.id===t.createdBy);
+      const lockR = lockingReconOf(t, state.reconciliations, 'supplierId');
       return `<tr>
         <td>${new Date(t.date+'T00:00:00').toLocaleDateString('vi-VN')}</td>
         <td>${t.unit}</td>
@@ -2543,12 +2635,14 @@ function renderTxTable(editable){
         <td class="num">${fmt(t.returns)}</td>
         <td class="num" style="font-weight:600">${fmt(net)}</td>
         <td>${creator?creator.name:'<em>—</em>'}</td>
-        <td>${canDeleteTx(t)?`<button class="row-del" data-del="${t.id}">✕</button>`:''}</td>
+        <td>${lockIconHTML(lockR,'ncc')}${canDeleteTx(t)?`<button class="row-del" data-del="${t.id}">✕</button>`:''}</td>
       </tr>`;
     }).join('')}</tbody>`;
+  wireLockToggle(tbl);
   tbl.querySelectorAll('[data-del]').forEach(btn=>{
     btn.addEventListener('click', ()=>{
       const t = state.transactions.find(x=>x.id===btn.dataset.del);
+      if(t && isRecordLockedForMe(t, state.reconciliations, 'supplierId')){ toast('Chứng từ thuộc kỳ đối soát đã chốt — chỉ Admin được xoá'); return; }
       const s = t ? supplierById(t.supplierId) : null;
       state.transactions = state.transactions.filter(x=>x.id!==btn.dataset.del);
       logActivity('delete','Doanh số', `Xoá chứng từ ${t?t.doc||'':''} (${s?s.name:''}, ${t?fmt(t.gross):''}đ)`);
@@ -2686,6 +2780,88 @@ function reconStatus(totalDue, receivedTotal){
   return {label:'Đã nhận đủ', cls:'ok'};
 }
 
+/* ---------------------------- Chốt kỳ đối soát (khoá sửa/xoá hồ sơ nguồn) ----------------------------
+   Dùng chung cho cả 3 module: NCC (idField:'supplierId', list: state.reconciliations),
+   Ngân hàng ('bankId', state.bankReconciliations), Bảo hiểm ('insurerId', state.insReconciliations).
+   Sau khi "Chốt" 1 kỳ: số liệu quan trọng được SNAPSHOT (đóng băng) vào chính kỳ đó, đồng thời mọi hồ sơ
+   nguồn (Doanh số / Sổ hồ sơ vay / Sổ hợp đồng bảo hiểm) cùng đối tác và có ngày nằm trong khoảng
+   Từ ngày–Đến ngày của kỳ sẽ bị KHOÁ sửa/xoá với mọi vai trò TRỪ Admin. Chỉ Admin được sửa hồ sơ đã khoá,
+   và chỉ Admin được "Mở khoá" (gỡ khoá áp dụng cho CẢ KỲ, không mở lẻ từng hồ sơ). */
+function isDateInRange(dateStr, fromStr, toStr){
+  const d = toDate(dateStr), from = toDate(fromStr), to = toDate(toStr);
+  if(!d || !from || !to) return false;
+  return d>=from && d<=to;
+}
+// Tìm kỳ đối soát ĐÃ CHỐT đang khoá 1 hồ sơ cụ thể (nếu có).
+function lockingReconOf(t, reconList, idField){
+  if(!Array.isArray(reconList) || !t) return null;
+  return reconList.find(r=> r.locked && r[idField]===t[idField] && isDateInRange(t.date, r.fromDate, r.toDate)) || null;
+}
+// Hồ sơ có đang bị khoá sửa/xoá với vai trò hiện tại không (Admin luôn được sửa hồ sơ đã khoá).
+function isRecordLockedForMe(t, reconList, idField){
+  if(currentRole()==='Admin') return false;
+  return !!lockingReconOf(t, reconList, idField);
+}
+function lockReconciliation(r, snapshot, entityName, label){
+  r.locked = true; r.lockedAt = new Date().toISOString(); r.lockedBy = currentUserId; r.lockSnapshot = snapshot;
+  logActivity('update', entityName, `🔒 Chốt kỳ "${label}" — khoá sửa/xoá hồ sơ nguồn trong kỳ`);
+}
+function unlockReconciliation(r, entityName, label){
+  r.locked = false; r.unlockedAt = new Date().toISOString(); r.unlockedBy = currentUserId;
+  logActivity('update', entityName, `🔓 Mở khoá kỳ "${label}" — cho phép sửa/xoá hồ sơ trở lại`);
+}
+// Ghi chú cảnh báo khi số liệu hiện tại (tính lại real-time) đã lệch so với lúc chốt — chỉ hiện khi đã chốt.
+function lockMismatchNote(r, liveDue){
+  if(!r.locked || !r.lockSnapshot) return '';
+  const before = Math.round(Number(r.lockSnapshot.totalDue)||0);
+  const after = Math.round(Number(liveDue)||0);
+  if(before===after) return '';
+  return `<div style="font-size:10px;font-weight:400;color:var(--rust)">⚠ Lệch so với lúc chốt (${fmt(before)}đ) — Admin đã sửa hồ sơ sau khi chốt</div>`;
+}
+// Nút "Chốt kỳ" / badge+nút "Mở khoá" hiển thị ở cột Chốt của bảng kỳ đối soát.
+function lockActionCellHTML(r, editable){
+  if(r.locked){
+    const badge = `<span class="tag" title="Đã chốt ${r.lockedAt?new Date(r.lockedAt).toLocaleString('vi-VN'):''} — khoá sửa/xoá hồ sơ nguồn trong kỳ này">🔒 Đã chốt</span>`;
+    if(currentRole()==='Admin'){
+      return `${badge}<br><button class="btn btn-ghost" data-unlock-recon="${r.id}" style="padding:1px 8px;font-size:11px;margin-top:4px">Mở khoá</button>`;
+    }
+    return badge;
+  }
+  if(!editable) return '<span class="tag muted" style="color:var(--slate)">Chưa chốt</span>';
+  return `<button class="btn btn-ghost" data-lock-recon="${r.id}" style="padding:2px 8px;font-size:11px" title="Chốt số liệu kỳ này + khoá sửa/xoá hồ sơ nguồn trong khoảng ngày này">🔒 Chốt kỳ</button>`;
+}
+// Icon khoá hiển thị trên từng dòng hồ sơ (Sổ chứng từ / Sổ hồ sơ vay / Sổ hợp đồng) khi bị 1 kỳ đã chốt khoá lại.
+// moduleKey dùng để nút "Mở khoá" trên hồ sơ biết phải mở kỳ nào, thuộc mảng nào.
+function lockIconHTML(lockR, moduleKey){
+  if(!lockR) return '';
+  const isAdmin = currentRole()==='Admin';
+  const title = `Hồ sơ thuộc kỳ đối soát "${lockR.period}" (${lockR.fromDate} → ${lockR.toDate}) đã chốt — ${isAdmin?'bấm để mở khoá cả kỳ':'chỉ Admin được sửa/xoá'}`;
+  if(isAdmin){
+    return `<button data-unlock-tx="${moduleKey}|${lockR.id}" title="${escAttr(title)}" style="border:none;background:none;cursor:pointer;padding:0 2px;font-size:13px" class="row-lock-toggle">🔒</button>`;
+  }
+  return `<span title="${escAttr(title)}" style="font-size:13px;cursor:default">🔒</span>`;
+}
+// Gắn sự kiện cho các icon 🔒 mở khoá trên bảng hồ sơ (Admin bấm để mở khoá cả kỳ đang khoá dòng đó).
+function wireLockToggle(tbl){
+  const MODULES = {
+    ncc: {list: ()=>state.reconciliations, entity:'Đối soát CK'},
+    nh:  {list: ()=>state.bankReconciliations, entity:'Đối soát CK (NH)'},
+    bh:  {list: ()=>state.insReconciliations, entity:'Đối soát CK (Bảo hiểm)'},
+  };
+  tbl.querySelectorAll('[data-unlock-tx]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      const [moduleKey, reconId] = btn.dataset.unlockTx.split('|');
+      const cfg = MODULES[moduleKey]; if(!cfg) return;
+      const list = cfg.list();
+      const r = list.find(x=>x.id===reconId); if(!r) return;
+      if(!confirm(`Hồ sơ này thuộc kỳ đối soát "${r.period}" đã chốt. Mở khoá CẢ KỲ này để sửa/xoá hồ sơ?`)) return;
+      unlockReconciliation(r, cfg.entity, r.period);
+      toast('Đã mở khoá kỳ "'+r.period+'"');
+      renderAll();
+    });
+  });
+}
+
 function reconCalc(r){
   const from = toDate(r.fromDate), to = toDate(r.toDate);
   if(!r.supplierId || !from || !to) return {revenue:0, rate:0, discount:0, bonus:0, totalDue:0, diff:0, stillOwed:0};
@@ -2761,7 +2937,10 @@ function renderReconcile(c){
 }
 function renderReconTable(editable){
   const tbl = document.getElementById('reconTable');
-  if(state.reconciliations.length===0){
+  const pf = partnerScopeFilter('supplierId');
+  const list = pf ? state.reconciliations.filter(pf) : state.reconciliations;
+  const isPartnerSelf = isPartnerAccount(currentUser());
+  if(list.length===0){
     tbl.outerHTML = `<div class="empty"><div class="big">Chưa có kỳ đối soát nào</div>${editable?'Thêm kỳ đối soát ở form phía trên.':''}</div>`; return;
   }
   const dis = editable?'':'disabled';
@@ -2770,23 +2949,29 @@ function renderReconTable(editable){
       <th>Kỳ</th><th class="wrap">NCC</th><th>Từ ngày</th><th>Đến ngày</th>
       <th class="num">DS đủ điều kiện</th><th>Phương pháp</th><th class="num">CK phải hưởng</th>
       <th class="num">Thưởng thêm</th><th class="num money-col">NCC xác nhận</th><th class="num money-col">Đã nhận</th>
-      <th class="num">Chênh lệch</th><th class="num">Còn phải thu</th><th>Trạng thái</th><th></th>
+      <th class="num">Chênh lệch</th><th class="num">Còn phải thu</th><th>Trạng thái</th><th>Chốt</th><th></th>
     </tr></thead>
-    <tbody>${state.reconciliations.map(r=>{
+    <tbody>${list.map(r=>{
       const s = supplierById(r.supplierId);
       const rc = reconCalc(r);
       const payments = ensureReconciliationPayments(r);
       const status = reconStatus(rc.totalDue, rc.received);
       const expanded = reconExpanded.has(r.id);
+      const lockedForMe = r.locked && currentRole()!=='Admin';
+      // NCC (tài khoản Đối tác) được tự sửa ĐÚNG ô "xác nhận" của chính mình, dù không có quyền sửa gì khác,
+      // miễn kỳ đó chưa bị khoá (đã chốt) — khoá thì chỉ Admin sửa được như bình thường.
+      const confirmedDis = ((editable && !lockedForMe) || (isPartnerSelf && !r.locked)) ? '' : 'disabled';
+      const rowDis = (editable && !lockedForMe) ? '' : 'disabled';
+      const canDelRow = editable && (!r.locked || currentRole()==='Admin');
       const mainRow = `<tr>
         <td>${r.period}</td>
         <td class="wrap">${s?s.name:'<em>(đã xoá)</em>'}</td>
         <td>${r.fromDate}</td><td>${r.toDate}</td>
         <td class="num">${fmt(rc.revenue)}</td>
         <td><span class="tag ${rc.method==='Chỉ phần vượt mốc'?'gold':''}" title="Mốc %CK: ${fmtPct(rc.rate)}">${rc.method||'—'}</span></td>
-        <td class="num">${fmt(rc.discount)}</td>
+        <td class="num">${fmt(rc.discount)}${lockMismatchNote(r, rc.totalDue)}</td>
         <td class="num" title="Tính theo Ngày báo cáo ở tab Theo dõi mốc CK, không theo Đến ngày của kỳ này">${fmt(rc.bonus)}</td>
-        <td class="num money-col"><input class="cell-edit money" data-field="confirmed" data-id="${r.id}" type="text" inputmode="numeric" value="${formatMoneyValue(r.confirmed)}" ${dis}></td>
+        <td class="num money-col"><input class="cell-edit money" data-field="confirmed" data-id="${r.id}" type="text" inputmode="numeric" value="${formatMoneyValue(r.confirmed)}" ${confirmedDis} title="${isPartnerSelf?'Bạn có thể tự xác nhận số hoa hồng của mình tại đây':''}"></td>
         <td class="num money-col">
           <button class="row-toggle-pay" data-toggle-pay="${r.id}" style="border:none;background:none;cursor:pointer;font-family:inherit;font-size:inherit;color:var(--ink);text-decoration:underline dotted;text-underline-offset:3px" title="${payments.length} lần thanh toán — bấm để xem/ghi nhận thêm">
             ${fmt(rc.received)} <span style="color:var(--slate);font-weight:400">(${payments.length})</span> ${expanded?'▾':'▸'}
@@ -2795,7 +2980,8 @@ function renderReconTable(editable){
         <td class="num" style="color:${rc.diff<0?'var(--rust)':'var(--forest)'}">${fmt(rc.diff)}</td>
         <td class="num" style="font-weight:700">${fmt(rc.stillOwed)}</td>
         <td><span class="stamp ${status.cls}">${status.label}</span></td>
-        <td>${editable?`<button class="row-del" data-del="${r.id}">✕</button>`:''}</td>
+        <td>${lockActionCellHTML(r, editable)}</td>
+        <td>${canDelRow?`<button class="row-del" data-del="${r.id}">✕</button>`:''}</td>
       </tr>`;
       if(!expanded) return mainRow;
       const payRows = payments.slice().sort((a,b)=> b.date.localeCompare(a.date)).map(p=>`
@@ -2808,7 +2994,7 @@ function renderReconTable(editable){
         </tr>`).join('');
       const detailRow = `<tr style="background:#FBFAF3">
         <td></td>
-        <td colspan="13" style="padding:12px 16px 16px">
+        <td colspan="14" style="padding:12px 16px 16px">
           <div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--slate);font-weight:600;margin-bottom:8px">Sổ nhận tiền — ${s?s.name:''} · ${r.period}</div>
           ${editable ? `
           <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:end;margin-bottom:10px">
@@ -2827,7 +3013,7 @@ function renderReconTable(editable){
       </tr>`;
       return mainRow + detailRow;
     }).join('')}</tbody>`;
-  if(editable){
+  if(editable || isPartnerSelf){
     wireCellEdits(tbl, state.reconciliations, 'Đối soát CK', r=>{ const s=supplierById(r.supplierId); return `${r.period} (${s?s.name:''})`; });
     tbl.querySelectorAll('[data-add-pay]').forEach(el=>{
       const fld = document.getElementById('pay_amount_'+el.dataset.addPay);
@@ -2842,6 +3028,30 @@ function renderReconTable(editable){
     });
   });
   if(editable){
+    tbl.querySelectorAll('[data-lock-recon]').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        const r = state.reconciliations.find(x=>x.id===btn.dataset.lockRecon);
+        if(!r) return;
+        const rc = reconCalc(r);
+        const s = supplierById(r.supplierId);
+        if(!confirm(`Chốt kỳ "${r.period}" (${s?s.name:''})?\nSố CK phải hưởng sẽ được chốt lại: ${fmt(rc.totalDue)}đ.\nMọi hồ sơ Doanh số của NCC này trong khoảng ${r.fromDate} → ${r.toDate} sẽ bị khoá sửa/xoá (trừ Admin).`)) return;
+        lockReconciliation(r, rc, 'Đối soát CK', r.period);
+        toast('Đã chốt kỳ "'+r.period+'"');
+        saveState();
+        renderAll();
+      });
+    });
+    tbl.querySelectorAll('[data-unlock-recon]').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        const r = state.reconciliations.find(x=>x.id===btn.dataset.unlockRecon);
+        if(!r) return;
+        if(!confirm(`Mở khoá kỳ "${r.period}"? Hồ sơ trong kỳ này sẽ sửa/xoá được bình thường trở lại.`)) return;
+        unlockReconciliation(r, 'Đối soát CK', r.period);
+        toast('Đã mở khoá kỳ "'+r.period+'"');
+        saveState();
+        renderAll();
+      });
+    });
     tbl.querySelectorAll('[data-add-pay]').forEach(btn=>{
       btn.addEventListener('click', ()=>{
         const id = btn.dataset.addPay;
@@ -2875,7 +3085,9 @@ function renderReconTable(editable){
     tbl.querySelectorAll('[data-del]').forEach(btn=>{
       btn.addEventListener('click', ()=>{
         const r = state.reconciliations.find(x=>x.id===btn.dataset.del);
+        if(r && r.locked && currentRole()!=='Admin'){ toast('Kỳ đã chốt — chỉ Admin được xoá'); return; }
         const s = r ? supplierById(r.supplierId) : null;
+        if(!confirm(`Xoá kỳ "${r?r.period:''}"${r&&r.locked?' (đã chốt)':''}?`)) return;
         state.reconciliations = state.reconciliations.filter(x=>x.id!==btn.dataset.del);
         logActivity('delete','Đối soát CK', `Xoá kỳ "${r?r.period:''}" (${s?s.name:''})`);
         renderAll();
@@ -3049,7 +3261,9 @@ function renderBankSuppliers(c){
 
 /* ---------------------------- Ngân hàng · Chính sách CK (điều kiện vay theo tháng) ---------------------------- */
 function renderBankPolicies(c){
-  setTitle('Chính sách CK', state.bankPolicies.length+' dòng chính sách — mỗi ngân hàng/mỗi tháng là 1 dòng, hoa hồng tính trên số tiền giải ngân');
+  const pf = partnerScopeFilter('bankId');
+  const policyCount = pf ? state.bankPolicies.filter(pf).length : state.bankPolicies.length;
+  setTitle('Chính sách CK', policyCount+' dòng chính sách — mỗi ngân hàng/mỗi tháng là 1 dòng, hoa hồng tính trên số tiền giải ngân');
   const editable = canEdit('nh_policies');
   const bankOptions = state.banks.map(b=>`<option value="${b.id}">${b.name}</option>`).join('');
   c.innerHTML = `
@@ -3110,11 +3324,12 @@ function renderBankPolicies(c){
   if(state.banks.length===0){
     tbl.outerHTML = `<div class="empty"><div class="big">Chưa có ngân hàng</div>Thêm ngân hàng ở tab "Danh mục NCC" trước.</div>`; return;
   }
-  if(state.bankPolicies.length===0){
+  const scopedPolicies = pf ? state.bankPolicies.filter(pf) : state.bankPolicies;
+  if(scopedPolicies.length===0){
     tbl.outerHTML = `<div class="empty"><div class="big">Chưa có chính sách nào</div>${editable?'Thêm chính sách ở form phía trên.':''}</div>`; return;
   }
   const dis = editable?'':'disabled';
-  const sorted = state.bankPolicies.slice().sort((a,b)=> b.month.localeCompare(a.month));
+  const sorted = scopedPolicies.slice().sort((a,b)=> b.month.localeCompare(a.month));
   tbl.innerHTML = `
     <thead><tr>
       <th class="wrap">Ngân hàng</th><th>Tháng</th><th class="num">Tỷ lệ vay tối đa</th><th class="num">TG vay tối đa</th>
@@ -3209,8 +3424,13 @@ function renderBankTransactions(c){
       const unit = lockedUnit || ensureUnit(document.getElementById('btf_unit').value);
       if(!unit){ toast('Nhập tên đơn vị trước'); return; }
       const status = document.getElementById('btf_status').value;
+      const btxDate = document.getElementById('btf_date').value || todayISO();
+      if(currentRole()!=='Admin'){
+        const lockR = lockingReconOf({bankId:bank.id, date:btxDate}, state.bankReconciliations, 'bankId');
+        if(lockR){ toast(`Ngày này thuộc kỳ đối soát "${lockR.period}" đã chốt với ${bank.name} — chỉ Admin được ghi nhận thêm`); return; }
+      }
       state.bankTransactions.push({
-        id: uid('bt'), date: document.getElementById('btf_date').value || todayISO(),
+        id: uid('bt'), date: btxDate,
         unit, bankId: bank.id, customer: document.getElementById('btf_customer').value.trim(),
         phone: document.getElementById('btf_phone').value.trim(),
         vehicle: document.getElementById('btf_vehicle').value.trim(),
@@ -3235,7 +3455,8 @@ function renderBankTxTable(editable){
   const note = document.getElementById('btxFilterNote');
   const unitFilter = (bankTxUnitFilter||'').trim().toLowerCase();
   const bankFilter = (bankTxBankFilter||'').trim().toLowerCase();
-  const all = state.bankTransactions.slice().sort((a,b)=> b.date.localeCompare(a.date));
+  const pf = partnerScopeFilter('bankId');
+  const all = (pf ? state.bankTransactions.filter(pf) : state.bankTransactions).slice().sort((a,b)=> b.date.localeCompare(a.date));
   const sorted = all.filter(t=>{
     if(unitFilter && !(t.unit||'').trim().toLowerCase().includes(unitFilter)) return false;
     if(bankFilter){ const b = bankById(t.bankId); if(!b || !b.name.trim().toLowerCase().includes(bankFilter)) return false; }
@@ -3276,16 +3497,19 @@ function renderBankTxTable(editable){
       const commCell = t.status!=='Đã giải ngân'
         ? '<span class="comm-cell zero">—</span>'
         : (pol ? `<span class="comm-cell has-value">${fmt(comm)}</span>` : `<span class="comm-cell warn-empty" title="Chưa có chính sách cho ${monthLabel(monthKey(t.date))}">0đ · chưa có CS</span>`);
-      const dis = editable?'':'disabled';
+      const lockR = lockingReconOf(t, state.bankReconciliations, 'bankId');
+      const lockedForMe = !!lockR && currentRole()!=='Admin';
+      const dis = (editable && !lockedForMe)?'':'disabled';
+      const canDelRow = editable && !lockedForMe;
       return `<tr>
         <td>
           <div class="stack-cell">
             ${editable
-              ? `<input class="cell-edit mini-field" data-field="date" data-id="${t.id}" type="date" value="${t.date}">`
+              ? `<input class="cell-edit mini-field" data-field="date" data-id="${t.id}" type="date" value="${t.date}" ${dis}>`
               : `<div class="mini-field">${new Date(t.date+'T00:00:00').toLocaleDateString('vi-VN')}</div>`}
-            <div class="meta-line">${t.unit} → ${b?b.name:'<em>(đã xoá)</em>'}</div>
+            <div class="meta-line">${t.unit} → ${b?b.name:'<em>(đã xoá)</em>'} ${lockIconHTML(lockR,'nh')}</div>
             ${editable
-              ? `<input class="cell-edit mini-field muted" data-field="refCode" data-id="${t.id}" value="${escAttr(t.refCode||'')}" placeholder="Mã hồ sơ NH">`
+              ? `<input class="cell-edit mini-field muted" data-field="refCode" data-id="${t.id}" value="${escAttr(t.refCode||'')}" ${dis} placeholder="Mã hồ sơ NH">`
               : (t.refCode?`<div class="meta-line">Mã HS: ${escAttr(t.refCode)}</div>`:'')}
           </div>
         </td>
@@ -3297,12 +3521,12 @@ function renderBankTxTable(editable){
           </div>
         </td>
         <td class="num"><input class="cell-edit num money mini-field" data-field="loanAmount" data-id="${t.id}" type="text" inputmode="numeric" value="${formatMoneyValue(t.loanAmount)}" ${dis} style="text-align:right;font-weight:600;min-width:120px"></td>
-        <td>${editable
+        <td>${(editable && !lockedForMe)
           ? `<select class="cell-edit status-select ${statusClass(t.status)}" data-status-id="${t.id}">${BANK_TX_STATUSES.map(s=>`<option ${t.status===s?'selected':''}>${s}</option>`).join('')}</select>`
           : `<span class="stamp ${t.status==='Đã giải ngân'?'ok':(t.status==='Từ chối'?'warn':'pending')}">${t.status}</span>`}</td>
         <td class="num">${commCell}</td>
         <td class="meta-line">${creator?creator.name:'<em>—</em>'}</td>
-        <td>${editable?`<button class="row-del" data-del="${t.id}">✕</button>`:''}</td>
+        <td>${canDelRow?`<button class="row-del" data-del="${t.id}">✕</button>`:''}</td>
       </tr>`;
     }).join('')}</tbody>`;
   if(editable){
@@ -3323,9 +3547,11 @@ function renderBankTxTable(editable){
       });
     });
   }
+  wireLockToggle(tbl);
   tbl.querySelectorAll('[data-del]').forEach(btn=>{
     btn.addEventListener('click', ()=>{
       const t = state.bankTransactions.find(x=>x.id===btn.dataset.del);
+      if(t && isRecordLockedForMe(t, state.bankReconciliations, 'bankId')){ toast('Hồ sơ thuộc kỳ đối soát đã chốt — chỉ Admin được xoá'); return; }
       const b = t ? bankById(t.bankId) : null;
       state.bankTransactions = state.bankTransactions.filter(x=>x.id!==btn.dataset.del);
       logActivity('delete','Doanh số (NH)', `Xoá hồ sơ (${b?b.name:''}, ${t?fmt(t.loanAmount):''}đ)`);
@@ -3419,7 +3645,10 @@ function renderBankReconcile(c){
 function renderBankReconTable(editable){
   const tbl = document.getElementById('bankReconTable');
   if(!tbl) return;
-  if(state.bankReconciliations.length===0){
+  const pf = partnerScopeFilter('bankId');
+  const list = pf ? state.bankReconciliations.filter(pf) : state.bankReconciliations;
+  const isPartnerSelf = isPartnerAccount(currentUser());
+  if(list.length===0){
     tbl.outerHTML = `<div class="empty"><div class="big">Chưa có kỳ đối soát nào</div>${editable?'Thêm kỳ đối soát ở form phía trên.':''}</div>`; return;
   }
   const dis = editable?'':'disabled';
@@ -3428,21 +3657,25 @@ function renderBankReconTable(editable){
       <th>Kỳ</th><th class="wrap">Ngân hàng</th><th>Từ ngày</th><th>Đến ngày</th>
       <th class="num">Số tiền giải ngân</th><th class="num">Hoa hồng phải hưởng<br><span style="font-weight:400;text-transform:none;font-size:10px">(hệ thống tự tính)</span></th>
       <th class="num money-col">NH xác nhận</th><th class="num money-col">Đã nhận</th>
-      <th class="num">Chênh lệch</th><th class="num">Còn phải thu</th><th>Trạng thái</th><th></th>
+      <th class="num">Chênh lệch</th><th class="num">Còn phải thu</th><th>Trạng thái</th><th>Chốt</th><th></th>
     </tr></thead>
-    <tbody>${state.bankReconciliations.map(r=>{
+    <tbody>${list.map(r=>{
       const b = bankById(r.bankId);
       const rc = bankReconCalc(r);
       const payments = ensureReconciliationPayments(r);
       const status = reconStatus(rc.dueForCalc, rc.received);
       const expanded = bankReconExpanded.has(r.id);
+      const lockedForMe = r.locked && currentRole()!=='Admin';
+      const confirmedDis = ((editable && !lockedForMe) || (isPartnerSelf && !r.locked)) ? '' : 'disabled';
+      const rowDis = (editable && !lockedForMe) ? '' : 'disabled';
+      const canDelRow = editable && (!r.locked || currentRole()==='Admin');
       const mainRow = `<tr>
         <td>${r.period}</td>
         <td class="wrap">${b?b.name:'<em>(đã xoá)</em>'}</td>
         <td>${r.fromDate}</td><td>${r.toDate}</td>
         <td class="num">${fmt(rc.loan)}${rc.matchCount===0 ? `<div style="font-size:10px;font-weight:400;color:var(--rust)">${rc.totalTxForBank===0 ? `NH này chưa có hồ sơ vay nào ở tab Doanh số` : `0/${rc.totalTxForBank} hồ sơ khớp "Đã giải ngân" &amp; khoảng ngày`}</div>` : `<div style="font-size:10px;font-weight:400;color:var(--slate)">${rc.matchCount} hồ sơ khớp</div>`}</td>
-        <td class="num" style="font-weight:700">${fmt(rc.totalDue)}</td>
-        <td class="num money-col"><input class="cell-edit money" data-field="confirmed" data-id="${r.id}" type="text" inputmode="numeric" value="${formatMoneyValue(r.confirmed)}" ${dis}></td>
+        <td class="num" style="font-weight:700">${fmt(rc.totalDue)}${lockMismatchNote(r, rc.totalDue)}</td>
+        <td class="num money-col"><input class="cell-edit money" data-field="confirmed" data-id="${r.id}" type="text" inputmode="numeric" value="${formatMoneyValue(r.confirmed)}" ${confirmedDis} title="${isPartnerSelf?'Bạn có thể tự xác nhận số hoa hồng của mình tại đây':''}"></td>
         <td class="num money-col">
           <button class="row-toggle-pay" data-toggle-pay="${r.id}" style="border:none;background:none;cursor:pointer;font-family:inherit;font-size:inherit;color:var(--ink);text-decoration:underline dotted;text-underline-offset:3px" title="${payments.length} lần thanh toán — bấm để xem/ghi nhận thêm">
             ${fmt(rc.received)} <span style="color:var(--slate);font-weight:400">(${payments.length})</span> ${expanded?'▾':'▸'}
@@ -3451,7 +3684,8 @@ function renderBankReconTable(editable){
         <td class="num" style="color:${rc.diff<0?'var(--rust)':'var(--forest)'}">${fmt(rc.diff)}</td>
         <td class="num" style="font-weight:700">${fmt(rc.stillOwed)}</td>
         <td><span class="stamp ${status.cls}">${status.label}</span></td>
-        <td>${editable?`<button class="row-del" data-del="${r.id}">✕</button>`:''}</td>
+        <td>${lockActionCellHTML(r, editable)}</td>
+        <td>${canDelRow?`<button class="row-del" data-del="${r.id}">✕</button>`:''}</td>
       </tr>`;
       if(!expanded) return mainRow;
       const payRows = payments.slice().sort((a,b)=> b.date.localeCompare(a.date)).map(p=>`
@@ -3464,7 +3698,7 @@ function renderBankReconTable(editable){
         </tr>`).join('');
       const detailRow = `<tr style="background:#FBFAF3">
         <td></td>
-        <td colspan="11" style="padding:12px 16px 16px">
+        <td colspan="12" style="padding:12px 16px 16px">
           <div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--slate);font-weight:600;margin-bottom:8px">Sổ nhận tiền — ${b?b.name:''} · ${r.period}</div>
           ${editable ? `
           <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:end;margin-bottom:10px">
@@ -3483,7 +3717,7 @@ function renderBankReconTable(editable){
       </tr>`;
       return mainRow + detailRow;
     }).join('')}</tbody>`;
-  if(editable){
+  if(editable || isPartnerSelf){
     wireCellEdits(tbl, state.bankReconciliations, 'Đối soát CK (NH)', r=>{ const b=bankById(r.bankId); return `${r.period} (${b?b.name:''})`; });
     tbl.querySelectorAll('[data-add-pay]').forEach(el=>{
       const fld = document.getElementById('bpay_amount_'+el.dataset.addPay);
@@ -3498,6 +3732,30 @@ function renderBankReconTable(editable){
     });
   });
   if(editable){
+    tbl.querySelectorAll('[data-lock-recon]').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        const r = state.bankReconciliations.find(x=>x.id===btn.dataset.lockRecon);
+        if(!r) return;
+        const rc = bankReconCalc(r);
+        const b = bankById(r.bankId);
+        if(!confirm(`Chốt kỳ "${r.period}" (${b?b.name:''})?\nHoa hồng phải hưởng sẽ được chốt lại: ${fmt(rc.totalDue)}đ.\nMọi hồ sơ vay của ngân hàng này trong khoảng ${r.fromDate} → ${r.toDate} sẽ bị khoá sửa/xoá (trừ Admin).`)) return;
+        lockReconciliation(r, rc, 'Đối soát CK (NH)', r.period);
+        toast('Đã chốt kỳ "'+r.period+'"');
+        saveState();
+        renderAll();
+      });
+    });
+    tbl.querySelectorAll('[data-unlock-recon]').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        const r = state.bankReconciliations.find(x=>x.id===btn.dataset.unlockRecon);
+        if(!r) return;
+        if(!confirm(`Mở khoá kỳ "${r.period}"? Hồ sơ trong kỳ này sẽ sửa/xoá được bình thường trở lại.`)) return;
+        unlockReconciliation(r, 'Đối soát CK (NH)', r.period);
+        toast('Đã mở khoá kỳ "'+r.period+'"');
+        saveState();
+        renderAll();
+      });
+    });
     tbl.querySelectorAll('[data-add-pay]').forEach(btn=>{
       btn.addEventListener('click', ()=>{
         const id = btn.dataset.addPay;
@@ -3531,7 +3789,9 @@ function renderBankReconTable(editable){
     tbl.querySelectorAll('[data-del]').forEach(btn=>{
       btn.addEventListener('click', ()=>{
         const r = state.bankReconciliations.find(x=>x.id===btn.dataset.del);
+        if(r && r.locked && currentRole()!=='Admin'){ toast('Kỳ đã chốt — chỉ Admin được xoá'); return; }
         const b = r ? bankById(r.bankId) : null;
+        if(!confirm(`Xoá kỳ "${r?r.period:''}"${r&&r.locked?' (đã chốt)':''}?`)) return;
         state.bankReconciliations = state.bankReconciliations.filter(x=>x.id!==btn.dataset.del);
         logActivity('delete','Đối soát CK (NH)', `Xoá kỳ "${r?r.period:''}" (${b?b.name:''})`);
         renderAll();
@@ -3665,10 +3925,13 @@ function renderInsSuppliers(c){
 
 /* ---------------------------- Bảo hiểm · Biểu phí + Tra cứu/so sánh nhanh ---------------------------- */
 function renderInsPolicies(c){
-  setTitle('Biểu phí bảo hiểm', state.insRates.length+' khoảng giá trị xe, tra cứu & so sánh phí giữa các NCC theo thời gian thực');
+  const pf = partnerScopeFilter('insurerId');
+  const scopedRatesCount = pf ? state.insRates.filter(pf).length : state.insRates.length;
+  setTitle('Biểu phí bảo hiểm', scopedRatesCount+' khoảng giá trị xe, tra cứu & so sánh phí giữa các NCC theo thời gian thực');
   const editable = canEdit('bh_policies');
   const insOptions = state.insurers.map(i=>`<option value="${i.id}">${i.name}</option>`).join('');
   c.innerHTML = `
+    ${pf ? '' : `
     <div class="panel">
       <div class="panel-head"><div><h2>Tra cứu &amp; so sánh phí nhanh</h2>
         <div class="desc">Nhập giá trị xe và tuổi xe — hệ thống tự dò đúng khoảng của từng NCC và xếp hạng từ rẻ nhất, giúp chọn NCC khoa học thay vì tra tay từng bảng.</div></div></div>
@@ -3680,7 +3943,7 @@ function renderInsPolicies(c){
         </div>
         <div id="icResult" style="margin-top:14px"></div>
       </div>
-    </div>
+    </div>`}
     ${editable ? `
     <div class="panel">
       <div class="panel-head"><div><h2>Thêm khoảng giá trị xe</h2>
@@ -3705,8 +3968,9 @@ function renderInsPolicies(c){
     </div>
   `;
 
-  attachMoneyFormatting(document.getElementById('ic_value'));
-  document.getElementById('icRunBtn').addEventListener('click', ()=>{
+  if(!pf){
+    attachMoneyFormatting(document.getElementById('ic_value'));
+    document.getElementById('icRunBtn').addEventListener('click', ()=>{
     const value = parseMoneyInput(document.getElementById('ic_value').value);
     const age = Number(document.getElementById('ic_age').value)||0;
     const box = document.getElementById('icResult');
@@ -3752,7 +4016,8 @@ function renderInsPolicies(c){
       </table></div>
       <div class="helper" style="margin-top:8px">Tuổi xe <b>${ageLabel}</b> · Giá trị xe <b>${fmt(value)}đ</b>. Phí ước tính = Giá trị xe × Tỷ lệ phí, chưa gồm thuế/phụ phí (nếu có).</div>
     `;
-  });
+    });
+  }
 
   if(editable){
     document.getElementById('addInsRateBtn').addEventListener('click', ()=>{
@@ -3776,14 +4041,15 @@ function renderInsPolicies(c){
   }
 
   const tbl = document.getElementById('insRateTable');
-  if(state.insurers.length===0){
+  const insurersScope = pf ? state.insurers.filter(i=>pf({insurerId:i.id})) : state.insurers;
+  if(insurersScope.length===0){
     tbl.outerHTML = `<div class="empty"><div class="big">Chưa có NCC bảo hiểm</div>Thêm NCC ở tab "Danh sách NCC" trước.</div>`; return;
   }
-  if(state.insRates.length===0){
+  if(scopedRatesCount===0){
     tbl.outerHTML = `<div class="empty"><div class="big">Chưa có biểu phí nào</div>${editable?'Thêm khoảng giá trị ở form phía trên.':''}</div>`; return;
   }
   const dis = editable?'':'disabled';
-  const grouped = state.insurers.map(ins=>({ins, rows: insRateRowsFor(ins.id)})).filter(g=>g.rows.length);
+  const grouped = insurersScope.map(ins=>({ins, rows: insRateRowsFor(ins.id)})).filter(g=>g.rows.length);
   const pctCell = (row,key) => row[key]==null
     ? `<span class="comm-cell zero">—</span>`
     : `<input class="cell-edit num pct" data-field="${key}" data-id="${row.id}" type="number" step="0.01" value="${round2(row[key]*100)}" ${dis} style="width:56px">`;
@@ -4028,8 +4294,13 @@ function renderInsTransactions(c){
       const unit = lockedUnit || ensureUnit(document.getElementById('itf_unit').value);
       if(!unit){ toast('Nhập tên đơn vị trước'); return; }
       const status = document.getElementById('itf_status').value;
+      const itxDate = document.getElementById('itf_date').value || todayISO();
+      if(currentRole()!=='Admin'){
+        const lockR = lockingReconOf({insurerId:ins.id, date:itxDate}, state.insReconciliations, 'insurerId');
+        if(lockR){ toast(`Ngày này thuộc kỳ đối soát "${lockR.period}" đã chốt với ${ins.name} — chỉ Admin được ghi nhận thêm`); return; }
+      }
       state.insTransactions.push({
-        id: uid('it'), date: document.getElementById('itf_date').value || todayISO(),
+        id: uid('it'), date: itxDate,
         unit, insurerId: ins.id, product: document.getElementById('itf_product').value,
         customer: document.getElementById('itf_customer').value.trim(),
         phone: document.getElementById('itf_phone').value.trim(),
@@ -4054,7 +4325,8 @@ function renderInsTxTable(editable){
   const note = document.getElementById('itxFilterNote');
   const unitFilter = (insTxUnitFilter||'').trim().toLowerCase();
   const insFilter = (insTxInsurerFilter||'').trim().toLowerCase();
-  const all = state.insTransactions.slice().sort((a,b)=> b.date.localeCompare(a.date));
+  const pf = partnerScopeFilter('insurerId');
+  const all = (pf ? state.insTransactions.filter(pf) : state.insTransactions).slice().sort((a,b)=> b.date.localeCompare(a.date));
   const sorted = all.filter(t=>{
     if(unitFilter && !(t.unit||'').trim().toLowerCase().includes(unitFilter)) return false;
     if(insFilter){ const ins = insurerById(t.insurerId); if(!ins || !ins.name.trim().toLowerCase().includes(insFilter)) return false; }
@@ -4094,16 +4366,19 @@ function renderInsTxTable(editable){
       const commCell = t.status!=='Đã cấp đơn'
         ? '<span class="comm-cell zero">—</span>'
         : `<span class="comm-cell has-value">${fmt(comm)}</span>`;
-      const dis = editable?'':'disabled';
+      const lockR = lockingReconOf(t, state.insReconciliations, 'insurerId');
+      const lockedForMe = !!lockR && currentRole()!=='Admin';
+      const dis = (editable && !lockedForMe)?'':'disabled';
+      const canDelRow = editable && !lockedForMe;
       return `<tr>
         <td>
           <div class="stack-cell">
             ${editable
-              ? `<input class="cell-edit mini-field" data-field="date" data-id="${t.id}" type="date" value="${t.date}">`
+              ? `<input class="cell-edit mini-field" data-field="date" data-id="${t.id}" type="date" value="${t.date}" ${dis}>`
               : `<div class="mini-field">${new Date(t.date+'T00:00:00').toLocaleDateString('vi-VN')}</div>`}
-            <div class="meta-line">${t.unit} → ${ins?ins.name:'<em>(đã xoá)</em>'} · <span class="tag">${t.product||'BHVC'}</span></div>
+            <div class="meta-line">${t.unit} → ${ins?ins.name:'<em>(đã xoá)</em>'} · <span class="tag">${t.product||'BHVC'}</span> ${lockIconHTML(lockR,'bh')}</div>
             ${editable
-              ? `<input class="cell-edit mini-field muted" data-field="policyNo" data-id="${t.id}" value="${escAttr(t.policyNo||'')}" placeholder="Số đơn bảo hiểm">`
+              ? `<input class="cell-edit mini-field muted" data-field="policyNo" data-id="${t.id}" value="${escAttr(t.policyNo||'')}" ${dis} placeholder="Số đơn bảo hiểm">`
               : (t.policyNo?`<div class="meta-line">Số đơn: ${escAttr(t.policyNo)}</div>`:'')}
           </div>
         </td>
@@ -4115,12 +4390,12 @@ function renderInsTxTable(editable){
           </div>
         </td>
         <td class="num"><input class="cell-edit num money mini-field" data-field="premiumAmount" data-id="${t.id}" type="text" inputmode="numeric" value="${formatMoneyValue(t.premiumAmount)}" ${dis} style="text-align:right;font-weight:600;min-width:120px"></td>
-        <td>${editable
+        <td>${(editable && !lockedForMe)
           ? `<select class="cell-edit status-select ${statusClass(t.status)}" data-status-id="${t.id}">${INS_TX_STATUSES.map(s=>`<option ${t.status===s?'selected':''}>${s}</option>`).join('')}</select>`
           : `<span class="stamp ${t.status==='Đã cấp đơn'?'ok':(t.status==='Huỷ'?'warn':'pending')}">${t.status}</span>`}</td>
         <td class="num">${commCell}</td>
         <td class="meta-line">${creator?creator.name:'<em>—</em>'}</td>
-        <td>${editable?`<button class="row-del" data-del="${t.id}">✕</button>`:''}</td>
+        <td>${canDelRow?`<button class="row-del" data-del="${t.id}">✕</button>`:''}</td>
       </tr>`;
     }).join('')}</tbody>`;
   if(editable){
@@ -4141,9 +4416,11 @@ function renderInsTxTable(editable){
       });
     });
   }
+  wireLockToggle(tbl);
   tbl.querySelectorAll('[data-del]').forEach(btn=>{
     btn.addEventListener('click', ()=>{
       const t = state.insTransactions.find(x=>x.id===btn.dataset.del);
+      if(t && isRecordLockedForMe(t, state.insReconciliations, 'insurerId')){ toast('Hợp đồng thuộc kỳ đối soát đã chốt — chỉ Admin được xoá'); return; }
       const ins = t ? insurerById(t.insurerId) : null;
       state.insTransactions = state.insTransactions.filter(x=>x.id!==btn.dataset.del);
       logActivity('delete','Doanh số (Bảo hiểm)', `Xoá hợp đồng (${ins?ins.name:''}, ${t?fmt(t.premiumAmount):''}đ)`);
@@ -4402,7 +4679,10 @@ function renderInsReconcile(c){
 }
 function renderInsReconTable(editable){
   const tbl = document.getElementById('insReconTable');
-  if(state.insReconciliations.length===0){
+  const pf = partnerScopeFilter('insurerId');
+  const list = pf ? state.insReconciliations.filter(pf) : state.insReconciliations;
+  const isPartnerSelf = isPartnerAccount(currentUser());
+  if(list.length===0){
     tbl.outerHTML = `<div class="empty"><div class="big">Chưa có kỳ đối soát nào</div>${editable?'Thêm kỳ đối soát ở form phía trên.':''}</div>`; return;
   }
   const dis = editable?'':'disabled';
@@ -4411,21 +4691,25 @@ function renderInsReconTable(editable){
       <th>Kỳ</th><th class="wrap">NCC bảo hiểm</th><th>Từ ngày</th><th>Đến ngày</th>
       <th class="num">Phí bảo hiểm thu</th><th class="num">Hoa hồng phải hưởng</th>
       <th class="num money-col">NCC xác nhận</th><th class="num money-col">Đã nhận</th>
-      <th class="num">Chênh lệch</th><th class="num">Còn phải thu</th><th>Trạng thái</th><th></th>
+      <th class="num">Chênh lệch</th><th class="num">Còn phải thu</th><th>Trạng thái</th><th>Chốt</th><th></th>
     </tr></thead>
-    <tbody>${state.insReconciliations.map(r=>{
+    <tbody>${list.map(r=>{
       const ins = insurerById(r.insurerId);
       const rc = insReconCalc(r);
       const payments = ensureReconciliationPayments(r);
       const status = reconStatus(rc.totalDue, rc.received);
       const expanded = insReconExpanded.has(r.id);
+      const lockedForMe = r.locked && currentRole()!=='Admin';
+      const confirmedDis = ((editable && !lockedForMe) || (isPartnerSelf && !r.locked)) ? '' : 'disabled';
+      const rowDis = (editable && !lockedForMe) ? '' : 'disabled';
+      const canDelRow = editable && (!r.locked || currentRole()==='Admin');
       const mainRow = `<tr>
         <td>${r.period}</td>
         <td class="wrap">${ins?ins.name:'<em>(đã xoá)</em>'}</td>
         <td>${r.fromDate}</td><td>${r.toDate}</td>
         <td class="num">${fmt(rc.premium)}</td>
-        <td class="num" style="font-weight:700">${fmt(rc.totalDue)}</td>
-        <td class="num money-col"><input class="cell-edit money" data-field="confirmed" data-id="${r.id}" type="text" inputmode="numeric" value="${formatMoneyValue(r.confirmed)}" ${dis}></td>
+        <td class="num" style="font-weight:700">${fmt(rc.totalDue)}${lockMismatchNote(r, rc.totalDue)}</td>
+        <td class="num money-col"><input class="cell-edit money" data-field="confirmed" data-id="${r.id}" type="text" inputmode="numeric" value="${formatMoneyValue(r.confirmed)}" ${confirmedDis} title="${isPartnerSelf?'Bạn có thể tự xác nhận số hoa hồng của mình tại đây':''}"></td>
         <td class="num money-col">
           <button class="row-toggle-pay" data-toggle-pay="${r.id}" style="border:none;background:none;cursor:pointer;font-family:inherit;font-size:inherit;color:var(--ink);text-decoration:underline dotted;text-underline-offset:3px" title="${payments.length} lần thanh toán — bấm để xem/ghi nhận thêm">
             ${fmt(rc.received)} <span style="color:var(--slate);font-weight:400">(${payments.length})</span> ${expanded?'▾':'▸'}
@@ -4434,7 +4718,8 @@ function renderInsReconTable(editable){
         <td class="num" style="color:${rc.diff<0?'var(--rust)':'var(--forest)'}">${fmt(rc.diff)}</td>
         <td class="num" style="font-weight:700">${fmt(rc.stillOwed)}</td>
         <td><span class="stamp ${status.cls}">${status.label}</span></td>
-        <td>${editable?`<button class="row-del" data-del="${r.id}">✕</button>`:''}</td>
+        <td>${lockActionCellHTML(r, editable)}</td>
+        <td>${canDelRow?`<button class="row-del" data-del="${r.id}">✕</button>`:''}</td>
       </tr>`;
       if(!expanded) return mainRow;
       const payRows = payments.slice().sort((a,b)=> b.date.localeCompare(a.date)).map(p=>`
@@ -4447,7 +4732,7 @@ function renderInsReconTable(editable){
         </tr>`).join('');
       const detailRow = `<tr style="background:#FBFAF3">
         <td></td>
-        <td colspan="11" style="padding:12px 16px 16px">
+        <td colspan="12" style="padding:12px 16px 16px">
           <div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--slate);font-weight:600;margin-bottom:8px">Sổ nhận tiền — ${ins?ins.name:''} · ${r.period}</div>
           ${editable ? `
           <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:end;margin-bottom:10px">
@@ -4466,7 +4751,7 @@ function renderInsReconTable(editable){
       </tr>`;
       return mainRow + detailRow;
     }).join('')}</tbody>`;
-  if(editable){
+  if(editable || isPartnerSelf){
     wireCellEdits(tbl, state.insReconciliations, 'Đối soát CK (Bảo hiểm)', r=>{ const ins=insurerById(r.insurerId); return `${r.period} (${ins?ins.name:''})`; });
     tbl.querySelectorAll('[data-add-pay]').forEach(el=>{
       const fld = document.getElementById('irpay_amount_'+el.dataset.addPay);
@@ -4481,6 +4766,30 @@ function renderInsReconTable(editable){
     });
   });
   if(editable){
+    tbl.querySelectorAll('[data-lock-recon]').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        const r = state.insReconciliations.find(x=>x.id===btn.dataset.lockRecon);
+        if(!r) return;
+        const rc = insReconCalc(r);
+        const ins = insurerById(r.insurerId);
+        if(!confirm(`Chốt kỳ "${r.period}" (${ins?ins.name:''})?\nHoa hồng phải hưởng sẽ được chốt lại: ${fmt(rc.totalDue)}đ.\nMọi hợp đồng của NCC bảo hiểm này trong khoảng ${r.fromDate} → ${r.toDate} sẽ bị khoá sửa/xoá (trừ Admin).`)) return;
+        lockReconciliation(r, rc, 'Đối soát CK (Bảo hiểm)', r.period);
+        toast('Đã chốt kỳ "'+r.period+'"');
+        saveState();
+        renderAll();
+      });
+    });
+    tbl.querySelectorAll('[data-unlock-recon]').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        const r = state.insReconciliations.find(x=>x.id===btn.dataset.unlockRecon);
+        if(!r) return;
+        if(!confirm(`Mở khoá kỳ "${r.period}"? Hồ sơ trong kỳ này sẽ sửa/xoá được bình thường trở lại.`)) return;
+        unlockReconciliation(r, 'Đối soát CK (Bảo hiểm)', r.period);
+        toast('Đã mở khoá kỳ "'+r.period+'"');
+        saveState();
+        renderAll();
+      });
+    });
     tbl.querySelectorAll('[data-add-pay]').forEach(btn=>{
       btn.addEventListener('click', ()=>{
         const id = btn.dataset.addPay;
@@ -4514,7 +4823,9 @@ function renderInsReconTable(editable){
     tbl.querySelectorAll('[data-del]').forEach(btn=>{
       btn.addEventListener('click', ()=>{
         const r = state.insReconciliations.find(x=>x.id===btn.dataset.del);
+        if(r && r.locked && currentRole()!=='Admin'){ toast('Kỳ đã chốt — chỉ Admin được xoá'); return; }
         const ins = r ? insurerById(r.insurerId) : null;
+        if(!confirm(`Xoá kỳ "${r?r.period:''}"${r&&r.locked?' (đã chốt)':''}?`)) return;
         state.insReconciliations = state.insReconciliations.filter(x=>x.id!==btn.dataset.del);
         logActivity('delete','Đối soát CK (Bảo hiểm)', `Xoá kỳ "${r?r.period:''}" (${ins?ins.name:''})`);
         renderAll();
@@ -4708,19 +5019,26 @@ function renderSettings(c){
 
 /* ---------------------------- Quản trị tài khoản (Admin) ---------------------------- */
 function renderAccounts(c){
-  setTitle('Quản trị tài khoản', state.accounts.length+' tài khoản — phân quyền theo vai trò & đơn vị phụ trách');
+  setTitle('Quản trị tài khoản', state.accounts.length+' tài khoản — phân quyền theo vai trò, module & đơn vị phụ trách');
   c.innerHTML = `
     <div class="panel">
       <div class="panel-head"><div><h2>Thêm tài khoản</h2>
       <div class="desc">Đây là nơi DUY NHẤT tạo được tài khoản mới — màn đăng nhập không còn cho tự tạo. Gõ tên đơn vị thực tế để tự khoá đúng đơn vị khi tài khoản đó nhập Doanh số — đơn vị mới sẽ tự được thêm vào hệ thống.</div></div></div>
       <div class="panel-body">
         <div class="form-grid">
+          <div class="field" style="grid-column:1/-1">
+            <label>Loại tài khoản</label>
+            <select id="af_kind">
+              <option value="internal">Nội bộ (nhân viên công ty)</option>
+              <option value="partner">Đối tác — NCC/Ngân hàng/Bảo hiểm tự đăng nhập</option>
+            </select>
+          </div>
           <div class="field"><label>Tên hiển thị</label><input id="af_name" placeholder="VD: Trần Thị B"></div>
           <div class="field"><label>Tài khoản (đăng nhập)</label><input id="af_username" placeholder="VD: tranthib — để trống sẽ tự gợi ý theo Tên"></div>
-          <div class="field"><label>Vai trò</label>
-            <select id="af_role">${ROLES.map(r=>`<option>${r}</option>`).join('')}</select>
+          <div class="field" id="af_role_field"><label>Vai trò</label>
+            <select id="af_role">${ROLES.filter(r=>r!=='Đối tác').map(r=>`<option>${r}</option>`).join('')}</select>
           </div>
-          <div class="field">
+          <div class="field" id="af_unit_field">
             <label>Đơn vị phụ trách</label>
             <input id="af_unit" list="af_unit_list" placeholder="Gõ tên đơn vị thực tế...">
             ${unitDatalistHTML('af_unit_list')}
@@ -4729,9 +5047,26 @@ function renderAccounts(c){
             <label>Mật khẩu (tuỳ chọn)</label>
             <input id="af_password" type="password" autocomplete="new-password" placeholder="Để trống nếu không cần mật khẩu">
           </div>
+          <div class="field" id="af_modules_field" style="grid-column:1/-1">
+            <label>Module được phép dùng</label>
+            <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:6px">
+              ${MODULES.map(m=>`<label style="display:flex;align-items:center;gap:6px;font-weight:400;cursor:pointer">
+                <input type="checkbox" class="af_module" value="${m.id}" checked> ${m.label}
+              </label>`).join('')}
+            </div>
+          </div>
+          <div class="field" id="af_partner_module_field" style="display:none">
+            <label>Module đối tác</label>
+            <select id="af_partner_module">${MODULES.map(m=>`<option value="${m.id}">${m.label}</option>`).join('')}</select>
+          </div>
+          <div class="field" id="af_partner_entity_field" style="display:none">
+            <label>Đúng NCC / Ngân hàng / Bảo hiểm</label>
+            <select id="af_partner_entity"></select>
+          </div>
           <button class="btn btn-primary" id="addAccountBtn">+ Thêm tài khoản</button>
         </div>
-        <div class="helper">Mỗi tài khoản có <b>Tên hiển thị</b> (hiện trên giao diện, Nhật ký hoạt động...) và <b>Tài khoản</b> riêng (dùng để gõ vào ô "Tên đăng nhập" ở màn đăng nhập) — hai thứ có thể khác nhau, ví dụ Tên hiển thị "Thủ kho TTB" nhưng Tài khoản đăng nhập là "thukhottb". Đặt mật khẩu cho tài khoản nào thì tài khoản đó sẽ phải nhập đúng mật khẩu ở màn đăng nhập. Để trống ô mật khẩu = đăng nhập không cần mật khẩu (như trước đây). Đây vẫn là "hàng rào mềm" — không phải bảo mật thật sự vì app chạy tĩnh trên trình duyệt.</div>
+        <div class="helper">Mỗi tài khoản có <b>Tên hiển thị</b> (hiện trên giao diện, Nhật ký hoạt động...) và <b>Tài khoản</b> riêng (dùng để gõ vào ô "Tên đăng nhập" ở màn đăng nhập) — hai thứ có thể khác nhau, ví dụ Tên hiển thị "Thủ kho TTB" nhưng Tài khoản đăng nhập là "thukhottb". Đặt mật khẩu cho tài khoản nào thì tài khoản đó sẽ phải nhập đúng mật khẩu ở màn đăng nhập. Để trống ô mật khẩu = đăng nhập không cần mật khẩu (như trước đây). "Module được phép dùng" quyết định tài khoản đó thấy được những tab nào (Admin luôn thấy đủ mọi module bất kể chọn gì ở đây).<br>
+        <b>Tài khoản Đối tác</b>: dùng cho chính NCC/Ngân hàng/hãng Bảo hiểm tự đăng nhập xem dữ liệu của họ — chỉ thấy đúng module đã chọn, chỉ thấy Chính sách + Doanh số/Đối soát CK của ĐÚNG đối tác được gán (không thấy Dashboard, Danh mục toàn bộ đối tác, hay Phân bổ đơn vị vì các mục đó liệt kê nhiều đối tác cùng lúc), và được tự sửa ô "xác nhận" hoa hồng của chính mình ở Đối soát CK — mọi thứ khác chỉ xem, không sửa được gì khác. Đây vẫn là "hàng rào mềm" — không phải bảo mật thật sự vì app chạy tĩnh trên trình duyệt.</div>
       </div>
     </div>
     <div class="panel">
@@ -4747,7 +5082,7 @@ function renderAccounts(c){
       <div class="panel-head"><div><h2>Phân quyền theo vai trò</h2></div></div>
       <div class="panel-body">
         <table class="data">
-          <thead><tr><th>Khu vực</th><th>Admin</th><th>Quản lý</th><th>Nhân viên</th></tr></thead>
+          <thead><tr><th>Khu vực</th>${ROLES.map(r=>`<th>${r}</th>`).join('')}</tr></thead>
           <tbody>
             ${Object.entries({
               'Danh mục NCC': EDIT_PERMS.suppliers, 'Chính sách CK': EDIT_PERMS.policies,
@@ -4759,10 +5094,37 @@ function renderAccounts(c){
             `).join('')}
           </tbody>
         </table>
-        <div class="helper">Tất cả vai trò đều <b>xem được</b> mọi tab. Nhân viên có gán Đơn vị sẽ bị khoá đúng đơn vị đó khi nhập Doanh số (không chọn sang đơn vị khác được), giúp tránh nhập nhầm đơn vị.</div>
+        <div class="helper">Bảng trên là phân quyền <b>SỬA</b> theo vai trò (mọi vai trò đều <b>xem được</b> các tab thuộc module mình được cấp). Việc <b>THẤY module nào</b> (NCC / Ngân hàng / Bảo hiểm) được cấu hình riêng theo từng tài khoản ở cột "Module" trong bảng danh sách tài khoản bên trên — Admin luôn thấy đủ mọi module. Nhân viên có gán Đơn vị sẽ bị khoá đúng đơn vị đó khi nhập Doanh số (không chọn sang đơn vị khác được), giúp tránh nhập nhầm đơn vị.</div>
       </div>
     </div>
   `;
+  const kindSel = document.getElementById('af_kind');
+  const roleField = document.getElementById('af_role_field');
+  const unitField = document.getElementById('af_unit_field');
+  const modulesField = document.getElementById('af_modules_field');
+  const partnerModuleField = document.getElementById('af_partner_module_field');
+  const partnerEntityField = document.getElementById('af_partner_entity_field');
+  const partnerModuleSel = document.getElementById('af_partner_module');
+  const partnerEntitySel = document.getElementById('af_partner_entity');
+  function refreshPartnerEntityOptions(){
+    const opts = partnerEntityOptions(partnerModuleSel.value);
+    partnerEntitySel.innerHTML = opts.length
+      ? opts.map(o=>`<option value="${o.id}">${escAttr(o.name)}</option>`).join('')
+      : `<option value="">— Chưa có đối tác nào trong module này —</option>`;
+  }
+  function applyKindUI(){
+    const isPartner = kindSel.value==='partner';
+    roleField.style.display = isPartner ? 'none' : '';
+    unitField.style.display = isPartner ? 'none' : '';
+    modulesField.style.display = isPartner ? 'none' : '';
+    partnerModuleField.style.display = isPartner ? '' : 'none';
+    partnerEntityField.style.display = isPartner ? '' : 'none';
+    if(isPartner) refreshPartnerEntityOptions();
+  }
+  kindSel.addEventListener('change', applyKindUI);
+  partnerModuleSel.addEventListener('change', refreshPartnerEntityOptions);
+  applyKindUI();
+
   document.getElementById('addAccountBtn').addEventListener('click', ()=>{
     const name = document.getElementById('af_name').value.trim();
     if(!name){ toast('Nhập tên trước đã'); return; }
@@ -4772,27 +5134,57 @@ function renderAccounts(c){
     if(state.accounts.some(a=>a.username && a.username.toLowerCase()===username.toLowerCase())){
       toast(`Tài khoản "${username}" đã tồn tại — đổi tên tài khoản khác`); return;
     }
+    const password = document.getElementById('af_password').value;
+    if(kindSel.value==='partner'){
+      const partnerType = partnerModuleSel.value;
+      const partnerId = partnerEntitySel.value;
+      if(!partnerId){ toast('Chưa có đối tác nào trong module này để gán — thêm NCC/Ngân hàng/Bảo hiểm trước'); return; }
+      const acc = {id:uid('u'), name, username, role:'Đối tác', unit:'', password, modules:[partnerType], partnerType, partnerId, createdAt: todayISO()};
+      state.accounts.push(acc);
+      const modInfo = MODULES.find(m=>m.id===partnerType);
+      const entName = partnerEntityLabel(acc);
+      logActivity('create','Tài khoản', `Thêm tài khoản Đối tác "${name}" (đăng nhập: ${username}; ${modInfo?modInfo.label:partnerType} — ${entName}${password?', có mật khẩu':''})`);
+      toast(`Đã thêm tài khoản Đối tác — ${entName}`);
+      renderAll();
+      return;
+    }
     const role = document.getElementById('af_role').value;
     const unit = ensureUnit(document.getElementById('af_unit').value);
-    const password = document.getElementById('af_password').value;
-    const acc = {id:uid('u'), name, username, role, unit, password, createdAt: todayISO()};
+    const modules = Array.from(document.querySelectorAll('.af_module:checked')).map(el=>el.value);
+    const acc = {id:uid('u'), name, username, role, unit, password, modules, createdAt: todayISO()};
     state.accounts.push(acc);
-    logActivity('create','Tài khoản', `Thêm tài khoản "${name}" (đăng nhập: ${username}; ${role}${unit?', '+unit:''}${password?', có mật khẩu':''})`);
+    const modLabel = MODULES.filter(m=>modules.includes(m.id)).map(m=>m.label).join(', ') || '(không module nào)';
+    logActivity('create','Tài khoản', `Thêm tài khoản "${name}" (đăng nhập: ${username}; ${role}${unit?', '+unit:''}${password?', có mật khẩu':''}; module: ${modLabel})`);
     toast('Đã thêm tài khoản'+(unit?` — đơn vị "${unit}"`:''));
     renderAll();
   });
 
   const tbl = document.getElementById('accountsTable');
   tbl.innerHTML = `
-    <thead><tr><th>Tên hiển thị</th><th>Tài khoản (đăng nhập)</th><th>Vai trò</th><th>Đơn vị phụ trách</th><th>Mật khẩu</th><th>Ngày tạo</th><th></th></tr></thead>
+    <thead><tr><th>Tên hiển thị</th><th>Tài khoản (đăng nhập)</th><th>Vai trò</th><th>Đơn vị phụ trách</th><th>Module</th><th>Mật khẩu</th><th>Ngày tạo</th><th></th></tr></thead>
     <tbody>${state.accounts.map(a=>`
       <tr>
         <td><input class="cell-edit" data-field="name" data-id="${a.id}" value="${escAttr(a.name)}"></td>
         <td><input class="cell-edit" data-field="username" data-id="${a.id}" value="${escAttr(a.username||'')}" placeholder="— Chưa đặt (dùng Tên) —" style="min-width:130px"></td>
-        <td><select class="cell-edit" data-field="role" data-id="${a.id}">${ROLES.map(r=>`<option ${a.role===r?'selected':''}>${r}</option>`).join('')}</select></td>
+        <td><select class="cell-edit" data-field="role" data-id="${a.id}">${ROLES.filter(r=>r!=='Đối tác'||a.role==='Đối tác').map(r=>`<option ${a.role===r?'selected':''}>${r}</option>`).join('')}</select></td>
         <td>
           <input class="cell-edit" data-field="unit" data-id="${a.id}" list="rowunit_${a.id}" value="${escAttr(a.unit||'')}" placeholder="— Không gán —">
           ${unitDatalistHTML('rowunit_'+a.id)}
+        </td>
+        <td>
+          ${a.role==='Đối tác' ? `
+          <div style="display:flex;flex-direction:column;gap:4px;font-size:11.5px;white-space:nowrap">
+            <div><span class="tag gold">${MODULES.find(m=>m.id===a.partnerType)?.label || a.partnerType || '—'}</span></div>
+            <select class="cell-edit partner-entity-select" data-acc="${a.id}" style="max-width:220px">
+              ${partnerEntityOptions(a.partnerType).map(o=>`<option value="${o.id}" ${o.id===a.partnerId?'selected':''}>${escAttr(o.name)}</option>`).join('') || `<option value="">— Không có —</option>`}
+            </select>
+          </div>` : `
+          <div style="display:flex;flex-direction:column;gap:3px;font-size:11.5px;white-space:nowrap">
+            ${MODULES.map(m=>`<label style="display:flex;align-items:center;gap:5px;cursor:${a.role==='Admin'?'default':'pointer'};${a.role==='Admin'?'color:var(--slate)':''}">
+              <input type="checkbox" class="module-toggle" data-acc="${a.id}" data-module="${m.id}" ${(a.role==='Admin'||accountModules(a).includes(m.id))?'checked':''} ${a.role==='Admin'?'disabled':''}> ${m.label}
+            </label>`).join('')}
+            ${a.role==='Admin' ? `<div style="color:var(--slate)">(Admin luôn đủ quyền)</div>` : ''}
+          </div>`}
         </td>
         <td>
           <div style="display:flex; align-items:center; gap:4px">
@@ -4803,6 +5195,29 @@ function renderAccounts(c){
         <td>${a.createdAt||''}</td>
         <td>${a.id===currentUserId?'<span class="tag gold">Bạn</span>':`<button class="row-del" data-del="${a.id}">✕</button>`}</td>
       </tr>`).join('')}</tbody>`;
+  tbl.querySelectorAll('.module-toggle').forEach(cb=>{
+    cb.addEventListener('change', ()=>{
+      const acc = state.accounts.find(a=>a.id===cb.dataset.acc);
+      if(!acc) return;
+      let mods = accountModules(acc).slice();
+      if(cb.checked){ if(!mods.includes(cb.dataset.module)) mods.push(cb.dataset.module); }
+      else { mods = mods.filter(x=>x!==cb.dataset.module); }
+      acc.modules = mods;
+      const modInfo = MODULES.find(m=>m.id===cb.dataset.module);
+      logActivity('update','Tài khoản', `Sửa tài khoản "${acc.name}" (module ${modInfo?modInfo.label:cb.dataset.module}: ${cb.checked?'bật':'tắt'})`);
+      renderAll();
+    });
+  });
+  tbl.querySelectorAll('.partner-entity-select').forEach(sel=>{
+    sel.addEventListener('change', ()=>{
+      const acc = state.accounts.find(a=>a.id===sel.dataset.acc);
+      if(!acc) return;
+      const before = partnerEntityLabel(acc);
+      acc.partnerId = sel.value;
+      logActivity('update','Tài khoản', `Sửa tài khoản Đối tác "${acc.name}": gán lại từ "${before}" → "${partnerEntityLabel(acc)}"`);
+      renderAll();
+    });
+  });
   tbl.querySelectorAll('[data-field]').forEach(el=>{
     el.addEventListener('change', ()=>{
       const acc = state.accounts.find(a=>a.id===el.dataset.id);
