@@ -731,6 +731,56 @@ const FB_PATH = 'ncc_app_data/shared_state'; // đường dẫn node trong Realt
 // - Mọi tài khoản (Admin, Quản lý, Nhân viên) đều có thể được gán một mật khẩu riêng ở tab "Quản trị tài khoản"
 //   (trường account.password). Nếu account.password để trống → đăng nhập không cần mật khẩu, như trước đây.
 const ADMIN_PASSWORD = 'Hungthinh123';
+
+/* ---------------------------- Băm mật khẩu (SHA-256 + salt riêng từng tài khoản) ----------------------------
+   Mục đích: tránh lộ mật khẩu dạng chữ rõ ràng khi mở Console (F12) hoặc khi nhìn thẳng dữ liệu đồng bộ trên
+   Firebase. KHÔNG phải bảo mật tuyệt đối — mọi logic vẫn chạy trên trình duyệt, không có server xác thực,
+   nên vẫn có thể bỏ qua đăng nhập bằng cách tự set currentUserId qua Console (không liên quan gì đến mật
+   khẩu). Đây chỉ là lớp che chắn để mắt thường/Console không đọc được mật khẩu gốc.
+   account.passwordHash + account.passwordSalt thay cho account.password (chữ thô) trước đây. */
+function randomSalt(){
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes).map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+async function hashPassword(password, salt){
+  const data = new TextEncoder().encode(salt+':'+password);
+  const buf = await crypto.subtle.digest('SHA-256', data);
+  return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+// Đặt/đổi mật khẩu cho 1 tài khoản — luôn băm ngay, không giữ lại chữ thô. password='' -> bỏ mật khẩu hẳn
+// (đăng nhập không cần mật khẩu, như trước đây khi để trống).
+async function setAccountPassword(acc, password){
+  delete acc.password; // dọn field cũ (chữ thô) nếu tài khoản này từng có, không giữ song song 2 kiểu lưu
+  if(!password){
+    delete acc.passwordHash; delete acc.passwordSalt;
+    acc.noPasswordSet = true; // đã CHỦ ĐỘNG bỏ mật khẩu -> không rơi về ADMIN_PASSWORD mặc định nữa dù là Admin
+    return;
+  }
+  acc.noPasswordSet = false;
+  const salt = randomSalt();
+  acc.passwordSalt = salt;
+  acc.passwordHash = await hashPassword(password, salt);
+}
+// So khớp mật khẩu người dùng vừa gõ với tài khoản — ưu tiên dùng bản đã băm, có tương thích ngược cho
+// dữ liệu cũ (account.password chữ thô, hoặc Admin gốc chưa từng đặt mật khẩu riêng -> dùng ADMIN_PASSWORD).
+async function verifyAccountPassword(acc, typed){
+  if(acc.passwordHash){
+    if(!acc.passwordSalt) return false;
+    return (await hashPassword(typed||'', acc.passwordSalt)) === acc.passwordHash;
+  }
+  if(acc.noPasswordSet) return !typed; // đã chủ động bỏ mật khẩu -> không yêu cầu gì nữa, kể cả với Admin
+  const legacyPw = acc.password || (acc.role==='Admin' ? ADMIN_PASSWORD : '');
+  if(!legacyPw) return !typed; // tài khoản không đặt mật khẩu -> chỉ hợp lệ khi cũng để trống
+  return typed===legacyPw;
+}
+// Tài khoản hiện có đang yêu cầu mật khẩu hay không (để quyết định có hỏi "mật khẩu hiện tại" khi đổi MK).
+function accountHasPassword(acc){
+  if(acc.passwordHash) return true;
+  if(acc.noPasswordSet) return false;
+  return !!(acc.password || acc.role==='Admin');
+}
+
 let storageMode = 'memory'; // 'firebase' | 'cloud' | 'local' | 'memory'
 let storageBackend = null;  // 'window.storage' | 'localStorage' | null
 let lastSavedJson = null;   // để nhận biết sự kiện Realtime Database nào là do chính mình vừa ghi
@@ -1104,16 +1154,18 @@ function contractRowsHTML(obj, editable, unitFilter){
     const status = contractStatus(ct);
     const meta = contractStatusMeta(status, ct);
     const range = ct.ngayHieuLuc ? `${ct.ngayHieuLuc}${ct.ngayHetHan?' → '+ct.ngayHetHan:' → vô thời hạn'}` : 'Chưa có ngày hiệu lực';
+    // Chỉ coi là link hợp lệ nếu bắt đầu bằng http/https — chặn kiểu "javascript:..." (có thể tự chạy mã khi bấm "Mở link").
+    const safeLink = (ct.link && /^https?:\/\//i.test(ct.link.trim())) ? ct.link.trim() : '';
     return `
     <div class="contract-row ${status==='superseded'?'is-superseded':''}" data-cid="${ct.id}">
       <div class="contract-main">
-        <div class="c-title">${escAttr(ct.ten||'(chưa đặt tên)')} <span class="tag ${meta.cls==='st-active'?'gold':''}">${meta.label}</span></div>
-        <div class="c-meta">${ct.soHopDong?'Số: '+escAttr(ct.soHopDong)+' · ':''}${range}</div>
-        <div class="c-meta">Đơn vị: ${escAttr(contractUnitsLabel(ct))}</div>
-        ${ct.ghiChu?`<div class="c-note">${escAttr(ct.ghiChu)}</div>`:''}
+        <div class="c-title">${escHtml(ct.ten||'(chưa đặt tên)')} <span class="tag ${meta.cls==='st-active'?'gold':''}">${meta.label}</span></div>
+        <div class="c-meta">${ct.soHopDong?'Số: '+escHtml(ct.soHopDong)+' · ':''}${range}</div>
+        <div class="c-meta">Đơn vị: ${escHtml(contractUnitsLabel(ct))}</div>
+        ${ct.ghiChu?`<div class="c-note">${escHtml(ct.ghiChu)}</div>`:''}
       </div>
       <div class="contract-actions">
-        ${ct.link ? `<a class="contract-link" href="${escAttr(ct.link)}" target="_blank" rel="noopener">Mở link</a>` : `<span class="contract-link disabled">Chưa có link</span>`}
+        ${safeLink ? `<a class="contract-link" href="${escAttr(safeLink)}" target="_blank" rel="noopener">Mở link</a>` : (ct.link ? `<span class="contract-link disabled" title="Link phải bắt đầu bằng http:// hoặc https://">Link không hợp lệ</span>` : `<span class="contract-link disabled">Chưa có link</span>`)}
         ${editable ? `
           ${status==='active' ? `<button class="btn btn-ghost btn-sm" data-mark-superseded="${ct.id}">Đánh dấu đã thay thế</button>` : ''}
           <button class="btn btn-danger-ghost btn-sm" data-del-contract="${ct.id}">Xoá</button>
@@ -1170,7 +1222,7 @@ function openContractsModal(obj, list, entityLabel, editable, unitFilter){
     </div>
   ` : '';
 
-  openModal(`Hợp đồng · ${escAttr(obj.name)}`, `${entityLabel} — ${contractList(obj).length} bản trong lịch sử`,
+  openModal(`Hợp đồng · ${escHtml(obj.name)}`, `${escHtml(entityLabel)} — ${contractList(obj).length} bản trong lịch sử`,
     `${filterHtml}<div class="contract-list" id="ctListBox">${contractRowsHTML(obj, editable, unitFilter)}</div>${formHtml}`,
     (body)=>{
       const wireListButtons = ()=>{
@@ -1299,8 +1351,8 @@ function openPolicyTargetsModal(p, editable){
       <button class="btn btn-primary btn-sm" id="targetSaveBtn">Lưu phân bổ</button>
     </div>` : ''}
   `;
-  openModal(`Phân bổ chỉ tiêu · ${escAttr(p.code||p.id)}`,
-    `${s?escAttr(s.name):''} — Mốc ${fmt(p.threshold)}đ${p.type==='Thưởng thêm'?' (Thưởng thêm)':''}`,
+  openModal(`Phân bổ chỉ tiêu · ${escHtml(p.code||p.id)}`,
+    `${s?escHtml(s.name):''} — Mốc ${fmt(p.threshold)}đ${p.type==='Thưởng thêm'?' (Thưởng thêm)':''}`,
     bodyHtml,
     (body)=>{
       if(units.length===0) return;
@@ -1877,7 +1929,7 @@ function renderUserChip(){
   const u = currentUser();
   if(!u){ chip.innerHTML=''; menu.innerHTML=''; menu.classList.remove('open'); return; }
   const initials = u.name.trim().split(/\s+/).slice(-1)[0].slice(0,1).toUpperCase();
-  chip.innerHTML = `<span class="user-avatar">${initials}</span><span>${u.name}${u.unit?' <span class="role-tag">· '+u.unit+'</span>':''}</span><span class="role-badge ${roleBadgeClass(u.role)}">${u.role}</span>`;
+  chip.innerHTML = `<span class="user-avatar">${escHtml(initials)}</span><span>${escHtml(u.name)}${u.unit?' <span class="role-tag">· '+escHtml(u.unit)+'</span>':''}</span><span class="role-badge ${roleBadgeClass(u.role)}">${escHtml(u.role)}</span>`;
   chip.title = 'Bấm để xem tuỳ chọn tài khoản';
   menu.innerHTML = `
     <button type="button" id="menuChangePw">🔑 Đổi mật khẩu</button>
@@ -1894,10 +1946,10 @@ function renderUserChip(){
 function openChangePasswordModal(accId){
   const acc = state.accounts.find(a=>a.id===accId);
   if(!acc) return;
-  const currentPw = acc.password || (acc.role==='Admin' ? ADMIN_PASSWORD : '');
-  openModal('Đổi mật khẩu', `Tài khoản "${acc.name}" — mật khẩu mới sẽ dùng ngay từ lần đăng nhập sau.`,
+  const hasCurrentPw = accountHasPassword(acc);
+  openModal('Đổi mật khẩu', `Tài khoản "${escHtml(acc.name)}" — mật khẩu mới sẽ dùng ngay từ lần đăng nhập sau.`,
     `<div class="form-grid">
-       ${currentPw ? `<div class="field" style="grid-column:1/-1"><label>Mật khẩu hiện tại</label><input id="cp_old" type="password" placeholder="Nhập mật khẩu hiện tại"></div>` : ''}
+       ${hasCurrentPw ? `<div class="field" style="grid-column:1/-1"><label>Mật khẩu hiện tại</label><input id="cp_old" type="password" placeholder="Nhập mật khẩu hiện tại"></div>` : ''}
        <div class="field" style="grid-column:1/-1"><label>Mật khẩu mới</label><input id="cp_new" type="password" placeholder="Để trống nếu muốn BỎ mật khẩu"></div>
        <div class="field" style="grid-column:1/-1"><label>Nhập lại mật khẩu mới</label><input id="cp_new2" type="password" placeholder="Gõ lại mật khẩu mới"></div>
        <div class="login-error" id="cp_err" style="display:none"></div>
@@ -1909,13 +1961,11 @@ function openChangePasswordModal(accId){
       const new2Inp = body.querySelector('#cp_new2');
       const err = body.querySelector('#cp_err');
       const showErr = (msg)=>{ err.textContent = msg; err.style.display='block'; };
-      const submit = ()=>{
+      const submit = async ()=>{
         err.style.display='none';
-        if(currentPw && oldInp.value !== currentPw){ showErr('Sai mật khẩu hiện tại.'); oldInp.focus(); return; }
+        if(hasCurrentPw && !(await verifyAccountPassword(acc, oldInp.value))){ showErr('Sai mật khẩu hiện tại.'); oldInp.focus(); return; }
         if(newInp.value !== new2Inp.value){ showErr('Hai ô mật khẩu mới không khớp.'); new2Inp.focus(); return; }
-        acc.password = newInp.value;
-        // Admin gốc: nếu người dùng đổi mật khẩu (kể cả để trống), ghi luôn vào account.password
-        // để không còn phụ thuộc ADMIN_PASSWORD mặc định nữa.
+        await setAccountPassword(acc, newInp.value);
         logActivity('update','Tài khoản', `Tự đổi mật khẩu tài khoản "${acc.name}" (${newInp.value ? 'đặt mật khẩu mới' : 'bỏ mật khẩu'})`);
         toast(newInp.value ? 'Đã đổi mật khẩu' : 'Đã bỏ mật khẩu cho tài khoản này');
         closeModal();
@@ -2022,7 +2072,7 @@ function renderLoginScreen(){
   const errBox = screen.querySelector('#li_error');
   const showErr = (msg)=>{ errBox.textContent = msg; errBox.classList.add('show'); };
   const clearErr = ()=>{ errBox.classList.remove('show'); };
-  const submit = ()=>{
+  const submit = async ()=>{
     clearErr();
     const typed = userInput.value.trim().toLowerCase();
     if(!typed){ showErr('Nhập tên đăng nhập trước đã.'); userInput.focus(); return; }
@@ -2030,10 +2080,8 @@ function renderLoginScreen(){
     // Tên hiển thị làm tên đăng nhập, để tương thích ngược với dữ liệu tạo trước khi có trường này.
     const acc = accounts.find(a=> (a.username ? a.username.trim().toLowerCase() : a.name.trim().toLowerCase()) === typed);
     if(!acc){ showErr('Không tìm thấy tài khoản này. Kiểm tra lại tên hoặc liên hệ Admin.'); return; }
-    // Yêu cầu mật khẩu nếu tài khoản có đặt mật khẩu riêng (mọi vai trò), hoặc tài khoản Admin gốc
-    // chưa được gán mật khẩu riêng thì vẫn dùng ADMIN_PASSWORD mặc định (tương thích ngược).
-    const requiredPw = acc.password || (acc.role==='Admin' ? ADMIN_PASSWORD : '');
-    if(requiredPw && pwInput.value !== requiredPw){ showErr('Sai mật khẩu.'); pwInput.value=''; pwInput.focus(); return; }
+    const ok = await verifyAccountPassword(acc, pwInput.value);
+    if(!ok){ showErr('Sai mật khẩu.'); pwInput.value=''; pwInput.focus(); return; }
     currentUserId = acc.id;
     saveSession();
     screen.remove();
@@ -2114,7 +2162,7 @@ function renderDashboard(c){
     </tr></thead>
     <tbody>${top.map(r=>`
       <tr>
-        <td class="wrap">${r.s.name}</td>
+        <td class="wrap">${escHtml(r.s.name)}</td>
         <td class="num">${fmt(r.calc.revenue)}</td>
         <td class="num">${r.calc.next?fmt(r.calc.next.threshold):'—'}</td>
         <td class="num">${fmt(r.calc.missing)}</td>
@@ -2177,7 +2225,7 @@ function renderMonitor(c){
       const calc = fullSupplierCalc(s.id);
       const hasConflict = calc.conflicts && calc.conflicts.length>0;
       return `<tr ${hasConflict?'style="background:var(--rust-soft)"':''}>
-        <td class="wrap">${s.name}${hasConflict?` <span title="${escAttr(calc.conflicts.join(' | '))}">⚠</span>`:''}</td>
+        <td class="wrap">${escHtml(s.name)}${hasConflict?` <span title="${escAttr(calc.conflicts.join(' | '))}">⚠</span>`:''}</td>
         <td>
           <select class="cell-edit" data-monitor="${s.id}" ${editable?'':'disabled'}>
             ${['Cần xác nhận','THANG','QUY','YTD'].map(v=>`<option value="${v}" ${state.monitoring[s.id]===v?'selected':''}>${v}</option>`).join('')}
@@ -2282,6 +2330,17 @@ function renderSuppliers(c){
   }
 }
 function escAttr(s){ return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;'); }
+// Escape đầy đủ để chèn AN TOÀN vào nội dung HTML dạng chữ thuần (không phải bên trong value="..." của input).
+// Khác escAttr ở chỗ escape thêm "<" và ">" — bắt buộc dùng cho mọi dữ liệu tự do (tên NCC/NH/BH, ghi chú,
+// chi tiết Nhật ký hoạt động...) khi hiển thị trực tiếp làm text trên trang, để chặn XSS lưu trữ.
+function escHtml(s){
+  return String(s)
+    .replace(/&/g,'&amp;')
+    .replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;')
+    .replace(/'/g,'&#39;');
+}
 /* Ô tiêu đề cột đơn vị trong ma trận NCC/Ngân hàng/Bảo hiểm × Đơn vị — tên dài tự ellipsis 2 dòng, xem đầy đủ qua tooltip.
    Dùng chung cho renderAllocation, renderBankAllocation, renderInsAllocation để tránh bảng bị kéo quá rộng. */
 function matrixUnitHeaderCell(unitName){
@@ -2349,14 +2408,14 @@ function renderPolicies(c){
   const policyList = pf ? state.policies.filter(pf) : state.policies;
   setTitle('Chính sách CK', policyList.length+' dòng chính sách — mỗi mốc / mỗi thưởng là 1 dòng riêng');
   const editable = canEdit('policies');
-  const supplierOptions = state.suppliers.map(s=>`<option value="${s.id}">${s.name}</option>`).join('');
+  const supplierOptions = state.suppliers.map(s=>`<option value="${s.id}">${escHtml(s.name)}</option>`).join('');
 
   // Cảnh báo xung đột mốc CK cơ bản (trùng mốc / đường cong đi ngược), gộp theo NCC — Đối tác chỉ thấy
   // cảnh báo của đúng NCC mình (nếu có), không thấy cảnh báo của NCC khác.
   const allConflicts = [];
   (pf ? state.suppliers.filter(s=>pf({supplierId:s.id})) : state.suppliers).forEach(s=>{
     const warns = tierConflicts(s.id);
-    warns.forEach(w=> allConflicts.push(`<b>${s.name}</b>: ${w}`));
+    warns.forEach(w=> allConflicts.push(`<b>${escHtml(s.name)}</b>: ${w}`));
   });
 
   c.innerHTML = `
@@ -2453,7 +2512,7 @@ function renderPolicies(c){
       const cycleDisabled = dis || (isBaseTier?'disabled':'');
       const rowConflict = isBaseTier && tierConflicts(p.supplierId).some(w=>w.includes(p.code||p.id));
       return `<tr data-rowid="${p.id}" ${rowConflict?'style="background:var(--rust-soft)"':''}>
-        <td class="wrap">${s?s.name:'<em>(NCC đã xoá)</em>'}${rowConflict?' ⚠':''}</td>
+        <td class="wrap">${s?escHtml(s.name):'<em>(NCC đã xoá)</em>'}${rowConflict?' ⚠':''}</td>
         <td><input class="cell-edit" data-field="code" data-id="${p.id}" value="${escAttr(p.code)}" ${dis}></td>
         <td><select class="cell-edit" data-field="type" data-id="${p.id}" ${dis}>${['CK theo doanh số','CK cố định','Thưởng thêm'].map(v=>`<option ${p.type===v?'selected':''}>${v}</option>`).join('')}</select></td>
         <td><select class="cell-edit" data-field="cycle" data-id="${p.id}" ${cycleDisabled} title="${isBaseTier?'Không có tác dụng với mốc CK cơ bản — chu kỳ theo dõi đặt ở tab Theo dõi mốc CK':''}">${['Cần xác nhận','THANG','QUY','YTD','Cố định'].map(v=>`<option ${p.cycle===v?'selected':''}>${v}</option>`).join('')}</select></td>
@@ -2492,7 +2551,7 @@ function renderTransactions(c){
   const editable = canEdit('transactions'); // Admin, Quản lý, Nhân viên đều được ghi nhận doanh số
   const me = currentUser();
   const lockedUnit = (me && me.role==='Nhân viên' && me.unit) ? me.unit : null;
-  const supplierOptions = state.suppliers.map(s=>`<option value="${s.id}">${s.name}</option>`).join('');
+  const supplierOptions = state.suppliers.map(s=>`<option value="${s.id}">${escHtml(s.name)}</option>`).join('');
   if(lockedUnit) txUnitFilter = lockedUnit; // NV chỉ nên thấy đúng đơn vị mình phụ trách theo mặc định
   c.innerHTML = `
     ${editable ? `
@@ -2628,13 +2687,13 @@ function renderTxTable(editable){
       return `<tr>
         <td>${new Date(t.date+'T00:00:00').toLocaleDateString('vi-VN')}</td>
         <td>${t.unit}</td>
-        <td class="wrap">${s?s.name:'<em>(đã xoá)</em>'}</td>
+        <td class="wrap">${s?escHtml(s.name):'<em>(đã xoá)</em>'}</td>
         <td>${t.doc||''}</td>
         <td>${t.category||''}</td>
         <td class="num">${fmt(t.gross)}</td>
         <td class="num">${fmt(t.returns)}</td>
         <td class="num" style="font-weight:600">${fmt(net)}</td>
-        <td>${creator?creator.name:'<em>—</em>'}</td>
+        <td>${creator?escHtml(creator.name):'<em>—</em>'}</td>
         <td>${lockIconHTML(lockR,'ncc')}${canDeleteTx(t)?`<button class="row-del" data-del="${t.id}">✕</button>`:''}</td>
       </tr>`;
     }).join('')}</tbody>`;
@@ -2884,7 +2943,7 @@ function reconCalc(r){
 function renderReconcile(c){
   setTitle('Đối soát CK', state.reconciliations.length+' kỳ đối soát — theo dõi CK phải hưởng / NCC xác nhận / đã nhận');
   const editable = canEdit('reconcile');
-  const supplierOptions = state.suppliers.map(s=>`<option value="${s.id}">${s.name}</option>`).join('');
+  const supplierOptions = state.suppliers.map(s=>`<option value="${s.id}">${escHtml(s.name)}</option>`).join('');
   c.innerHTML = `
     ${editable ? `
     <div class="panel">
@@ -2965,7 +3024,7 @@ function renderReconTable(editable){
       const canDelRow = editable && (!r.locked || currentRole()==='Admin');
       const mainRow = `<tr>
         <td>${r.period}</td>
-        <td class="wrap">${s?s.name:'<em>(đã xoá)</em>'}</td>
+        <td class="wrap">${s?escHtml(s.name):'<em>(đã xoá)</em>'}</td>
         <td>${r.fromDate}</td><td>${r.toDate}</td>
         <td class="num">${fmt(rc.revenue)}</td>
         <td><span class="tag ${rc.method==='Chỉ phần vượt mốc'?'gold':''}" title="Mốc %CK: ${fmtPct(rc.rate)}">${rc.method||'—'}</span></td>
@@ -2989,13 +3048,13 @@ function renderReconTable(editable){
           <td style="padding-left:4px;color:var(--slate)">${new Date(p.date+'T00:00:00').toLocaleDateString('vi-VN')}</td>
           <td class="num" style="font-weight:600">${fmt(p.amount)}</td>
           <td><span class="tag">${p.method||'—'}</span></td>
-          <td class="wrap" style="color:var(--slate)">${p.note||''}</td>
+          <td class="wrap" style="color:var(--slate)">${escHtml(p.note||'')}</td>
           <td>${editable?`<button class="row-del" data-del-pay="${r.id}|${p.id}" title="Xoá lần thanh toán này">✕</button>`:''}</td>
         </tr>`).join('');
       const detailRow = `<tr style="background:#FBFAF3">
         <td></td>
         <td colspan="14" style="padding:12px 16px 16px">
-          <div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--slate);font-weight:600;margin-bottom:8px">Sổ nhận tiền — ${s?s.name:''} · ${r.period}</div>
+          <div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--slate);font-weight:600;margin-bottom:8px">Sổ nhận tiền — ${s?escHtml(s.name):''} · ${escHtml(r.period)}</div>
           ${editable ? `
           <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:end;margin-bottom:10px">
             <div class="field" style="width:150px"><label>Ngày nhận</label><input type="date" id="pay_date_${r.id}" value="${todayISO()}"></div>
@@ -3265,7 +3324,7 @@ function renderBankPolicies(c){
   const policyCount = pf ? state.bankPolicies.filter(pf).length : state.bankPolicies.length;
   setTitle('Chính sách CK', policyCount+' dòng chính sách — mỗi ngân hàng/mỗi tháng là 1 dòng, hoa hồng tính trên số tiền giải ngân');
   const editable = canEdit('nh_policies');
-  const bankOptions = state.banks.map(b=>`<option value="${b.id}">${b.name}</option>`).join('');
+  const bankOptions = state.banks.map(b=>`<option value="${b.id}">${escHtml(b.name)}</option>`).join('');
   c.innerHTML = `
     ${editable ? `
     <div class="panel">
@@ -3339,7 +3398,7 @@ function renderBankPolicies(c){
     <tbody>${sorted.map(p=>{
       const b = bankById(p.bankId);
       return `<tr>
-        <td class="wrap">${b?b.name:'<em>(đã xoá)</em>'}</td>
+        <td class="wrap">${b?escHtml(b.name):'<em>(đã xoá)</em>'}</td>
         <td>${monthLabel(p.month)}</td>
         <td class="num"><input class="cell-edit num pct" data-field="maxLoanRatio" data-id="${p.id}" type="number" step="1" value="${round2(p.maxLoanRatio*100)}" ${dis} style="width:60px"></td>
         <td class="num"><input class="cell-edit num" data-field="maxLoanTerm" data-id="${p.id}" type="number" step="1" value="${p.maxLoanTerm}" ${dis} style="width:52px"> năm</td>
@@ -3507,7 +3566,7 @@ function renderBankTxTable(editable){
             ${editable
               ? `<input class="cell-edit mini-field" data-field="date" data-id="${t.id}" type="date" value="${t.date}" ${dis}>`
               : `<div class="mini-field">${new Date(t.date+'T00:00:00').toLocaleDateString('vi-VN')}</div>`}
-            <div class="meta-line">${t.unit} → ${b?b.name:'<em>(đã xoá)</em>'} ${lockIconHTML(lockR,'nh')}</div>
+            <div class="meta-line">${escHtml(t.unit)} → ${b?escHtml(b.name):'<em>(đã xoá)</em>'} ${lockIconHTML(lockR,'nh')}</div>
             ${editable
               ? `<input class="cell-edit mini-field muted" data-field="refCode" data-id="${t.id}" value="${escAttr(t.refCode||'')}" ${dis} placeholder="Mã hồ sơ NH">`
               : (t.refCode?`<div class="meta-line">Mã HS: ${escAttr(t.refCode)}</div>`:'')}
@@ -3525,7 +3584,7 @@ function renderBankTxTable(editable){
           ? `<select class="cell-edit status-select ${statusClass(t.status)}" data-status-id="${t.id}">${BANK_TX_STATUSES.map(s=>`<option ${t.status===s?'selected':''}>${s}</option>`).join('')}</select>`
           : `<span class="stamp ${t.status==='Đã giải ngân'?'ok':(t.status==='Từ chối'?'warn':'pending')}">${t.status}</span>`}</td>
         <td class="num">${commCell}</td>
-        <td class="meta-line">${creator?creator.name:'<em>—</em>'}</td>
+        <td class="meta-line">${creator?escHtml(creator.name):'<em>—</em>'}</td>
         <td>${canDelRow?`<button class="row-del" data-del="${t.id}">✕</button>`:''}</td>
       </tr>`;
     }).join('')}</tbody>`;
@@ -3603,7 +3662,7 @@ function renderBankAllocation(c){
 function renderBankReconcile(c){
   setTitle('Đối soát CK', state.bankReconciliations.length+' kỳ đối soát — theo dõi Hoa hồng phải hưởng / đã nhận theo từng ngân hàng');
   const editable = canEdit('nh_reconcile');
-  const bankOptions = state.banks.map(b=>`<option value="${b.id}">${b.name}</option>`).join('');
+  const bankOptions = state.banks.map(b=>`<option value="${b.id}">${escHtml(b.name)}</option>`).join('');
   c.innerHTML = `
     ${editable ? `
     <div class="panel">
@@ -3671,7 +3730,7 @@ function renderBankReconTable(editable){
       const canDelRow = editable && (!r.locked || currentRole()==='Admin');
       const mainRow = `<tr>
         <td>${r.period}</td>
-        <td class="wrap">${b?b.name:'<em>(đã xoá)</em>'}</td>
+        <td class="wrap">${b?escHtml(b.name):'<em>(đã xoá)</em>'}</td>
         <td>${r.fromDate}</td><td>${r.toDate}</td>
         <td class="num">${fmt(rc.loan)}${rc.matchCount===0 ? `<div style="font-size:10px;font-weight:400;color:var(--rust)">${rc.totalTxForBank===0 ? `NH này chưa có hồ sơ vay nào ở tab Doanh số` : `0/${rc.totalTxForBank} hồ sơ khớp "Đã giải ngân" &amp; khoảng ngày`}</div>` : `<div style="font-size:10px;font-weight:400;color:var(--slate)">${rc.matchCount} hồ sơ khớp</div>`}</td>
         <td class="num" style="font-weight:700">${fmt(rc.totalDue)}${lockMismatchNote(r, rc.totalDue)}</td>
@@ -3693,13 +3752,13 @@ function renderBankReconTable(editable){
           <td style="padding-left:4px;color:var(--slate)">${new Date(p.date+'T00:00:00').toLocaleDateString('vi-VN')}</td>
           <td class="num" style="font-weight:600">${fmt(p.amount)}</td>
           <td><span class="tag">${p.method||'—'}</span></td>
-          <td class="wrap" style="color:var(--slate)">${p.note||''}</td>
+          <td class="wrap" style="color:var(--slate)">${escHtml(p.note||'')}</td>
           <td>${editable?`<button class="row-del" data-del-pay="${r.id}|${p.id}" title="Xoá lần thanh toán này">✕</button>`:''}</td>
         </tr>`).join('');
       const detailRow = `<tr style="background:#FBFAF3">
         <td></td>
         <td colspan="12" style="padding:12px 16px 16px">
-          <div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--slate);font-weight:600;margin-bottom:8px">Sổ nhận tiền — ${b?b.name:''} · ${r.period}</div>
+          <div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--slate);font-weight:600;margin-bottom:8px">Sổ nhận tiền — ${b?escHtml(b.name):''} · ${escHtml(r.period)}</div>
           ${editable ? `
           <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:end;margin-bottom:10px">
             <div class="field" style="width:150px"><label>Ngày nhận</label><input type="date" id="bpay_date_${r.id}" value="${todayISO()}"></div>
@@ -3929,7 +3988,7 @@ function renderInsPolicies(c){
   const scopedRatesCount = pf ? state.insRates.filter(pf).length : state.insRates.length;
   setTitle('Biểu phí bảo hiểm', scopedRatesCount+' khoảng giá trị xe, tra cứu & so sánh phí giữa các NCC theo thời gian thực');
   const editable = canEdit('bh_policies');
-  const insOptions = state.insurers.map(i=>`<option value="${i.id}">${i.name}</option>`).join('');
+  const insOptions = state.insurers.map(i=>`<option value="${i.id}">${escHtml(i.name)}</option>`).join('');
   c.innerHTML = `
     ${pf ? '' : `
     <div class="panel">
@@ -3989,10 +4048,10 @@ function renderInsPolicies(c){
       const premium = value * r.found.rate;
       return `<tr class="${idx===0?'ins-best-row':''}">
         <td>${idx===0?'<span class="stamp ok">Rẻ nhất</span>':idx+1}</td>
-        <td class="wrap"><b>${r.ins.name}</b><div class="meta-line">${r.found.row.valueLabel}</div></td>
+        <td class="wrap"><b>${escHtml(r.ins.name)}</b><div class="meta-line">${escHtml(r.found.row.valueLabel)}</div></td>
         <td class="num">${fmtPct(r.found.rate)}</td>
         <td class="num" style="font-weight:700">${fmt(premium)}đ</td>
-        <td class="wrap meta-line">${r.ins.terms||''}</td>
+        <td class="wrap meta-line">${escHtml(r.ins.terms||'')}</td>
       </tr>`;
     }).join('');
     const missingHtml = flatOrMissing.map(r=>{
@@ -4004,7 +4063,7 @@ function renderInsPolicies(c){
       }
       return `<tr class="ins-missing-row">
         <td>—</td>
-        <td class="wrap">${r.ins.name}${r.found&&r.found.row?`<div class="meta-line">${r.found.row.valueLabel}</div>`:''}${extra}</td>
+        <td class="wrap">${escHtml(r.ins.name)}${r.found&&r.found.row?`<div class="meta-line">${escHtml(r.found.row.valueLabel)}</div>`:''}${extra}</td>
         <td class="num">—</td><td class="num">—</td>
         <td class="wrap meta-line">${reason}</td>
       </tr>`;
@@ -4061,7 +4120,7 @@ function renderInsPolicies(c){
     </tr></thead>
     <tbody>${grouped.map(g=>g.rows.map((row,i)=>`
       <tr>
-        ${i===0?`<td class="wrap" rowspan="${g.rows.length}"><b>${g.ins.name}</b><div class="meta-line">BHVC ${fmtPct(g.ins.bhvc)} · BHDS ${fmtPct(g.ins.bhds)}</div><div class="meta-line">${escAttr(g.ins.terms||'')}</div></td>`:''}
+        ${i===0?`<td class="wrap" rowspan="${g.rows.length}"><b>${escHtml(g.ins.name)}</b><div class="meta-line">BHVC ${fmtPct(g.ins.bhvc)} · BHDS ${fmtPct(g.ins.bhds)}</div><div class="meta-line">${escHtml(g.ins.terms||'')}</div></td>`:''}
         <td class="wrap"><input class="cell-edit" data-field="valueLabel" data-id="${row.id}" value="${escAttr(row.valueLabel)}" ${dis}></td>
         ${AGE_BANDS.map(a=>`<td class="num">${pctCell(row,a.key)}</td>`).join('')}
         <td class="wrap"><input class="cell-edit" data-field="note" data-id="${row.id}" value="${escAttr(row.note||'')}" ${dis} placeholder="—"></td>
@@ -4376,7 +4435,7 @@ function renderInsTxTable(editable){
             ${editable
               ? `<input class="cell-edit mini-field" data-field="date" data-id="${t.id}" type="date" value="${t.date}" ${dis}>`
               : `<div class="mini-field">${new Date(t.date+'T00:00:00').toLocaleDateString('vi-VN')}</div>`}
-            <div class="meta-line">${t.unit} → ${ins?ins.name:'<em>(đã xoá)</em>'} · <span class="tag">${t.product||'BHVC'}</span> ${lockIconHTML(lockR,'bh')}</div>
+            <div class="meta-line">${escHtml(t.unit)} → ${ins?escHtml(ins.name):'<em>(đã xoá)</em>'} · <span class="tag">${escHtml(t.product||'BHVC')}</span> ${lockIconHTML(lockR,'bh')}</div>
             ${editable
               ? `<input class="cell-edit mini-field muted" data-field="policyNo" data-id="${t.id}" value="${escAttr(t.policyNo||'')}" ${dis} placeholder="Số đơn bảo hiểm">`
               : (t.policyNo?`<div class="meta-line">Số đơn: ${escAttr(t.policyNo)}</div>`:'')}
@@ -4394,7 +4453,7 @@ function renderInsTxTable(editable){
           ? `<select class="cell-edit status-select ${statusClass(t.status)}" data-status-id="${t.id}">${INS_TX_STATUSES.map(s=>`<option ${t.status===s?'selected':''}>${s}</option>`).join('')}</select>`
           : `<span class="stamp ${t.status==='Đã cấp đơn'?'ok':(t.status==='Huỷ'?'warn':'pending')}">${t.status}</span>`}</td>
         <td class="num">${commCell}</td>
-        <td class="meta-line">${creator?creator.name:'<em>—</em>'}</td>
+        <td class="meta-line">${creator?escHtml(creator.name):'<em>—</em>'}</td>
         <td>${canDelRow?`<button class="row-del" data-del="${t.id}">✕</button>`:''}</td>
       </tr>`;
     }).join('')}</tbody>`;
@@ -4549,7 +4608,7 @@ function renderInsRevenueTable(editable){
       ${breaches.length>0 ? `
       <div class="locked-note" style="border-color:var(--rust);color:var(--rust);background:var(--rust-soft);margin-top:0;padding:10px 14px">
         ⚠ <b>${breaches.length} hãng</b> đang bán lệch so với kế hoạch phân bổ quá ngưỡng (tháng ${monthLabel}):
-        ${breaches.map(r=>`<b>${r.ins.name}</b> (${r.status==='under'?'tăng':'giảm'} ${r.diff>0?'+':''}${fmtPct(r.diff)})`).join(' · ')}
+        ${breaches.map(r=>`<b>${escHtml(r.ins.name)}</b> (${r.status==='under'?'tăng':'giảm'} ${r.diff>0?'+':''}${fmtPct(r.diff)})`).join(' · ')}
       </div>` : sys.total===0 ? `<div class="helper">Chưa có dữ liệu doanh thu (BR/DV) cho tháng ${monthLabel} — chọn tháng khác hoặc nhập DT dịch vụ bên dưới.</div>` : ''}
     `;
   }
@@ -4576,7 +4635,7 @@ function renderInsRevenueTable(editable){
       const meta = INS_STATUS_META[r.status];
       return `
       <tr style="${meta.row}">
-        <td>${r.ins.name}</td>
+        <td>${escHtml(r.ins.name)}</td>
         <td class="num">
           ${editable
             ? `<input class="cell-edit num mini-field" data-alloc="${r.ins.id}" type="text" inputmode="decimal" value="${r.allocationRate!=null?round2(r.allocationRate*100):''}" placeholder="—" style="text-align:right">`
@@ -4640,7 +4699,7 @@ function renderInsRevenueTable(editable){
 function renderInsReconcile(c){
   setTitle('Đối soát CK', state.insReconciliations.length+' kỳ đối soát — theo dõi Hoa hồng phải hưởng / đã nhận theo từng NCC bảo hiểm');
   const editable = canEdit('bh_reconcile');
-  const insOptions = state.insurers.map(i=>`<option value="${i.id}">${i.name}</option>`).join('');
+  const insOptions = state.insurers.map(i=>`<option value="${i.id}">${escHtml(i.name)}</option>`).join('');
   c.innerHTML = `
     ${editable ? `
     <div class="panel">
@@ -4705,7 +4764,7 @@ function renderInsReconTable(editable){
       const canDelRow = editable && (!r.locked || currentRole()==='Admin');
       const mainRow = `<tr>
         <td>${r.period}</td>
-        <td class="wrap">${ins?ins.name:'<em>(đã xoá)</em>'}</td>
+        <td class="wrap">${ins?escHtml(ins.name):'<em>(đã xoá)</em>'}</td>
         <td>${r.fromDate}</td><td>${r.toDate}</td>
         <td class="num">${fmt(rc.premium)}</td>
         <td class="num" style="font-weight:700">${fmt(rc.totalDue)}${lockMismatchNote(r, rc.totalDue)}</td>
@@ -4727,13 +4786,13 @@ function renderInsReconTable(editable){
           <td style="padding-left:4px;color:var(--slate)">${new Date(p.date+'T00:00:00').toLocaleDateString('vi-VN')}</td>
           <td class="num" style="font-weight:600">${fmt(p.amount)}</td>
           <td><span class="tag">${p.method||'—'}</span></td>
-          <td class="wrap" style="color:var(--slate)">${p.note||''}</td>
+          <td class="wrap" style="color:var(--slate)">${escHtml(p.note||'')}</td>
           <td>${editable?`<button class="row-del" data-del-pay="${r.id}|${p.id}" title="Xoá lần thanh toán này">✕</button>`:''}</td>
         </tr>`).join('');
       const detailRow = `<tr style="background:#FBFAF3">
         <td></td>
         <td colspan="12" style="padding:12px 16px 16px">
-          <div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--slate);font-weight:600;margin-bottom:8px">Sổ nhận tiền — ${ins?ins.name:''} · ${r.period}</div>
+          <div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--slate);font-weight:600;margin-bottom:8px">Sổ nhận tiền — ${ins?escHtml(ins.name):''} · ${escHtml(r.period)}</div>
           ${editable ? `
           <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:end;margin-bottom:10px">
             <div class="field" style="width:150px"><label>Ngày nhận</label><input type="date" id="irpay_date_${r.id}" value="${todayISO()}"></div>
@@ -5125,7 +5184,7 @@ function renderAccounts(c){
   partnerModuleSel.addEventListener('change', refreshPartnerEntityOptions);
   applyKindUI();
 
-  document.getElementById('addAccountBtn').addEventListener('click', ()=>{
+  document.getElementById('addAccountBtn').addEventListener('click', async ()=>{
     const name = document.getElementById('af_name').value.trim();
     if(!name){ toast('Nhập tên trước đã'); return; }
     let username = document.getElementById('af_username').value.trim();
@@ -5139,7 +5198,8 @@ function renderAccounts(c){
       const partnerType = partnerModuleSel.value;
       const partnerId = partnerEntitySel.value;
       if(!partnerId){ toast('Chưa có đối tác nào trong module này để gán — thêm NCC/Ngân hàng/Bảo hiểm trước'); return; }
-      const acc = {id:uid('u'), name, username, role:'Đối tác', unit:'', password, modules:[partnerType], partnerType, partnerId, createdAt: todayISO()};
+      const acc = {id:uid('u'), name, username, role:'Đối tác', unit:'', modules:[partnerType], partnerType, partnerId, createdAt: todayISO()};
+      await setAccountPassword(acc, password);
       state.accounts.push(acc);
       const modInfo = MODULES.find(m=>m.id===partnerType);
       const entName = partnerEntityLabel(acc);
@@ -5151,7 +5211,8 @@ function renderAccounts(c){
     const role = document.getElementById('af_role').value;
     const unit = ensureUnit(document.getElementById('af_unit').value);
     const modules = Array.from(document.querySelectorAll('.af_module:checked')).map(el=>el.value);
-    const acc = {id:uid('u'), name, username, role, unit, password, modules, createdAt: todayISO()};
+    const acc = {id:uid('u'), name, username, role, unit, modules, createdAt: todayISO()};
+    await setAccountPassword(acc, password);
     state.accounts.push(acc);
     const modLabel = MODULES.filter(m=>modules.includes(m.id)).map(m=>m.label).join(', ') || '(không module nào)';
     logActivity('create','Tài khoản', `Thêm tài khoản "${name}" (đăng nhập: ${username}; ${role}${unit?', '+unit:''}${password?', có mật khẩu':''}; module: ${modLabel})`);
@@ -5188,8 +5249,9 @@ function renderAccounts(c){
         </td>
         <td>
           <div style="display:flex; align-items:center; gap:4px">
-            <input class="cell-edit" type="password" autocomplete="new-password" data-field="password" data-id="${a.id}" value="${escAttr(a.password||'')}" placeholder="— Không đặt —" style="min-width:110px">
-            <button type="button" class="row-del" data-toggle-pw="${a.id}" title="Xem/ẩn mật khẩu" style="flex:0 0 auto; color:var(--slate)">👁</button>
+            <input class="cell-edit" type="password" autocomplete="new-password" data-field="password" data-id="${a.id}" value="" placeholder="${accountHasPassword(a)?'•••••• (đã đặt) — gõ để đổi':'— Không đặt — gõ để đặt mật khẩu'}" style="min-width:170px">
+            <button type="button" class="row-del" data-toggle-pw="${a.id}" title="Hiện/ẩn chữ đang gõ" style="flex:0 0 auto; color:var(--slate)">👁</button>
+            ${accountHasPassword(a) ? `<button type="button" class="row-del" data-clear-pw="${a.id}" title="Xoá mật khẩu — tài khoản sẽ đăng nhập không cần mật khẩu">🗑</button>` : ''}
           </div>
         </td>
         <td>${a.createdAt||''}</td>
@@ -5219,7 +5281,7 @@ function renderAccounts(c){
     });
   });
   tbl.querySelectorAll('[data-field]').forEach(el=>{
-    el.addEventListener('change', ()=>{
+    el.addEventListener('change', async ()=>{
       const acc = state.accounts.find(a=>a.id===el.dataset.id);
       if(!acc) return;
       const before = acc[el.dataset.field];
@@ -5232,11 +5294,16 @@ function renderAccounts(c){
           el.value = before||''; return;
         }
       }
+      if(el.dataset.field==='password'){
+        // Ô này luôn hiển thị rỗng (không có gì để lộ ra F12) — chỉ khi Admin thực sự gõ chữ mới mới đổi.
+        await setAccountPassword(acc, val);
+        el.value = '';
+        logActivity('update','Tài khoản', `Sửa tài khoản "${acc.name}" (${val ? 'đặt/đổi mật khẩu' : 'xoá mật khẩu'})`);
+        renderAll();
+        return;
+      }
       acc[el.dataset.field] = val;
-      // Không ghi giá trị mật khẩu (cũ/mới) ra Nhật ký hoạt động — chỉ ghi nhận CÓ thay đổi mật khẩu hay không.
-      const logMsg = el.dataset.field==='password'
-        ? `Sửa tài khoản "${acc.name}" (${val ? 'đặt/đổi mật khẩu' : 'xoá mật khẩu'})`
-        : `Sửa tài khoản "${acc.name}" (${el.dataset.field}: "${before||'(trống)'}" → "${val||'(trống)'}")`;
+      const logMsg = `Sửa tài khoản "${acc.name}" (${el.dataset.field}: "${before||'(trống)'}" → "${val||'(trống)'}")`;
       logActivity('update','Tài khoản', logMsg);
       renderAll();
     });
@@ -5246,6 +5313,17 @@ function renderAccounts(c){
       const input = tbl.querySelector(`input[data-field="password"][data-id="${btn.dataset.togglePw}"]`);
       if(!input) return;
       input.type = input.type==='password' ? 'text' : 'password';
+    });
+  });
+  tbl.querySelectorAll('[data-clear-pw]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      const acc = state.accounts.find(a=>a.id===btn.dataset.clearPw);
+      if(!acc) return;
+      if(!confirm(`Xoá mật khẩu của tài khoản "${acc.name}"? Sau đó đăng nhập không cần mật khẩu.`)) return;
+      await setAccountPassword(acc, '');
+      logActivity('update','Tài khoản', `Sửa tài khoản "${acc.name}" (xoá mật khẩu)`);
+      toast('Đã xoá mật khẩu');
+      renderAll();
     });
   });
   tbl.querySelectorAll('[data-del]').forEach(btn=>{
@@ -5315,7 +5393,7 @@ function renderActivityLog(c){
           <td class="who">${l.userName} <span class="role-badge ${roleBadgeClass(l.role)}">${l.role}</span></td>
           <td>${l.entity}</td>
           <td><span class="action-badge ${l.action}">${actionLabel}</span></td>
-          <td class="wrap">${l.detail||''}</td>
+          <td class="wrap">${escHtml(l.detail||'')}</td>
         </tr>`;
       }).join('')}</tbody>`;
   }
@@ -5340,6 +5418,21 @@ function migrateCleanupUnitsV1(){
   }
   return changed;
 }
+// Chuyển toàn bộ mật khẩu đang lưu dạng chữ thô (account.password, kể cả ADMIN_PASSWORD mặc định của Admin
+// gốc) sang dạng đã băm SHA-256 + salt riêng — chạy đúng 1 lần, tự động, không cần ai đặt lại mật khẩu.
+async function migratePasswordsV1(){
+  if(state.__pwHashMigrationV1) return false;
+  state.__pwHashMigrationV1 = true;
+  let changed = false;
+  for(const acc of state.accounts){
+    if(acc.passwordHash){ delete acc.password; continue; } // đã băm rồi, chỉ dọn field thô nếu còn sót
+    const plain = acc.password || (acc.role==='Admin' ? ADMIN_PASSWORD : '');
+    if(plain){ await setAccountPassword(acc, plain); changed = true; }
+    else { delete acc.password; }
+  }
+  if(changed) logActivity('update','Tài khoản', 'Tự động chuyển mật khẩu sang dạng đã băm (SHA-256) — không còn lưu dạng chữ thô');
+  return changed;
+}
 
 (async function init(){
   // Đóng menu tài khoản (Đổi mật khẩu / Đăng xuất) khi bấm ra ngoài — gắn đúng 1 lần, không phụ
@@ -5362,6 +5455,7 @@ function migrateCleanupUnitsV1(){
   currentUserId = (session && session.currentUserId && state.accounts.some(a=>a.id===session.currentUserId))
     ? session.currentUserId : null;
   if(shared && migrateCleanupUnitsV1()) saveState();
+  if(await migratePasswordsV1()) saveState();
   setStoragePill(storageMode);
   renderAll();
 })();
