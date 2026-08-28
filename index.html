@@ -199,9 +199,20 @@
   }
   .kpi-card.rust::before{ background:var(--rust); }
   .kpi-card.forest::before{ background:var(--forest); }
+  .kpi-card.amber::before{ background:var(--amber); }
   .kpi-label{ font-size:11px; text-transform:uppercase; letter-spacing:0.08em; color:var(--slate); }
   .kpi-value{ font-family:var(--font-tabular); font-variant-numeric:tabular-nums; font-size:24px; font-weight:600; margin-top:8px; letter-spacing:-0.01em; }
   .kpi-sub{ font-size:11.5px; color:var(--slate); margin-top:4px; }
+  .mini-stats-row{ display:flex; gap:22px; align-items:center; }
+  .mini-stat{ text-align:right; }
+  .mini-stat-label{ font-size:10px; text-transform:uppercase; letter-spacing:0.06em; color:var(--slate); white-space:nowrap; }
+  .mini-stat-value{ font-family:var(--font-tabular); font-variant-numeric:tabular-nums; font-size:17px; font-weight:700; margin-top:2px; white-space:nowrap; }
+  @media (max-width:900px){ .mini-stats-row{ width:100%; justify-content:flex-start; } .mini-stat{ text-align:left; } }
+  .section-divider{
+    font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.08em; color:var(--slate);
+    margin:30px 0 12px; padding-top:22px; border-top:1px solid var(--line);
+  }
+  .section-divider:first-child{ margin-top:0; padding-top:0; border-top:none; }
 
   /* ---------- Dải thống kê gọn (thay cho kpi-card khi cần tiết kiệm chiều cao) ---------- */
   .stat-strip{
@@ -2231,22 +2242,22 @@ function fullSupplierCalc(supplierId){
 
 /* ---------------------------- Router / Nav ---------------------------- */
 const TABS = [
-  {id:'dashboard', label:'Dashboard', section:'Tổng quan', module:'ncc'},
+  {id:'dashboard', label:'Dashboard', section:'Tổng quan'},
   {id:'monitor', label:'Theo dõi mốc CK', section:'Tổng quan', module:'ncc'},
   {id:'suppliers', label:'Danh mục - Chính sách NCC', section:'NCC Dịch vụ Ô tô - Xe máy', module:'ncc'},
   {id:'policies', label:'Chính sách CK', section:'NCC Dịch vụ Ô tô - Xe máy', hidden:true, parent:'suppliers', module:'ncc', partnerVisible:true, partnerTopLevel:true},
   {id:'transactions', label:'Doanh số - Đối soát CK - Phân bổ', section:'NCC Dịch vụ Ô tô - Xe máy', module:'ncc', partnerVisible:true},
-  {id:'allocation', label:'Phân bổ đơn vị', section:'NCC Dịch vụ Ô tô - Xe máy', hidden:true, parent:'transactions', module:'ncc'},
+  {id:'allocation', label:'Phân bổ đơn vị', section:'NCC Dịch vụ Ô tô - Xe máy', hidden:true, parent:'transactions', module:'ncc', partnerVisible:true},
   {id:'reconcile', label:'Đối soát CK', section:'NCC Dịch vụ Ô tô - Xe máy', hidden:true, parent:'transactions', module:'ncc', partnerVisible:true},
   {id:'nh_suppliers', label:'Danh mục - Chính sách NH', section:'Ngân hàng', module:'nh'},
   {id:'nh_policies', label:'Chính sách CK', section:'Ngân hàng', hidden:true, parent:'nh_suppliers', module:'nh', partnerVisible:true, partnerTopLevel:true},
   {id:'nh_transactions', label:'Doanh số - Đối soát CK - Phân bổ', section:'Ngân hàng', module:'nh', partnerVisible:true},
-  {id:'nh_allocation', label:'Phân bổ đơn vị', section:'Ngân hàng', hidden:true, parent:'nh_transactions', module:'nh'},
+  {id:'nh_allocation', label:'Phân bổ đơn vị', section:'Ngân hàng', hidden:true, parent:'nh_transactions', module:'nh', partnerVisible:true},
   {id:'nh_reconcile', label:'Đối soát CK', section:'Ngân hàng', hidden:true, parent:'nh_transactions', module:'nh', partnerVisible:true},
   {id:'bh_suppliers', label:'Danh mục - Biểu phí bảo hiểm', section:'Bảo hiểm', module:'bh'},
   {id:'bh_policies', label:'Biểu phí bảo hiểm', section:'Bảo hiểm', hidden:true, parent:'bh_suppliers', module:'bh', partnerVisible:true, partnerTopLevel:true},
   {id:'bh_transactions', label:'Doanh số - Đối soát CK - Phân bổ', section:'Bảo hiểm', module:'bh', partnerVisible:true},
-  {id:'bh_allocation', label:'Phân bổ đơn vị', section:'Bảo hiểm', hidden:true, parent:'bh_transactions', module:'bh'},
+  {id:'bh_allocation', label:'Phân bổ đơn vị', section:'Bảo hiểm', hidden:true, parent:'bh_transactions', module:'bh', partnerVisible:true},
   {id:'bh_reconcile', label:'Đối soát CK', section:'Bảo hiểm', hidden:true, parent:'bh_transactions', module:'bh', partnerVisible:true},
   {id:'accounts', label:'Quản trị tài khoản', section:'Hệ thống', roles:['Admin']},
   {id:'activityLog', label:'Nhật ký hoạt động', section:'Hệ thống', roles:['Admin']},
@@ -2621,84 +2632,217 @@ function renderLoginScreen(){
 }
 /* ---------------------------- Dashboard ---------------------------- */
 function renderDashboard(c){
-  setTitle('Dashboard', 'Tổng quan doanh số & chiết khấu toàn hệ thống — ngày báo cáo '+ (toDate(state.reportDate)||new Date()).toLocaleDateString('vi-VN'));
+  const acc = currentUser();
+  const showNcc = hasModuleAccess('ncc', acc);
+  const showNh = hasModuleAccess('nh', acc);
+  const showBh = hasModuleAccess('bh', acc);
+  const {from: pfFrom, to: pfTo} = periodFilterDateObjects();
+  setTitle('Dashboard', 'Tổng quan doanh số & chiết khấu toàn hệ thống'+(globalYearFilter?' — đang lọc theo '+periodFilterDescText()+' (riêng Doanh số/CK dự kiến của NCC vẫn theo đúng Chu kỳ theo dõi riêng, không theo bộ lọc này)':' — ngày báo cáo '+(toDate(state.reportDate)||new Date()).toLocaleDateString('vi-VN')));
 
-  let totalRevenue=0, totalDiscount=0, totalOpportunity=0, needConfirm=0;
-  const rows = state.suppliers.map(s=>{
-    const calc = fullSupplierCalc(s.id);
-    if(calc.revenue===null) needConfirm++;
-    else { totalRevenue += calc.revenue; totalDiscount += calc.total; totalOpportunity += (calc.opportunity||0); }
-    return {s, calc};
-  });
+  let blocks = '';
 
-  const reconTotals = state.reconciliations.reduce((acc,r)=>{
-    const rc = reconCalc(r);
-    acc.due += rc.totalDue; acc.confirmed += Number(r.confirmed)||0; acc.received += rc.received;
-    acc.owed += rc.stillOwed;
-    return acc;
-  }, {due:0, confirmed:0, received:0, owed:0});
-
-  c.innerHTML = `
-    <div class="kpi-row">
-      <div class="kpi-card">
-        <div class="kpi-label">Tổng doanh số kỳ theo dõi</div>
-        <div class="kpi-value">${fmt(totalRevenue)}</div>
-        <div class="kpi-sub">${state.suppliers.length} NCC · ${needConfirm} NCC cần xác nhận chu kỳ</div>
-      </div>
-      <div class="kpi-card forest">
-        <div class="kpi-label">CK / Thưởng dự kiến</div>
-        <div class="kpi-value">${fmt(totalDiscount)}</div>
-        <div class="kpi-sub">Gồm CK theo mốc + Thưởng thêm đã đạt</div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-label">Cơ hội tăng thêm (nếu lên mốc kế tiếp)</div>
-        <div class="kpi-value">${fmt(totalOpportunity)}</div>
-        <div class="kpi-sub">So với mốc CK cơ bản tiếp theo</div>
-      </div>
-      <div class="kpi-card rust">
-        <div class="kpi-label">CK còn phải thu (đối soát)</div>
-        <div class="kpi-value">${fmt(reconTotals.owed)}</div>
-        <div class="kpi-sub">Đã nhận ${fmt(reconTotals.received)} / phải hưởng ${fmt(reconTotals.due)}</div>
-      </div>
-    </div>
-
-    <div class="panel">
-      <div class="panel-head">
-        <div>
-          <h2>Top NCC có cơ hội tăng CK</h2>
-          <div class="desc">Xếp hạng tự động theo khoảng cách tới mốc kế tiếp — không giới hạn số lượng NCC</div>
+  /* ---------------- Khối NCC Dịch vụ Ô tô - Xe máy ---------------- */
+  let nccTop = [];
+  if(showNcc){
+    let totalRevenue=0, totalDiscount=0, totalOpportunity=0, needConfirm=0;
+    const rows = state.suppliers.map(s=>{
+      const calc = fullSupplierCalc(s.id);
+      if(calc.revenue===null) needConfirm++;
+      else { totalRevenue += calc.revenue; totalDiscount += calc.total; totalOpportunity += (calc.opportunity||0); }
+      return {s, calc};
+    });
+    // "Còn phải thu" tôn trọng đúng bộ lọc Tháng/Năm (khác với Doanh số/CK dự kiến ở trên — 2 khái niệm
+    // khác nhau: 1 bên theo Chu kỳ theo dõi riêng từng NCC, 1 bên theo từng Kỳ đối soát đã lập).
+    const reconList = state.reconciliations.filter(r=>periodFilterMatchesRange(r.fromDate, r.toDate));
+    const reconTotals = reconList.reduce((acc,r)=>{
+      const rc = reconCalc(r);
+      acc.due += rc.totalDue; acc.received += rc.received; acc.owed += rc.stillOwed;
+      return acc;
+    }, {due:0, received:0, owed:0});
+    nccTop = rows.filter(r=>r.calc.revenue!==null && r.calc.next).sort((a,b)=>b.calc.opportunity-a.calc.opportunity).slice(0,15);
+    blocks += `
+      <div class="section-divider">NCC Dịch vụ Ô tô - Xe máy</div>
+      <div class="kpi-row">
+        <div class="kpi-card">
+          <div class="kpi-label">Tổng doanh số kỳ theo dõi</div>
+          <div class="kpi-value">${fmt(totalRevenue)}</div>
+          <div class="kpi-sub">${state.suppliers.length} NCC · ${needConfirm} NCC cần xác nhận chu kỳ</div>
+        </div>
+        <div class="kpi-card forest">
+          <div class="kpi-label">CK / Thưởng dự kiến</div>
+          <div class="kpi-value">${fmt(totalDiscount)}</div>
+          <div class="kpi-sub">Gồm CK theo mốc + Thưởng thêm đã đạt</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Cơ hội tăng thêm (nếu lên mốc kế tiếp)</div>
+          <div class="kpi-value">${fmt(totalOpportunity)}</div>
+          <div class="kpi-sub">So với mốc CK cơ bản tiếp theo</div>
+        </div>
+        <div class="kpi-card rust">
+          <div class="kpi-label">CK còn phải thu (đối soát)</div>
+          <div class="kpi-value">${fmt(reconTotals.owed)}</div>
+          <div class="kpi-sub">Đã nhận ${fmt(reconTotals.received)} / phải hưởng ${fmt(reconTotals.due)}${globalYearFilter?' · '+escHtml(periodFilterDescText()):''}</div>
         </div>
       </div>
-      <div class="panel-body flush">
-        <div class="tbl-wrap">
-          <table class="data" id="dashTopTable"></table>
+      <div class="panel">
+        <div class="panel-head"><div><h2>Top NCC có cơ hội tăng CK</h2>
+        <div class="desc">Xếp hạng tự động theo khoảng cách tới mốc kế tiếp — không giới hạn số lượng NCC</div></div></div>
+        <div class="panel-body flush"><div class="tbl-wrap"><table class="data" id="dashTopTable"></table></div></div>
+      </div>`;
+  }
+
+  /* ---------------- Khối Ngân hàng ---------------- */
+  let nhRanking = [];
+  if(showNh){
+    let nhRevenue=0, nhComm=0, nhMissingPolicy=0;
+    state.banks.forEach(b=>{ nhRevenue += bankLoanSum(b.id, pfFrom, pfTo); nhComm += bankCommissionSum(b.id, pfFrom, pfTo); });
+    state.bankTransactions.forEach(t=>{
+      if(t.status!=='Đã giải ngân' || !periodFilterMatches(t.date)) return;
+      if(!activeBankPolicy(t.bankId, t.date)) nhMissingPolicy++;
+    });
+    const nhReconList = state.bankReconciliations.filter(r=>periodFilterMatchesRange(r.fromDate, r.toDate));
+    const nhReconTotals = nhReconList.reduce((acc,r)=>{
+      const rc = bankReconCalc(r);
+      acc.due += rc.totalDue; acc.received += rc.received; acc.owed += rc.stillOwed;
+      return acc;
+    }, {due:0, received:0, owed:0});
+    nhRanking = state.banks.map(b=>{
+      const owed = nhReconList.filter(r=>r.bankId===b.id).reduce((s,r)=>s+bankReconCalc(r).stillOwed, 0);
+      return {b, owed};
+    }).filter(x=>x.owed>0).sort((a,b)=>b.owed-a.owed).slice(0,10);
+    blocks += `
+      <div class="section-divider">Ngân hàng</div>
+      <div class="kpi-row">
+        <div class="kpi-card">
+          <div class="kpi-label">Tổng số tiền giải ngân${globalYearFilter?' ('+escHtml(periodFilterDescText())+')':' kỳ theo dõi'}</div>
+          <div class="kpi-value">${fmt(nhRevenue)}</div>
+          <div class="kpi-sub">${state.banks.length} ngân hàng · chỉ tính hồ sơ "Đã giải ngân"</div>
+        </div>
+        <div class="kpi-card forest">
+          <div class="kpi-label">Hoa hồng dự kiến</div>
+          <div class="kpi-value">${fmt(nhComm)}</div>
+          <div class="kpi-sub">Tự tính theo chính sách đúng tháng giải ngân</div>
+        </div>
+        <div class="kpi-card ${nhMissingPolicy>0?'amber':''}">
+          <div class="kpi-label">⚠ Hồ sơ chưa tính được hoa hồng</div>
+          <div class="kpi-value">${nhMissingPolicy}</div>
+          <div class="kpi-sub">Đã giải ngân nhưng ngân hàng chưa có chính sách tháng đó</div>
+        </div>
+        <div class="kpi-card rust">
+          <div class="kpi-label">Hoa hồng còn phải thu (đối soát)</div>
+          <div class="kpi-value">${fmt(nhReconTotals.owed)}</div>
+          <div class="kpi-sub">Đã nhận ${fmt(nhReconTotals.received)} / phải hưởng ${fmt(nhReconTotals.due)}${globalYearFilter?' · '+escHtml(periodFilterDescText()):''}</div>
         </div>
       </div>
-    </div>
-  `;
+      <div class="panel">
+        <div class="panel-head"><div><h2>Top Ngân hàng theo Hoa hồng còn phải thu</h2>
+        <div class="desc">Xếp hạng theo số tiền còn phải đối soát/đòi — cao nhất trước</div></div></div>
+        <div class="panel-body flush"><div class="tbl-wrap"><table class="data" id="dashNhTable"></table></div></div>
+      </div>`;
+  }
 
-  const top = rows.filter(r=>r.calc.revenue!==null && r.calc.next).sort((a,b)=>b.calc.opportunity-a.calc.opportunity).slice(0,15);
-  const tbl = document.getElementById('dashTopTable');
-  if(top.length===0){
-    tbl.outerHTML = `<div class="empty"><div class="big">Chưa có cơ hội nào để xếp hạng</div>Hãy khai báo Chu kỳ theo dõi ở tab "Theo dõi mốc CK" và nhập doanh số.</div>`;
+  /* ---------------- Khối Bảo hiểm ---------------- */
+  let bhRanking = [];
+  if(showBh){
+    let bhRevenue=0, bhComm=0;
+    state.insurers.forEach(ins=>{ bhRevenue += insPremiumSum(ins.id, pfFrom, pfTo); bhComm += insCommissionSum(ins.id, pfFrom, pfTo); });
+    const bhReconList = state.insReconciliations.filter(r=>periodFilterMatchesRange(r.fromDate, r.toDate));
+    const bhReconTotals = bhReconList.reduce((acc,r)=>{
+      const rc = insReconCalc(r);
+      acc.due += rc.totalDue; acc.received += rc.received; acc.owed += rc.stillOwed;
+      return acc;
+    }, {due:0, received:0, owed:0});
+    const bhAlertCount = insAllocAlertCount();
+    bhRanking = state.insurers.map(ins=>{
+      const owed = bhReconList.filter(r=>r.insurerId===ins.id).reduce((s,r)=>s+insReconCalc(r).stillOwed, 0);
+      return {ins, owed};
+    }).filter(x=>x.owed>0).sort((a,b)=>b.owed-a.owed).slice(0,10);
+    blocks += `
+      <div class="section-divider">Bảo hiểm</div>
+      <div class="kpi-row">
+        <div class="kpi-card">
+          <div class="kpi-label">Tổng phí bảo hiểm thu${globalYearFilter?' ('+escHtml(periodFilterDescText())+')':' kỳ theo dõi'}</div>
+          <div class="kpi-value">${fmt(bhRevenue)}</div>
+          <div class="kpi-sub">${state.insurers.length} NCC bảo hiểm · chỉ tính hợp đồng "Đã cấp đơn"</div>
+        </div>
+        <div class="kpi-card forest">
+          <div class="kpi-label">Hoa hồng dự kiến</div>
+          <div class="kpi-value">${fmt(bhComm)}</div>
+          <div class="kpi-sub">Theo tỷ lệ BHVC/BHDS của từng NCC</div>
+        </div>
+        <div class="kpi-card ${bhAlertCount>0?'amber':''}">
+          <div class="kpi-label">⚠ Hãng vượt ngưỡng cảnh báo tỷ lệ bán</div>
+          <div class="kpi-value">${bhAlertCount}</div>
+          <div class="kpi-sub">Chênh lệch Thực tế so với Đề xuất tỷ lệ bán</div>
+        </div>
+        <div class="kpi-card rust">
+          <div class="kpi-label">Hoa hồng còn phải thu (đối soát)</div>
+          <div class="kpi-value">${fmt(bhReconTotals.owed)}</div>
+          <div class="kpi-sub">Đã nhận ${fmt(bhReconTotals.received)} / phải hưởng ${fmt(bhReconTotals.due)}${globalYearFilter?' · '+escHtml(periodFilterDescText()):''}</div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><div><h2>Top NCC bảo hiểm theo Hoa hồng còn phải thu</h2>
+        <div class="desc">Xếp hạng theo số tiền còn phải đối soát/đòi — cao nhất trước</div></div></div>
+        <div class="panel-body flush"><div class="tbl-wrap"><table class="data" id="dashBhTable"></table></div></div>
+      </div>`;
+  }
+
+  if(!showNcc && !showNh && !showBh){
+    c.innerHTML = `<div class="empty"><div class="big">Chưa có module nào để hiển thị</div>Liên hệ Admin để được cấp quyền xem module.</div>`;
     return;
   }
-  tbl.innerHTML = `
-    <thead><tr>
-      <th>NCC</th><th class="num">DS kỳ</th><th class="num">Mốc tiếp theo</th><th class="num">Còn thiếu</th>
-      <th class="num">CK hiện tại</th><th class="num">CK mục tiêu</th><th class="num">Cơ hội tăng thêm</th>
-    </tr></thead>
-    <tbody>${top.map(r=>`
-      <tr>
-        <td class="wrap">${escHtml(r.s.name)}</td>
-        <td class="num">${fmt(r.calc.revenue)}</td>
-        <td class="num">${r.calc.next?fmt(r.calc.next.threshold):'—'}</td>
-        <td class="num">${fmt(r.calc.missing)}</td>
-        <td class="num">${fmtPct(r.calc.cur?r.calc.cur.rate:0)}</td>
-        <td class="num">${r.calc.next?fmtPct(r.calc.next.rate):'—'}</td>
-        <td class="num" style="color:var(--amber);font-weight:600">${fmt(r.calc.opportunity)}</td>
-      </tr>`).join('')}
-    </tbody>`;
+  c.innerHTML = blocks;
+
+  if(showNcc){
+    const tbl = document.getElementById('dashTopTable');
+    if(nccTop.length===0){
+      tbl.outerHTML = `<div class="empty"><div class="big">Chưa có cơ hội nào để xếp hạng</div>Hãy khai báo Chu kỳ theo dõi ở tab "Theo dõi mốc CK" và nhập doanh số.</div>`;
+    } else {
+      tbl.innerHTML = `
+        <thead><tr>
+          <th>NCC</th><th class="num">DS kỳ</th><th class="num">Mốc tiếp theo</th><th class="num">Còn thiếu</th>
+          <th class="num">CK hiện tại</th><th class="num">CK mục tiêu</th><th class="num">Cơ hội tăng thêm</th>
+        </tr></thead>
+        <tbody>${nccTop.map(r=>`
+          <tr>
+            <td class="wrap">${escHtml(r.s.name)}</td>
+            <td class="num">${fmt(r.calc.revenue)}</td>
+            <td class="num">${r.calc.next?fmt(r.calc.next.threshold):'—'}</td>
+            <td class="num">${fmt(r.calc.missing)}</td>
+            <td class="num">${fmtPct(r.calc.cur?r.calc.cur.rate:0)}</td>
+            <td class="num">${r.calc.next?fmtPct(r.calc.next.rate):'—'}</td>
+            <td class="num" style="color:var(--amber);font-weight:600">${fmt(r.calc.opportunity)}</td>
+          </tr>`).join('')}
+        </tbody>`;
+    }
+  }
+
+  if(showNh){
+    const tbl = document.getElementById('dashNhTable');
+    if(nhRanking.length===0){
+      tbl.outerHTML = `<div class="empty"><div class="big">Không có khoản nào còn phải thu${globalYearFilter?' trong '+escHtml(periodFilterDescText()):''}</div></div>`;
+    } else {
+      tbl.innerHTML = `
+        <thead><tr><th>Ngân hàng</th><th class="num">Còn phải thu</th></tr></thead>
+        <tbody>${nhRanking.map(r=>`
+          <tr><td class="wrap">${escHtml(r.b.name)}</td><td class="num" style="color:var(--rust);font-weight:600">${fmt(r.owed)}</td></tr>`).join('')}
+        </tbody>`;
+    }
+  }
+
+  if(showBh){
+    const tbl = document.getElementById('dashBhTable');
+    if(bhRanking.length===0){
+      tbl.outerHTML = `<div class="empty"><div class="big">Không có khoản nào còn phải thu${globalYearFilter?' trong '+escHtml(periodFilterDescText()):''}</div></div>`;
+    } else {
+      tbl.innerHTML = `
+        <thead><tr><th>NCC bảo hiểm</th><th class="num">Còn phải thu</th></tr></thead>
+        <tbody>${bhRanking.map(r=>`
+          <tr><td class="wrap">${escHtml(r.ins.name)}</td><td class="num" style="color:var(--rust);font-weight:600">${fmt(r.owed)}</td></tr>`).join('')}
+        </tbody>`;
+    }
+  }
 }
 
 /* ---------------------------- Theo dõi mốc CK ---------------------------- */
@@ -3098,7 +3242,9 @@ function renderTransactions(c){
   if(lockedUnit) txUnitFilter = lockedUnit; // NV chỉ nên thấy đúng đơn vị mình phụ trách theo mặc định
   c.innerHTML = `
     <div class="panel">
-      <div class="panel-head"><div><h2>Bộ lọc</h2><div class="desc">Xem theo đúng Đơn vị và/hoặc NCC — áp dụng cho cả bảng Sổ chứng từ bên dưới, không ảnh hưởng gì tới việc ghi nhận mới</div></div></div>
+      <div class="panel-head"><div><h2>Bộ lọc</h2><div class="desc">Xem theo đúng Đơn vị và/hoặc NCC — áp dụng cho cả bảng Sổ chứng từ bên dưới, không ảnh hưởng gì tới việc ghi nhận mới</div></div>
+        <div class="mini-stats-row" id="txSummaryStats"></div>
+      </div>
       <div class="panel-body">
         <div class="form-grid">
           <div class="field">
@@ -3206,6 +3352,14 @@ function renderTransactions(c){
     exportToExcel('DoanhSo_NCC_'+todayISO()+'.xlsx', [{name:'Doanh số', rows}]);
   });
   renderTxTable(editable);
+  const sumBox = document.getElementById('txSummaryStats');
+  if(sumBox){
+    const list = getFilteredTx();
+    const totalNet = list.reduce((s,t)=>s+(Number(t.gross)||0)-(Number(t.returns)||0), 0);
+    sumBox.innerHTML = `
+      <div class="mini-stat"><div class="mini-stat-label">Tổng doanh số tính CK</div><div class="mini-stat-value">${fmt(totalNet)}đ</div></div>
+      <div class="mini-stat"><div class="mini-stat-label">Số chứng từ</div><div class="mini-stat-value">${list.length}</div></div>`;
+  }
 }
 function getFilteredTx(){
   const unitFilter = (txUnitFilter||'').trim().toLowerCase();
@@ -3294,12 +3448,14 @@ function periodFilterDateObjects(){
   return { from: from ? toDate(from) : null, to: to ? toDate(to) : null };
 }
 function renderAllocation(c){
-  setTitle('Phân bổ đơn vị', 'Đóng góp doanh số của từng đơn vị cho từng NCC'+(globalYearFilter?' — '+periodFilterDescText():' — cộng dồn toàn thời gian'));
+  const partnerAcc = isPartnerAccount(currentUser()) ? currentUser() : null;
+  setTitle('Phân bổ đơn vị', (partnerAcc?'Doanh số của bạn theo từng đơn vị':'Đóng góp doanh số của từng đơn vị cho từng NCC')+(globalYearFilter?' — '+periodFilterDescText():' — cộng dồn toàn thời gian'));
   const unitOwners = {};
   state.units.forEach(u=>{ unitOwners[u] = state.accounts.filter(a=>a.unit===u).map(a=>a.name); });
   const unassignedCount = state.units.filter(u=>unitOwners[u].length===0).length;
   const canManageUnits = canEdit('settings');
   c.innerHTML = `
+    ${partnerAcc ? '' : `
     <div class="panel">
       <div class="panel-head"><div><h2>Người phụ trách theo đơn vị</h2>
       <div class="desc">Lấy từ Đơn vị phụ trách ở tab Quản trị tài khoản — ${unassignedCount>0?unassignedCount+' đơn vị chưa gán ai':'mọi đơn vị đều đã có người phụ trách'}${canManageUnits?' · bấm ✕ trên thẻ để xoá đơn vị':''}</div></div>
@@ -3315,10 +3471,10 @@ function renderAllocation(c){
             </span>`).join('')}
         </div>`}
       </div>
-    </div>
+    </div>`}
     <div class="panel">
-      <div class="panel-head"><div><h2>Ma trận NCC × Đơn vị</h2>
-      <div class="desc">${state.units.length} đơn vị hiện có · sửa danh sách đơn vị ở tab Cài đặt · % dưới mỗi ô là % hoàn thành chỉ tiêu đơn vị so với mốc đã phân bổ (xem/chỉnh ở nút "Phân bổ đơn vị" trong tab Chính sách CK; mốc chưa phân bổ chỉ tiêu sẽ không hiện %)</div></div></div>
+      <div class="panel-head"><div><h2>${partnerAcc?'Doanh số theo Đơn vị':'Ma trận NCC × Đơn vị'}</h2>
+      <div class="desc">${state.units.length} đơn vị hiện có${partnerAcc?'':' · sửa danh sách đơn vị ở tab Cài đặt · % dưới mỗi ô là % hoàn thành chỉ tiêu đơn vị so với mốc đã phân bổ (xem/chỉnh ở nút "Phân bổ đơn vị" trong tab Chính sách CK; mốc chưa phân bổ chỉ tiêu sẽ không hiện %)'}</div></div></div>
       <div class="panel-body flush"><div class="matrix-scroll"><table class="data matrix-fixed" id="allocTable"></table></div></div>
     </div>
   `;
@@ -3337,7 +3493,9 @@ function renderAllocation(c){
     });
   });
   const tbl = document.getElementById('allocTable');
-  if(state.suppliers.length===0){
+  const pf = partnerScopeFilter('supplierId');
+  const supplierScope = pf ? state.suppliers.filter(s=>pf({supplierId:s.id})) : state.suppliers;
+  if(supplierScope.length===0){
     tbl.outerHTML = `<div class="empty"><div class="big">Chưa có NCC</div></div>`; return;
   }
   // Mốc dùng để tính % hoàn thành theo đơn vị: CHỈ xét trong số các mốc ĐÃ ĐƯỢC PHÂN BỔ chỉ tiêu
@@ -3353,7 +3511,7 @@ function renderAllocation(c){
     return withTargets.slice().sort((a,b)=>b.threshold-a.threshold)[0];
   }
   const {from: pfFrom, to: pfTo} = periodFilterDateObjects();
-  const rows = state.suppliers.map(s=>{
+  const rows = supplierScope.map(s=>{
     const perUnit = state.units.map(u=>sumRevenue(s.id, pfFrom, pfTo, u));
     const total = perUnit.reduce((a,b)=>a+b,0);
     const max = Math.max(0,...perUnit);
@@ -4049,7 +4207,9 @@ function renderBankTransactions(c){
   const editable = canEdit('nh_transactions');
   c.innerHTML = `
     <div class="panel">
-      <div class="panel-head"><div><h2>Bộ lọc</h2><div class="desc">Xem theo đúng Đơn vị và/hoặc Ngân hàng — áp dụng cho Sổ hồ sơ vay bên dưới, không ảnh hưởng gì tới việc ghi nhận mới</div></div></div>
+      <div class="panel-head"><div><h2>Bộ lọc</h2><div class="desc">Xem theo đúng Đơn vị và/hoặc Ngân hàng — áp dụng cho Sổ hồ sơ vay bên dưới, không ảnh hưởng gì tới việc ghi nhận mới</div></div>
+        <div class="mini-stats-row" id="btxSummaryStats"></div>
+      </div>
       <div class="panel-body">
         <div class="form-grid">
           <div class="field">
@@ -4154,6 +4314,14 @@ function renderBankTransactions(c){
     exportToExcel('DoanhSo_NganHang_'+todayISO()+'.xlsx', [{name:'Doanh số NH', rows}]);
   });
   renderBankTxTable(editable);
+  const sumBox = document.getElementById('btxSummaryStats');
+  if(sumBox){
+    const list = getFilteredBankTx();
+    const totalLoan = list.reduce((s,t)=>s+(Number(t.loanAmount)||0), 0);
+    sumBox.innerHTML = `
+      <div class="mini-stat"><div class="mini-stat-label">Tổng số tiền vay</div><div class="mini-stat-value">${fmt(totalLoan)}đ</div></div>
+      <div class="mini-stat"><div class="mini-stat-label">Số hồ sơ</div><div class="mini-stat-value">${list.length}</div></div>`;
+  }
 }
 function getFilteredBankTx(){
   const unitFilter = (bankTxUnitFilter||'').trim().toLowerCase();
@@ -4275,17 +4443,20 @@ function renderBankTxTable(editable){
 
 /* ---------------------------- Ngân hàng · Phân bổ đơn vị ---------------------------- */
 function renderBankAllocation(c){
-  setTitle('Phân bổ đơn vị', 'Đóng góp số tiền vay giải ngân của từng đơn vị cho từng ngân hàng'+(globalYearFilter?' — '+periodFilterDescText():' — cộng dồn toàn thời gian'));
+  const partnerAcc = isPartnerAccount(currentUser()) ? currentUser() : null;
+  setTitle('Phân bổ đơn vị', (partnerAcc?'Số tiền giải ngân của bạn theo từng đơn vị':'Đóng góp số tiền vay giải ngân của từng đơn vị cho từng ngân hàng')+(globalYearFilter?' — '+periodFilterDescText():' — cộng dồn toàn thời gian'));
   const unitOwners = {};
   state.units.forEach(u=>{ unitOwners[u] = state.accounts.filter(a=>a.unit===u).map(a=>a.name); });
-  const tbl0 = `<div class="panel"><div class="panel-head"><div><h2>Ma trận Ngân hàng × Đơn vị (số tiền giải ngân)</h2>
+  const tbl0 = `<div class="panel"><div class="panel-head"><div><h2>${partnerAcc?'Số tiền giải ngân theo Đơn vị':'Ma trận Ngân hàng × Đơn vị (số tiền giải ngân)'}</h2>
     <div class="desc">${state.units.length} đơn vị hiện có · chỉ tính hồ sơ trạng thái "Đã giải ngân"${globalYearFilter?' · đang lọc theo '+escHtml(periodFilterDescText()):''}</div></div></div>
     <div class="panel-body flush"><div class="matrix-scroll"><table class="data matrix-fixed" id="bankAllocTable"></table></div></div></div>`;
   c.innerHTML = tbl0;
   const tbl = document.getElementById('bankAllocTable');
-  if(state.banks.length===0){ tbl.outerHTML = `<div class="empty"><div class="big">Chưa có ngân hàng</div></div>`; return; }
+  const pf = partnerScopeFilter('bankId');
+  const bankScope = pf ? state.banks.filter(b=>pf({bankId:b.id})) : state.banks;
+  if(bankScope.length===0){ tbl.outerHTML = `<div class="empty"><div class="big">Chưa có ngân hàng</div></div>`; return; }
   const {from: pfFrom, to: pfTo} = periodFilterDateObjects();
-  const rows = state.banks.map(b=>{
+  const rows = bankScope.map(b=>{
     const perUnit = state.units.map(u=>bankLoanSum(b.id, pfFrom, pfTo, u));
     const total = perUnit.reduce((a,x)=>a+x,0);
     const commTotal = bankCommissionSum(b.id, pfFrom, pfTo);
@@ -4991,7 +5162,9 @@ function renderInsTransactions(c){
   const editable = canEdit('bh_transactions');
   c.innerHTML = `
     <div class="panel">
-      <div class="panel-head"><div><h2>Bộ lọc</h2><div class="desc">Xem theo đúng Đơn vị và/hoặc NCC bảo hiểm — áp dụng cho Sổ hợp đồng bên dưới, không ảnh hưởng gì tới việc ghi nhận mới</div></div></div>
+      <div class="panel-head"><div><h2>Bộ lọc</h2><div class="desc">Xem theo đúng Đơn vị và/hoặc NCC bảo hiểm — áp dụng cho Sổ hợp đồng bên dưới, không ảnh hưởng gì tới việc ghi nhận mới</div></div>
+        <div class="mini-stats-row" id="itxSummaryStats"></div>
+      </div>
       <div class="panel-body">
         <div class="form-grid">
           <div class="field">
@@ -5098,6 +5271,14 @@ function renderInsTransactions(c){
     exportToExcel('DoanhSo_BaoHiem_'+todayISO()+'.xlsx', [{name:'Doanh số Bảo hiểm', rows}]);
   });
   renderInsTxTable(editable);
+  const sumBox = document.getElementById('itxSummaryStats');
+  if(sumBox){
+    const list = getFilteredInsTx();
+    const totalPremium = list.reduce((s,t)=>s+(Number(t.premiumAmount)||0), 0);
+    sumBox.innerHTML = `
+      <div class="mini-stat"><div class="mini-stat-label">Tổng phí bảo hiểm thu</div><div class="mini-stat-value">${fmt(totalPremium)}đ</div></div>
+      <div class="mini-stat"><div class="mini-stat-label">Số hợp đồng</div><div class="mini-stat-value">${list.length}</div></div>`;
+  }
 }
 function getFilteredInsTx(){
   const unitFilter = (insTxUnitFilter||'').trim().toLowerCase();
@@ -5222,12 +5403,14 @@ function insAlertBadgeHTML(){
   return n>0 ? `<span class="alert-dot" title="${n} hãng đang lệch tỷ lệ bán quá ngưỡng cảnh báo">${n}</span>` : '';
 }
 function renderInsAllocation(c){
-  setTitle('Phân bổ đơn vị', 'Đóng góp phí bảo hiểm thu của từng đơn vị cho từng NCC — cộng dồn toàn thời gian, chỉ tính hợp đồng "Đã cấp đơn"');
+  const partnerAcc = isPartnerAccount(currentUser()) ? currentUser() : null;
+  setTitle('Phân bổ đơn vị', (partnerAcc?'Phí bảo hiểm thu của bạn theo từng đơn vị':'Đóng góp phí bảo hiểm thu của từng đơn vị cho từng NCC — cộng dồn toàn thời gian, chỉ tính hợp đồng "Đã cấp đơn"'));
   const editable = canEdit('bh_allocation');
   const isAdmin = currentRole()==='Admin';
   const thresholdPct = round2(insAlertThreshold()*100);
   const formulaTip = 'DT bán ra (BR): tự tính từ Doanh số, hợp đồng "Đã cấp đơn" trong tháng. DT dịch vụ/sửa chữa (DV): nhập tay theo tháng. Đề xuất tỷ lệ bán tháng sau = DT dịch vụ của hãng ÷ Tổng DT dịch vụ toàn hệ thống trong tháng (các hãng cộng lại đúng 100%).';
   c.innerHTML = `
+    ${partnerAcc ? '' : `
     <div class="panel">
       <div class="panel-head">
         <div><h2>Doanh thu bảo hiểm theo hãng &amp; đề xuất tỷ lệ bán tháng sau <span class="info-tip" title="${escAttr(formulaTip)}">i</span></h2>
@@ -5245,11 +5428,12 @@ function renderInsAllocation(c){
       <div class="panel-body flush"><div class="tbl-wrap"><table class="data" id="insRevenueTable"></table></div></div>
       ${!editable ? lockedNote('Bạn đang xem ở chế độ chỉ đọc — chỉ Admin/Quản lý mới nhập được DT dịch vụ/sửa chữa theo hãng.') : ''}
       ${editable && !isAdmin ? `<div class="helper" style="padding:0 20px 16px">🔒 Chỉ Admin mới đổi được ngưỡng cảnh báo chênh lệch.</div>` : ''}
-    </div>
-    <div class="panel"><div class="panel-head"><div><h2>Ma trận NCC bảo hiểm × Đơn vị (phí bảo hiểm thu)</h2>
+    </div>`}
+    <div class="panel"><div class="panel-head"><div><h2>${partnerAcc?'Phí bảo hiểm thu theo Đơn vị':'Ma trận NCC bảo hiểm × Đơn vị (phí bảo hiểm thu)'}</h2>
       <div class="desc">${state.units.length} đơn vị hiện có · chỉ tính hợp đồng trạng thái "Đã cấp đơn"${globalYearFilter?' · đang lọc theo '+escHtml(periodFilterDescText()):' · cộng dồn toàn thời gian'}</div></div></div>
       <div class="panel-body flush"><div class="matrix-scroll"><table class="data matrix-fixed" id="insAllocTable"></table></div></div></div>
   `;
+  if(!partnerAcc){
   const monthInput = document.getElementById('insAllocMonthInput');
   monthInput.addEventListener('change', ()=>{
     insAllocMonth = monthInput.value || currentMonthISO();
@@ -5280,11 +5464,14 @@ function renderInsAllocation(c){
     });
   }
   renderInsRevenueTable(editable);
+  }
 
   const tbl = document.getElementById('insAllocTable');
-  if(state.insurers.length===0){ tbl.outerHTML = `<div class="empty"><div class="big">Chưa có NCC bảo hiểm</div></div>`; return; }
+  const pf = partnerScopeFilter('insurerId');
+  const insurerScope = pf ? state.insurers.filter(ins=>pf({insurerId:ins.id})) : state.insurers;
+  if(insurerScope.length===0){ tbl.outerHTML = `<div class="empty"><div class="big">Chưa có NCC bảo hiểm</div></div>`; return; }
   const {from: pfFrom, to: pfTo} = periodFilterDateObjects();
-  const rows = state.insurers.map(ins=>{
+  const rows = insurerScope.map(ins=>{
     const perUnit = state.units.map(u=>insPremiumSum(ins.id, pfFrom, pfTo, u));
     const total = perUnit.reduce((a,x)=>a+x,0);
     const commTotal = insCommissionSum(ins.id, pfFrom, pfTo);
