@@ -6062,22 +6062,6 @@ function renderActivityLog(c){
 }
 
 /* ---------------------------- Init ---------------------------- */
-/* Dọn dẹp 1 lần: xoá hết các đơn vị mặc định (Đơn vị B..T còn sót từ bản cũ), chỉ giữ lại "Đơn vị A".
-   Chạy đúng 1 lần (đánh dấu bằng state.__unitsCleanupV1) để không xoá nhầm các đơn vị thật
-   người dùng tự thêm sau này. Chứng từ Doanh số cũ vẫn giữ nguyên tên đơn vị đã ghi, không bị xoá. */
-function migrateCleanupUnitsV1(){
-  if(state.__unitsCleanupV1) return false;
-  state.__unitsCleanupV1 = true;
-  const keep = 'Đơn vị A';
-  const before = state.units.slice();
-  const changed = before.length!==1 || before[0]!==keep;
-  if(changed){
-    state.units = [keep];
-    state.accounts.forEach(a=>{ if(a.unit && a.unit!==keep) a.unit=''; });
-    logActivity('delete','Cài đặt', `Dọn dẹp đơn vị: xoá ${before.filter(u=>u!==keep).length} đơn vị mặc định, chỉ giữ lại "${keep}"`);
-  }
-  return changed;
-}
 // Chuyển toàn bộ mật khẩu đang lưu dạng chữ thô (account.password, kể cả ADMIN_PASSWORD mặc định của Admin
 // gốc) sang dạng đã băm SHA-256 + salt riêng — chạy đúng 1 lần, tự động, không cần ai đặt lại mật khẩu.
 async function migratePasswordsV1(){
@@ -6175,7 +6159,6 @@ function migrateActivityLogTrashSplitV1(){
   // luôn tải đủ cả 3, tài khoản khác chỉ tải đúng module mình dùng — đây chính là phần "tách đồng bộ theo
   // module" giúp giảm băng thông cho tài khoản chỉ dùng 1-2 module.
   await syncBranchesForCurrentUser();
-  if(shared && migrateCleanupUnitsV1()) saveState();
   if(await migratePasswordsV1()) saveState();
   if(currentRole()==='Admin' && migrateActivityLogTrashSplitV1()) saveState(); // cần đủ cả 4 nhánh nên chỉ Admin chạy được đúng
   setStoragePill(storageMode);
