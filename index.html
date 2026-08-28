@@ -563,6 +563,13 @@
   .user-menu button:hover{ background:var(--paper); }
   .user-menu button.danger{ color:var(--rust); }
   .user-menu .menu-divider{ height:1px; background:var(--line); margin:4px 0; }
+  .period-filter-wrap{ position:relative; }
+  .period-filter-menu{
+    position:absolute; right:0; top:calc(100% + 8px); z-index:60;
+    min-width:260px; background:#fff; border:1px solid var(--line); border-radius:10px;
+    box-shadow:0 16px 34px rgba(18,23,43,0.16); overflow:hidden; display:none; padding:14px;
+  }
+  .period-filter-menu.open{ display:block; }
   .user-chip{
     display:flex; align-items:center; gap:8px; padding:6px 12px 6px 6px; border-radius:999px;
     background:#fff; border:1px solid var(--line); font-size:12.5px; cursor:pointer;
@@ -614,6 +621,10 @@
       </div>
       <div class="topbar-right">
         <button type="button" id="globalSearchBtn" class="btn btn-ghost" title="Tìm kiếm toàn hệ thống (khách hàng, NCC, mã chứng từ...)">🔍 Tìm kiếm</button>
+        <div class="period-filter-wrap">
+          <button type="button" id="periodFilterBtn" class="btn btn-ghost" title="Lọc theo tháng/năm — áp dụng cho Doanh số ở mọi module">📅 <span id="periodFilterLabel">Tất cả thời gian</span></button>
+          <div class="period-filter-menu" id="periodFilterMenu"></div>
+        </div>
         <span class="storage-pill" id="storagePill"><span class="blip"></span><span>Đang tải…</span></span>
         <div class="user-chip-wrap">
           <div class="user-chip" id="userChip"></div>
@@ -2246,6 +2257,89 @@ let activeTab = 'dashboard';
 let txUnitFilter = '';
 let txSupplierFilter = '';
 let reconExpanded = new Set();
+// Bộ lọc Tháng/Năm dùng CHUNG cho cả 3 module (nút 📅 trên đầu trang) — chọn 1 lần, áp dụng cho Doanh số
+// ở mọi module, giữ nguyên lựa chọn khi chuyển tab. Rỗng = không lọc gì theo thời gian.
+let globalYearFilter = '';  // '' hoặc 'YYYY'
+let globalMonthFilter = ''; // '' hoặc 'MM' (chỉ có nghĩa khi đã chọn globalYearFilter)
+function periodFilterMatches(dateStr){
+  if(!globalYearFilter) return true;
+  if(!dateStr || !dateStr.startsWith(globalYearFilter)) return false;
+  if(globalMonthFilter && dateStr.slice(5,7)!==globalMonthFilter) return false;
+  return true;
+}
+// Khoảng ngày [from,to] (chuỗi 'YYYY-MM-DD') mà bộ lọc Tháng/Năm đang chọn tương ứng — null,null nếu
+// không lọc gì. Dùng cho Đối soát CK (mỗi kỳ là 1 khoảng Từ ngày–Đến ngày, không phải 1 ngày đơn lẻ).
+function periodFilterRange(){
+  if(!globalYearFilter) return {from:null, to:null};
+  if(globalMonthFilter){
+    const y = Number(globalYearFilter), m = Number(globalMonthFilter);
+    const lastDay = new Date(y, m, 0).getDate();
+    return {from: `${globalYearFilter}-${globalMonthFilter}-01`, to: `${globalYearFilter}-${globalMonthFilter}-${String(lastDay).padStart(2,'0')}`};
+  }
+  return {from: `${globalYearFilter}-01-01`, to: `${globalYearFilter}-12-31`};
+}
+// 1 kỳ đối soát [fromDate,toDate] có GIAO NHAU với khoảng đang lọc không (kỳ dài hơn 1 tháng vẫn hiện ra
+// nếu có phần nằm trong tháng/năm đang lọc) — so sánh chuỗi ISO 'YYYY-MM-DD' vẫn đúng thứ tự thời gian.
+function periodFilterMatchesRange(fromDate, toDate){
+  const {from, to} = periodFilterRange();
+  if(!from) return true;
+  if(!fromDate || !toDate) return false;
+  return fromDate<=to && toDate>=from;
+}
+function periodFilterLabelText(){
+  if(!globalYearFilter) return 'Tất cả thời gian';
+  return globalMonthFilter ? `Tháng ${Number(globalMonthFilter)}/${globalYearFilter}` : `Năm ${globalYearFilter}`;
+}
+function periodFilterDescText(){
+  if(!globalYearFilter) return '';
+  return globalMonthFilter ? `tháng ${Number(globalMonthFilter)}/${globalYearFilter}` : `năm ${globalYearFilter}`;
+}
+// Các năm THỰC SỰ có dữ liệu (trong phạm vi module tài khoản hiện tại được tải) — dùng cho dropdown Năm.
+function periodFilterAvailableYears(){
+  const dates = [
+    ...(state.transactions||[]).map(t=>t.date),
+    ...(state.bankTransactions||[]).map(t=>t.date),
+    ...(state.insTransactions||[]).map(t=>t.date),
+  ].filter(Boolean);
+  return Array.from(new Set(dates.map(d=>d.slice(0,4)))).sort().reverse();
+}
+function renderPeriodFilterMenu(){
+  const menu = document.getElementById('periodFilterMenu');
+  if(!menu) return;
+  const years = periodFilterAvailableYears();
+  menu.innerHTML = `
+    <div class="field" style="margin-bottom:10px"><label>Năm</label>
+      <select id="pf_year"><option value="">Tất cả năm</option>${years.map(y=>`<option value="${y}" ${globalYearFilter===y?'selected':''}>${y}</option>`).join('')}</select>
+    </div>
+    <div class="field" style="margin-bottom:12px"><label>Tháng</label>
+      <select id="pf_month" ${!globalYearFilter?'disabled':''}>
+        <option value="">Cả năm</option>
+        ${Array.from({length:12},(_,i)=>{ const m=String(i+1).padStart(2,'0'); return `<option value="${m}" ${globalMonthFilter===m?'selected':''}>Tháng ${i+1}</option>`; }).join('')}
+      </select>
+    </div>
+    <div style="display:flex;gap:8px">
+      <button class="btn btn-primary" id="pf_apply" style="flex:1">Áp dụng</button>
+      <button class="btn btn-ghost" id="pf_clear">Xoá lọc</button>
+    </div>
+    <div class="helper" style="margin-top:8px">Áp dụng cho Doanh số ở cả 3 module (NCC/Ngân hàng/Bảo hiểm), cộng dồn với bộ lọc Đơn vị/NCC ở từng tab.</div>
+  `;
+  document.getElementById('pf_year').addEventListener('change', e=>{
+    const monthSel = document.getElementById('pf_month');
+    monthSel.disabled = !e.target.value;
+    if(!e.target.value) monthSel.value = '';
+  });
+  document.getElementById('pf_apply').addEventListener('click', ()=>{
+    globalYearFilter = document.getElementById('pf_year').value;
+    globalMonthFilter = globalYearFilter ? document.getElementById('pf_month').value : '';
+    menu.classList.remove('open');
+    renderAll();
+  });
+  document.getElementById('pf_clear').addEventListener('click', ()=>{
+    globalYearFilter=''; globalMonthFilter='';
+    menu.classList.remove('open');
+    renderAll();
+  });
+}
 
 const COLLAPSE_KEY = 'qt_ncc_collapsed_sections';
 let collapsedSections = new Set();
@@ -2421,6 +2515,8 @@ function renderAll(){
 
   document.querySelector('.shell').style.display='';
   renderUserChip();
+  const periodLabelEl = document.getElementById('periodFilterLabel');
+  if(periodLabelEl) periodLabelEl.textContent = periodFilterLabelText();
   renderNav();
   const subBar = document.getElementById('subTabBar');
   subBar.innerHTML = subTabsHTML();
@@ -3001,6 +3097,21 @@ function renderTransactions(c){
   const supplierOptions = state.suppliers.map(s=>`<option value="${s.id}">${escHtml(s.name)}</option>`).join('');
   if(lockedUnit) txUnitFilter = lockedUnit; // NV chỉ nên thấy đúng đơn vị mình phụ trách theo mặc định
   c.innerHTML = `
+    <div class="panel">
+      <div class="panel-head"><div><h2>Bộ lọc</h2><div class="desc">Xem theo đúng Đơn vị và/hoặc NCC — áp dụng cho cả bảng Sổ chứng từ bên dưới, không ảnh hưởng gì tới việc ghi nhận mới</div></div></div>
+      <div class="panel-body">
+        <div class="form-grid">
+          <div class="field">
+            <label>Đơn vị</label>
+            ${lockedUnit
+              ? `<input id="txf_unit" value="${escAttr(lockedUnit)}" disabled>`
+              : `<input id="txf_unit" list="txf_unit_list" placeholder="Tất cả đơn vị..." value="${escAttr(txUnitFilter)}">${unitDatalistHTML('txf_unit_list')}`}
+          </div>
+          <div class="field"><label>NCC</label><input id="txf_supplier" list="txf_supplier_list" placeholder="Tất cả NCC..." value="${escAttr(txSupplierFilter)}">${supplierDatalistHTML('txf_supplier_list')}</div>
+          <button class="btn btn-ghost" id="txfClearBtn">Xem tất cả</button>
+        </div>
+      </div>
+    </div>
     ${editable ? `
     <div class="panel">
       <div class="panel-head"><div><h2>Ghi nhận doanh số</h2></div>
@@ -3022,7 +3133,7 @@ function renderTransactions(c){
           <div class="field"><label>Trả hàng / Điều chỉnh</label><input id="tf_return" class="field-money" type="text" inputmode="numeric" placeholder="0"></div>
           <button class="btn btn-primary" id="addTxBtn">+ Ghi nhận</button>
         </div>
-        ${lockedUnit ? `<div class="helper">Tài khoản của bạn được gán phụ trách <b>${escHtml(lockedUnit)}</b> (đặt ở tab Quản trị tài khoản) nên đơn vị đã tự khoá để tránh nhập nhầm. Cần đổi đơn vị? Liên hệ Admin/Quản lý.</div>` : `<div class="helper">Gõ tên đơn vị mới nếu chưa có trong danh sách — hệ thống sẽ tự thêm vào. Sổ chứng từ bên dưới tự lọc theo đúng Đơn vị và NCC bạn đang gõ/chọn ở đây.</div>`}
+        ${lockedUnit ? `<div class="helper">Tài khoản của bạn được gán phụ trách <b>${escHtml(lockedUnit)}</b> (đặt ở tab Quản trị tài khoản) nên đơn vị đã tự khoá để tránh nhập nhầm. Cần đổi đơn vị? Liên hệ Admin/Quản lý.</div>` : `<div class="helper">Gõ tên đơn vị mới nếu chưa có trong danh sách — hệ thống sẽ tự thêm vào.</div>`}
       </div>
     </div>` : lockedNote('Tài khoản của bạn chưa được cấp quyền ghi nhận doanh số.')}
     <div class="panel">
@@ -3037,19 +3148,17 @@ function renderTransactions(c){
       <div class="panel-body flush"><div class="tbl-wrap"><table class="data" id="txTable"></table></div></div>
     </div>
   `;
+  const unitFFilter = document.getElementById('txf_unit');
+  if(unitFFilter && !lockedUnit) unitFFilter.addEventListener('input', ()=>{ txUnitFilter = unitFFilter.value; renderTxTable(editable); });
+  document.getElementById('txf_supplier').addEventListener('input', ()=>{ txSupplierFilter = document.getElementById('txf_supplier').value; renderTxTable(editable); });
+  document.getElementById('txfClearBtn').addEventListener('click', ()=>{
+    txSupplierFilter = '';
+    if(!lockedUnit) txUnitFilter = '';
+    renderAll();
+  });
   if(editable){
     attachMoneyFormatting(document.getElementById('tf_gross'));
     attachMoneyFormatting(document.getElementById('tf_return'));
-    const unitField = document.getElementById('tf_unit');
-    if(unitField && !lockedUnit) unitField.addEventListener('input', ()=>{
-      txUnitFilter = unitField.value;
-      renderTxTable(editable);
-    });
-    const supplierField = document.getElementById('tf_supplier');
-    if(supplierField) supplierField.addEventListener('input', ()=>{
-      txSupplierFilter = supplierField.value;
-      renderTxTable(editable);
-    });
     document.getElementById('addTxBtn').addEventListener('click', ()=>{
     const supplierName = document.getElementById('tf_supplier').value;
     const matchedSupplier = findSupplierByName(supplierName);
@@ -3085,8 +3194,7 @@ function renderTransactions(c){
     });
   }
   document.getElementById('txExportBtn').addEventListener('click', ()=>{
-    const pf = partnerScopeFilter('supplierId');
-    const list = (pf ? state.transactions.filter(pf) : state.transactions).slice().sort((a,b)=>b.date.localeCompare(a.date));
+    const list = getFilteredTx(); // đúng theo bộ lọc đang hiển thị (Đơn vị/NCC/Tháng-Năm)
     const rows = list.map(t=>{
       const s = supplierById(t.supplierId);
       return {
@@ -3099,6 +3207,21 @@ function renderTransactions(c){
   });
   renderTxTable(editable);
 }
+function getFilteredTx(){
+  const unitFilter = (txUnitFilter||'').trim().toLowerCase();
+  const supFilter = (txSupplierFilter||'').trim().toLowerCase();
+  const pf = partnerScopeFilter('supplierId');
+  const all = (pf ? state.transactions.filter(pf) : state.transactions).slice().sort((a,b)=> b.date.localeCompare(a.date));
+  return all.filter(t=>{
+    if(unitFilter && !(t.unit||'').trim().toLowerCase().includes(unitFilter)) return false;
+    if(supFilter){
+      const s = supplierById(t.supplierId);
+      if(!s || !s.name.trim().toLowerCase().includes(supFilter)) return false;
+    }
+    if(!periodFilterMatches(t.date)) return false;
+    return true;
+  });
+}
 function renderTxTable(editable){
   const tbl = document.getElementById('txTable');
   const note = document.getElementById('txFilterNote');
@@ -3106,18 +3229,12 @@ function renderTxTable(editable){
   const supFilter = (txSupplierFilter||'').trim().toLowerCase();
   const pf = partnerScopeFilter('supplierId');
   const all = (pf ? state.transactions.filter(pf) : state.transactions).slice().sort((a,b)=> b.date.localeCompare(a.date));
-  const sorted = all.filter(t=>{
-    if(unitFilter && !(t.unit||'').trim().toLowerCase().includes(unitFilter)) return false;
-    if(supFilter){
-      const s = supplierById(t.supplierId);
-      if(!s || !s.name.trim().toLowerCase().includes(supFilter)) return false;
-    }
-    return true;
-  });
+  const sorted = getFilteredTx();
   if(note){
     const parts = [];
     if(unitFilter) parts.push(`đơn vị <b>${escAttr(txUnitFilter)}</b>`);
     if(supFilter) parts.push(`NCC <b>${escAttr(txSupplierFilter)}</b>`);
+    if(globalYearFilter) parts.push(`<b>${escAttr(periodFilterDescText())}</b>`);
     note.innerHTML = parts.length
       ? `Đang lọc theo ${parts.join(' · ')} (${sorted.length}/${all.length} chứng từ) · <a href="#" id="txClearFilter" style="color:var(--gold)">Xem tất cả</a>`
       : `Đang xem tất cả (${all.length} chứng từ)`;
@@ -3125,11 +3242,7 @@ function renderTxTable(editable){
     if(clearBtn) clearBtn.addEventListener('click', e=>{
       e.preventDefault();
       txUnitFilter = ''; txSupplierFilter = '';
-      const unitField = document.getElementById('tf_unit');
-      if(unitField && !unitField.disabled) unitField.value = '';
-      const supplierField = document.getElementById('tf_supplier');
-      if(supplierField) supplierField.value = '';
-      renderTxTable(editable);
+      renderAll(); // vẽ lại cả trang để đồng bộ luôn ô Bộ lọc phía trên
     });
   }
   if(all.length===0){
@@ -3176,8 +3289,12 @@ function renderTxTable(editable){
 }
 
 /* ---------------------------- Phân bổ đơn vị ---------------------------- */
+function periodFilterDateObjects(){
+  const {from, to} = periodFilterRange();
+  return { from: from ? toDate(from) : null, to: to ? toDate(to) : null };
+}
 function renderAllocation(c){
-  setTitle('Phân bổ đơn vị', 'Đóng góp doanh số của từng đơn vị cho từng NCC — cộng dồn toàn thời gian');
+  setTitle('Phân bổ đơn vị', 'Đóng góp doanh số của từng đơn vị cho từng NCC'+(globalYearFilter?' — '+periodFilterDescText():' — cộng dồn toàn thời gian'));
   const unitOwners = {};
   state.units.forEach(u=>{ unitOwners[u] = state.accounts.filter(a=>a.unit===u).map(a=>a.name); });
   const unassignedCount = state.units.filter(u=>unitOwners[u].length===0).length;
@@ -3235,8 +3352,9 @@ function renderAllocation(c){
     if(unmet.length) return unmet[0];
     return withTargets.slice().sort((a,b)=>b.threshold-a.threshold)[0];
   }
+  const {from: pfFrom, to: pfTo} = periodFilterDateObjects();
   const rows = state.suppliers.map(s=>{
-    const perUnit = state.units.map(u=>allTimeRevenue(s.id,u));
+    const perUnit = state.units.map(u=>sumRevenue(s.id, pfFrom, pfTo, u));
     const total = perUnit.reduce((a,b)=>a+b,0);
     const max = Math.max(0,...perUnit);
     const share = total>0 ? max/total : 0;
@@ -3428,7 +3546,7 @@ function renderReconcile(c){
     </div>` : lockedNote('Bạn đang xem ở chế độ chỉ đọc — chỉ Admin/Quản lý mới thêm/sửa kỳ đối soát.')}
     <div class="panel">
       <div class="panel-head"><div><h2>Lịch sử đối soát</h2>
-      <div class="desc">Bấm vào số "Đã nhận" của mỗi dòng để mở Sổ nhận tiền — ghi nhận từng lần thanh toán, Trạng thái tự tính từ đó.</div></div>
+      <div class="desc" id="reconFilterNote">Bấm vào số "Đã nhận" của mỗi dòng để mở Sổ nhận tiền — ghi nhận từng lần thanh toán, Trạng thái tự tính từ đó.</div></div>
       <button class="btn btn-ghost" id="reconExportBtn">⬇ Xuất Excel</button>
       </div>
       <div class="panel-body flush"><div class="tbl-wrap"><table class="data" id="reconTable"></table></div></div>
@@ -3460,8 +3578,7 @@ function renderReconcile(c){
     });
   }
   document.getElementById('reconExportBtn').addEventListener('click', ()=>{
-    const pf = partnerScopeFilter('supplierId');
-    const list = pf ? state.reconciliations.filter(pf) : state.reconciliations;
+    const list = getFilteredRecon();
     const rows = list.map(r=>{
       const s = supplierById(r.supplierId);
       const rc = reconCalc(r);
@@ -3477,13 +3594,25 @@ function renderReconcile(c){
   });
   renderReconTable(editable);
 }
+function getFilteredRecon(){
+  const pf = partnerScopeFilter('supplierId');
+  const list = pf ? state.reconciliations.filter(pf) : state.reconciliations;
+  return list.filter(r=>periodFilterMatchesRange(r.fromDate, r.toDate));
+}
 function renderReconTable(editable){
   const tbl = document.getElementById('reconTable');
   const pf = partnerScopeFilter('supplierId');
-  const list = pf ? state.reconciliations.filter(pf) : state.reconciliations;
+  const allList = pf ? state.reconciliations.filter(pf) : state.reconciliations;
+  const list = getFilteredRecon();
+  const note = document.getElementById('reconFilterNote');
+  if(note){
+    note.innerHTML = globalYearFilter
+      ? `Đang lọc theo <b>${escAttr(periodFilterDescText())}</b> (${list.length}/${allList.length} kỳ — tính theo kỳ có giao với khoảng đang lọc) · Bấm vào số "Đã nhận" để mở Sổ nhận tiền.`
+      : `Bấm vào số "Đã nhận" của mỗi dòng để mở Sổ nhận tiền — ghi nhận từng lần thanh toán, Trạng thái tự tính từ đó.`;
+  }
   const isPartnerSelf = isPartnerAccount(currentUser());
   if(list.length===0){
-    tbl.outerHTML = `<div class="empty"><div class="big">Chưa có kỳ đối soát nào</div>${editable?'Thêm kỳ đối soát ở form phía trên.':''}</div>`; return;
+    tbl.outerHTML = `<div class="empty"><div class="big">${allList.length===0?'Chưa có kỳ đối soát nào':'Không có kỳ nào trong khoảng đang lọc'}</div>${editable && allList.length===0?'Thêm kỳ đối soát ở form phía trên.':''}</div>`; return;
   }
   const dis = editable?'':'disabled';
   tbl.innerHTML = `
@@ -3915,9 +4044,27 @@ function renderBankPolicies(c){
 function renderBankTransactions(c){
   const u = currentUser();
   const lockedUnit = (u && u.role==='Nhân viên' && u.unit) ? u.unit : '';
+  if(lockedUnit) bankTxUnitFilter = lockedUnit;
   setTitle('Doanh số', state.bankTransactions.length+' hồ sơ vay — hoa hồng tự tính theo chính sách đúng tháng giải ngân');
   const editable = canEdit('nh_transactions');
   c.innerHTML = `
+    <div class="panel">
+      <div class="panel-head"><div><h2>Bộ lọc</h2><div class="desc">Xem theo đúng Đơn vị và/hoặc Ngân hàng — áp dụng cho Sổ hồ sơ vay bên dưới, không ảnh hưởng gì tới việc ghi nhận mới</div></div></div>
+      <div class="panel-body">
+        <div class="form-grid">
+          <div class="field">
+            <label>Đơn vị</label>
+            ${lockedUnit
+              ? `<input id="btxf_unit" value="${escAttr(lockedUnit)}" disabled>`
+              : `<input id="btxf_unit" list="btxf_unit_list" placeholder="Tất cả đơn vị..." value="${escAttr(bankTxUnitFilter)}">${unitDatalistHTML('btxf_unit_list')}`}
+          </div>
+          <div class="field"><label>Ngân hàng</label><input id="btxf_bank" list="btxf_bank_list" placeholder="Tất cả ngân hàng..." value="${escAttr(bankTxBankFilter)}">
+            <datalist id="btxf_bank_list">${state.banks.map(b=>`<option value="${escAttr(b.name)}">`).join('')}</datalist>
+          </div>
+          <button class="btn btn-ghost" id="btxfClearBtn">Xem tất cả</button>
+        </div>
+      </div>
+    </div>
     ${editable ? `
     <div class="panel">
       <div class="panel-head"><div><h2>Ghi nhận hồ sơ vay</h2></div></div>
@@ -3952,12 +4099,16 @@ function renderBankTransactions(c){
       <div class="panel-body flush"><div class="tbl-wrap"><table class="data" id="btxTable"></table></div></div>
     </div>
   `;
+  const unitFFilter = document.getElementById('btxf_unit');
+  if(unitFFilter && !lockedUnit) unitFFilter.addEventListener('input', ()=>{ bankTxUnitFilter = unitFFilter.value; renderBankTxTable(editable); });
+  document.getElementById('btxf_bank').addEventListener('input', ()=>{ bankTxBankFilter = document.getElementById('btxf_bank').value; renderBankTxTable(editable); });
+  document.getElementById('btxfClearBtn').addEventListener('click', ()=>{
+    bankTxBankFilter = '';
+    if(!lockedUnit) bankTxUnitFilter = '';
+    renderAll();
+  });
   if(editable){
     attachMoneyFormatting(document.getElementById('btf_amount'));
-    const unitField = document.getElementById('btf_unit');
-    if(unitField && !lockedUnit) unitField.addEventListener('input', ()=>{ bankTxUnitFilter = unitField.value; renderBankTxTable(editable); });
-    const bankField = document.getElementById('btf_bank');
-    if(bankField) bankField.addEventListener('input', ()=>{ bankTxBankFilter = bankField.value; renderBankTxTable(editable); });
     document.getElementById('addBankTxBtn').addEventListener('click', ()=>{
       const bankName = document.getElementById('btf_bank').value;
       const bank = state.banks.find(b=>b.name.trim().toLowerCase()===bankName.trim().toLowerCase());
@@ -3991,8 +4142,7 @@ function renderBankTransactions(c){
     });
   }
   document.getElementById('btxExportBtn').addEventListener('click', ()=>{
-    const pf = partnerScopeFilter('bankId');
-    const list = (pf ? state.bankTransactions.filter(pf) : state.bankTransactions).slice().sort((a,b)=>b.date.localeCompare(a.date));
+    const list = getFilteredBankTx();
     const rows = list.map(t=>{
       const b = bankById(t.bankId);
       return {
@@ -4005,6 +4155,18 @@ function renderBankTransactions(c){
   });
   renderBankTxTable(editable);
 }
+function getFilteredBankTx(){
+  const unitFilter = (bankTxUnitFilter||'').trim().toLowerCase();
+  const bankFilter = (bankTxBankFilter||'').trim().toLowerCase();
+  const pf = partnerScopeFilter('bankId');
+  const all = (pf ? state.bankTransactions.filter(pf) : state.bankTransactions).slice().sort((a,b)=> b.date.localeCompare(a.date));
+  return all.filter(t=>{
+    if(unitFilter && !(t.unit||'').trim().toLowerCase().includes(unitFilter)) return false;
+    if(bankFilter){ const b = bankById(t.bankId); if(!b || !b.name.trim().toLowerCase().includes(bankFilter)) return false; }
+    if(!periodFilterMatches(t.date)) return false;
+    return true;
+  });
+}
 function renderBankTxTable(editable){
   const tbl = document.getElementById('btxTable');
   if(!tbl) return;
@@ -4013,15 +4175,12 @@ function renderBankTxTable(editable){
   const bankFilter = (bankTxBankFilter||'').trim().toLowerCase();
   const pf = partnerScopeFilter('bankId');
   const all = (pf ? state.bankTransactions.filter(pf) : state.bankTransactions).slice().sort((a,b)=> b.date.localeCompare(a.date));
-  const sorted = all.filter(t=>{
-    if(unitFilter && !(t.unit||'').trim().toLowerCase().includes(unitFilter)) return false;
-    if(bankFilter){ const b = bankById(t.bankId); if(!b || !b.name.trim().toLowerCase().includes(bankFilter)) return false; }
-    return true;
-  });
+  const sorted = getFilteredBankTx();
   if(note){
     const parts = [];
     if(unitFilter) parts.push(`đơn vị <b>${escAttr(bankTxUnitFilter)}</b>`);
     if(bankFilter) parts.push(`ngân hàng <b>${escAttr(bankTxBankFilter)}</b>`);
+    if(globalYearFilter) parts.push(`<b>${escAttr(periodFilterDescText())}</b>`);
     note.innerHTML = parts.length
       ? `Đang lọc theo ${parts.join(' · ')} (${sorted.length}/${all.length} hồ sơ) · <a href="#" id="btxClearFilter" style="color:var(--gold)">Xem tất cả</a>`
       : `Đang xem tất cả (${all.length} hồ sơ)`;
@@ -4029,9 +4188,7 @@ function renderBankTxTable(editable){
     if(clearBtn) clearBtn.addEventListener('click', e=>{
       e.preventDefault();
       bankTxUnitFilter=''; bankTxBankFilter='';
-      const unitField = document.getElementById('btf_unit'); if(unitField && !unitField.disabled) unitField.value='';
-      const bankField = document.getElementById('btf_bank'); if(bankField) bankField.value='';
-      renderBankTxTable(editable);
+      renderAll(); // vẽ lại cả trang để đồng bộ luôn ô Bộ lọc phía trên
     });
   }
   if(all.length===0){
@@ -4118,19 +4275,20 @@ function renderBankTxTable(editable){
 
 /* ---------------------------- Ngân hàng · Phân bổ đơn vị ---------------------------- */
 function renderBankAllocation(c){
-  setTitle('Phân bổ đơn vị', 'Đóng góp số tiền vay giải ngân của từng đơn vị cho từng ngân hàng — cộng dồn toàn thời gian');
+  setTitle('Phân bổ đơn vị', 'Đóng góp số tiền vay giải ngân của từng đơn vị cho từng ngân hàng'+(globalYearFilter?' — '+periodFilterDescText():' — cộng dồn toàn thời gian'));
   const unitOwners = {};
   state.units.forEach(u=>{ unitOwners[u] = state.accounts.filter(a=>a.unit===u).map(a=>a.name); });
   const tbl0 = `<div class="panel"><div class="panel-head"><div><h2>Ma trận Ngân hàng × Đơn vị (số tiền giải ngân)</h2>
-    <div class="desc">${state.units.length} đơn vị hiện có · chỉ tính hồ sơ trạng thái "Đã giải ngân"</div></div></div>
+    <div class="desc">${state.units.length} đơn vị hiện có · chỉ tính hồ sơ trạng thái "Đã giải ngân"${globalYearFilter?' · đang lọc theo '+escHtml(periodFilterDescText()):''}</div></div></div>
     <div class="panel-body flush"><div class="matrix-scroll"><table class="data matrix-fixed" id="bankAllocTable"></table></div></div></div>`;
   c.innerHTML = tbl0;
   const tbl = document.getElementById('bankAllocTable');
   if(state.banks.length===0){ tbl.outerHTML = `<div class="empty"><div class="big">Chưa có ngân hàng</div></div>`; return; }
+  const {from: pfFrom, to: pfTo} = periodFilterDateObjects();
   const rows = state.banks.map(b=>{
-    const perUnit = state.units.map(u=>allTimeBankLoan(b.id,u));
+    const perUnit = state.units.map(u=>bankLoanSum(b.id, pfFrom, pfTo, u));
     const total = perUnit.reduce((a,x)=>a+x,0);
-    const commTotal = allTimeBankCommission(b.id);
+    const commTotal = bankCommissionSum(b.id, pfFrom, pfTo);
     const max = Math.max(0,...perUnit);
     const share = total>0 ? max/total : 0;
     const topIdx = perUnit.indexOf(max);
@@ -4177,6 +4335,7 @@ function renderBankReconcile(c){
     <div class="panel">
       <div class="panel-head"><div><h2>Tất cả kỳ đối soát</h2>
         <div class="desc">"Số tiền giải ngân" &amp; "Hoa hồng phải hưởng" tự lấy từ tab <b>Doanh số</b> — chỉ tính hồ sơ trạng thái <b>"Đã giải ngân"</b>, đúng ngân hàng và nằm trong khoảng Từ ngày–Đến ngày của kỳ này. Nếu 2 cột này ra 0đ dù bạn đã có hồ sơ vay, kiểm tra lại: hồ sơ đã chuyển trạng thái "Đã giải ngân" chưa, ngày giải ngân có nằm trong khoảng của kỳ không, và đúng ngân hàng đang chọn. Khi NH đã xác nhận số hoa hồng thực tế (cột "NH xác nhận" khác 0), hệ thống ưu tiên dùng số đó thay cho số tự tính để ra "Chênh lệch"/"Còn phải thu".</div>
+        <div class="desc" id="bankReconFilterNote"></div>
       </div>
       <button class="btn btn-ghost" id="bankReconExportBtn">⬇ Xuất Excel</button>
       </div>
@@ -4199,8 +4358,7 @@ function renderBankReconcile(c){
     });
   }
   document.getElementById('bankReconExportBtn').addEventListener('click', ()=>{
-    const pf = partnerScopeFilter('bankId');
-    const list = pf ? state.bankReconciliations.filter(pf) : state.bankReconciliations;
+    const list = getFilteredBankRecon();
     const rows = list.map(r=>{
       const b = bankById(r.bankId);
       const rc = bankReconCalc(r);
@@ -4215,14 +4373,27 @@ function renderBankReconcile(c){
   });
   renderBankReconTable(editable);
 }
-function renderBankReconTable(editable){
-  const tbl = document.getElementById('bankReconTable');
-  if(!tbl) return;
+function getFilteredBankRecon(){
   const pf = partnerScopeFilter('bankId');
   const list = pf ? state.bankReconciliations.filter(pf) : state.bankReconciliations;
+  return list.filter(r=>periodFilterMatchesRange(r.fromDate, r.toDate));
+}
+function renderBankReconTable(editable){
+  const tbl = document.getElementById('bankReconTable');
+  const note = document.getElementById('bankReconFilterNote');
+  if(note){
+    const pf = partnerScopeFilter('bankId');
+    const allList = pf ? state.bankReconciliations.filter(pf) : state.bankReconciliations;
+    const list = getFilteredBankRecon();
+    note.innerHTML = globalYearFilter ? `Đang lọc theo <b>${escAttr(periodFilterDescText())}</b> (${list.length}/${allList.length} kỳ — tính theo kỳ có giao với khoảng đang lọc).` : '';
+  }
+  if(!tbl) return;
+  const list = getFilteredBankRecon();
   const isPartnerSelf = isPartnerAccount(currentUser());
   if(list.length===0){
-    tbl.outerHTML = `<div class="empty"><div class="big">Chưa có kỳ đối soát nào</div>${editable?'Thêm kỳ đối soát ở form phía trên.':''}</div>`; return;
+    const pf0 = partnerScopeFilter('bankId');
+    const allList0 = pf0 ? state.bankReconciliations.filter(pf0) : state.bankReconciliations;
+    tbl.outerHTML = `<div class="empty"><div class="big">${allList0.length===0?'Chưa có kỳ đối soát nào':'Không có kỳ nào trong khoảng đang lọc'}</div>${editable && allList0.length===0?'Thêm kỳ đối soát ở form phía trên.':''}</div>`; return;
   }
   const dis = editable?'':'disabled';
   tbl.innerHTML = `
@@ -4815,9 +4986,27 @@ function insReconCalc(r){
 function renderInsTransactions(c){
   const u = currentUser();
   const lockedUnit = (u && u.role==='Nhân viên' && u.unit) ? u.unit : '';
+  if(lockedUnit) insTxUnitFilter = lockedUnit;
   setTitle('Doanh số', state.insTransactions.length+' hợp đồng bảo hiểm — hoa hồng tự tính theo BHVC/BHDS của đúng NCC');
   const editable = canEdit('bh_transactions');
   c.innerHTML = `
+    <div class="panel">
+      <div class="panel-head"><div><h2>Bộ lọc</h2><div class="desc">Xem theo đúng Đơn vị và/hoặc NCC bảo hiểm — áp dụng cho Sổ hợp đồng bên dưới, không ảnh hưởng gì tới việc ghi nhận mới</div></div></div>
+      <div class="panel-body">
+        <div class="form-grid">
+          <div class="field">
+            <label>Đơn vị</label>
+            ${lockedUnit
+              ? `<input id="itxf_unit" value="${escAttr(lockedUnit)}" disabled>`
+              : `<input id="itxf_unit" list="itxf_unit_list" placeholder="Tất cả đơn vị..." value="${escAttr(insTxUnitFilter)}">${unitDatalistHTML('itxf_unit_list')}`}
+          </div>
+          <div class="field"><label>NCC bảo hiểm</label><input id="itxf_ins" list="itxf_ins_list" placeholder="Tất cả NCC bảo hiểm..." value="${escAttr(insTxInsurerFilter)}">
+            <datalist id="itxf_ins_list">${state.insurers.map(i=>`<option value="${escAttr(i.name)}">`).join('')}</datalist>
+          </div>
+          <button class="btn btn-ghost" id="itxfClearBtn">Xem tất cả</button>
+        </div>
+      </div>
+    </div>
     ${editable ? `
     <div class="panel">
       <div class="panel-head"><div><h2>Ghi nhận hợp đồng bảo hiểm</h2></div></div>
@@ -4853,12 +5042,16 @@ function renderInsTransactions(c){
       <div class="panel-body flush"><div class="tbl-wrap"><table class="data" id="itxTable"></table></div></div>
     </div>
   `;
+  const unitFFilter = document.getElementById('itxf_unit');
+  if(unitFFilter && !lockedUnit) unitFFilter.addEventListener('input', ()=>{ insTxUnitFilter = unitFFilter.value; renderInsTxTable(editable); });
+  document.getElementById('itxf_ins').addEventListener('input', ()=>{ insTxInsurerFilter = document.getElementById('itxf_ins').value; renderInsTxTable(editable); });
+  document.getElementById('itxfClearBtn').addEventListener('click', ()=>{
+    insTxInsurerFilter = '';
+    if(!lockedUnit) insTxUnitFilter = '';
+    renderAll();
+  });
   if(editable){
     attachMoneyFormatting(document.getElementById('itf_amount'));
-    const unitField = document.getElementById('itf_unit');
-    if(unitField && !lockedUnit) unitField.addEventListener('input', ()=>{ insTxUnitFilter = unitField.value; renderInsTxTable(editable); });
-    const insField = document.getElementById('itf_ins');
-    if(insField) insField.addEventListener('input', ()=>{ insTxInsurerFilter = insField.value; renderInsTxTable(editable); });
     document.getElementById('addInsTxBtn').addEventListener('click', ()=>{
       const insName = document.getElementById('itf_ins').value;
       const ins = state.insurers.find(x=>x.name.trim().toLowerCase()===insName.trim().toLowerCase());
@@ -4893,8 +5086,7 @@ function renderInsTransactions(c){
     });
   }
   document.getElementById('itxExportBtn').addEventListener('click', ()=>{
-    const pf = partnerScopeFilter('insurerId');
-    const list = (pf ? state.insTransactions.filter(pf) : state.insTransactions).slice().sort((a,b)=>b.date.localeCompare(a.date));
+    const list = getFilteredInsTx();
     const rows = list.map(t=>{
       const ins = insurerById(t.insurerId);
       return {
@@ -4907,6 +5099,18 @@ function renderInsTransactions(c){
   });
   renderInsTxTable(editable);
 }
+function getFilteredInsTx(){
+  const unitFilter = (insTxUnitFilter||'').trim().toLowerCase();
+  const insFilter = (insTxInsurerFilter||'').trim().toLowerCase();
+  const pf = partnerScopeFilter('insurerId');
+  const all = (pf ? state.insTransactions.filter(pf) : state.insTransactions).slice().sort((a,b)=> b.date.localeCompare(a.date));
+  return all.filter(t=>{
+    if(unitFilter && !(t.unit||'').trim().toLowerCase().includes(unitFilter)) return false;
+    if(insFilter){ const ins = insurerById(t.insurerId); if(!ins || !ins.name.trim().toLowerCase().includes(insFilter)) return false; }
+    if(!periodFilterMatches(t.date)) return false;
+    return true;
+  });
+}
 function renderInsTxTable(editable){
   const tbl = document.getElementById('itxTable');
   const note = document.getElementById('itxFilterNote');
@@ -4914,15 +5118,12 @@ function renderInsTxTable(editable){
   const insFilter = (insTxInsurerFilter||'').trim().toLowerCase();
   const pf = partnerScopeFilter('insurerId');
   const all = (pf ? state.insTransactions.filter(pf) : state.insTransactions).slice().sort((a,b)=> b.date.localeCompare(a.date));
-  const sorted = all.filter(t=>{
-    if(unitFilter && !(t.unit||'').trim().toLowerCase().includes(unitFilter)) return false;
-    if(insFilter){ const ins = insurerById(t.insurerId); if(!ins || !ins.name.trim().toLowerCase().includes(insFilter)) return false; }
-    return true;
-  });
+  const sorted = getFilteredInsTx();
   if(note){
     const parts = [];
     if(unitFilter) parts.push(`đơn vị <b>${escAttr(insTxUnitFilter)}</b>`);
     if(insFilter) parts.push(`NCC <b>${escAttr(insTxInsurerFilter)}</b>`);
+    if(globalYearFilter) parts.push(`<b>${escAttr(periodFilterDescText())}</b>`);
     note.innerHTML = parts.length
       ? `Đang lọc theo ${parts.join(' · ')} (${sorted.length}/${all.length} hợp đồng) · <a href="#" id="itxClearFilter" style="color:var(--gold)">Xem tất cả</a>`
       : `Đang xem tất cả (${all.length} hợp đồng)`;
@@ -4930,9 +5131,7 @@ function renderInsTxTable(editable){
     if(clearBtn) clearBtn.addEventListener('click', e=>{
       e.preventDefault();
       insTxUnitFilter=''; insTxInsurerFilter='';
-      const unitField = document.getElementById('itf_unit'); if(unitField && !unitField.disabled) unitField.value='';
-      const insField = document.getElementById('itf_ins'); if(insField) insField.value='';
-      renderInsTxTable(editable);
+      renderAll(); // vẽ lại cả trang để đồng bộ luôn ô Bộ lọc phía trên
     });
   }
   if(all.length===0){
@@ -5048,7 +5247,7 @@ function renderInsAllocation(c){
       ${editable && !isAdmin ? `<div class="helper" style="padding:0 20px 16px">🔒 Chỉ Admin mới đổi được ngưỡng cảnh báo chênh lệch.</div>` : ''}
     </div>
     <div class="panel"><div class="panel-head"><div><h2>Ma trận NCC bảo hiểm × Đơn vị (phí bảo hiểm thu)</h2>
-      <div class="desc">${state.units.length} đơn vị hiện có · chỉ tính hợp đồng trạng thái "Đã cấp đơn" · cộng dồn toàn thời gian</div></div></div>
+      <div class="desc">${state.units.length} đơn vị hiện có · chỉ tính hợp đồng trạng thái "Đã cấp đơn"${globalYearFilter?' · đang lọc theo '+escHtml(periodFilterDescText()):' · cộng dồn toàn thời gian'}</div></div></div>
       <div class="panel-body flush"><div class="matrix-scroll"><table class="data matrix-fixed" id="insAllocTable"></table></div></div></div>
   `;
   const monthInput = document.getElementById('insAllocMonthInput');
@@ -5084,10 +5283,11 @@ function renderInsAllocation(c){
 
   const tbl = document.getElementById('insAllocTable');
   if(state.insurers.length===0){ tbl.outerHTML = `<div class="empty"><div class="big">Chưa có NCC bảo hiểm</div></div>`; return; }
+  const {from: pfFrom, to: pfTo} = periodFilterDateObjects();
   const rows = state.insurers.map(ins=>{
-    const perUnit = state.units.map(u=>allTimeInsPremium(ins.id,u));
+    const perUnit = state.units.map(u=>insPremiumSum(ins.id, pfFrom, pfTo, u));
     const total = perUnit.reduce((a,x)=>a+x,0);
-    const commTotal = allTimeInsCommission(ins.id);
+    const commTotal = insCommissionSum(ins.id, pfFrom, pfTo);
     const max = Math.max(0,...perUnit);
     const topIdx = perUnit.indexOf(max);
     return {ins, perUnit, total, commTotal, topUnit: total>0?state.units[topIdx]:'—'};
@@ -5243,7 +5443,7 @@ function renderInsReconcile(c){
       </div>
     </div>` : lockedNote('Bạn đang xem ở chế độ chỉ đọc — chỉ Admin/Quản lý mới thêm/sửa kỳ đối soát.')}
     <div class="panel">
-      <div class="panel-head"><div><h2>Tất cả kỳ đối soát</h2></div>
+      <div class="panel-head"><div><h2>Tất cả kỳ đối soát</h2><div class="desc" id="insReconFilterNote"></div></div>
       <button class="btn btn-ghost" id="insReconExportBtn">⬇ Xuất Excel</button>
       </div>
       <div class="panel-body flush"><div class="tbl-wrap"><table class="data" id="insReconTable"></table></div></div>
@@ -5265,8 +5465,7 @@ function renderInsReconcile(c){
     });
   }
   document.getElementById('insReconExportBtn').addEventListener('click', ()=>{
-    const pf = partnerScopeFilter('insurerId');
-    const list = pf ? state.insReconciliations.filter(pf) : state.insReconciliations;
+    const list = getFilteredInsRecon();
     const rows = list.map(r=>{
       const ins = insurerById(r.insurerId);
       const rc = insReconCalc(r);
@@ -5281,10 +5480,20 @@ function renderInsReconcile(c){
   });
   renderInsReconTable(editable);
 }
-function renderInsReconTable(editable){
-  const tbl = document.getElementById('insReconTable');
+function getFilteredInsRecon(){
   const pf = partnerScopeFilter('insurerId');
   const list = pf ? state.insReconciliations.filter(pf) : state.insReconciliations;
+  return list.filter(r=>periodFilterMatchesRange(r.fromDate, r.toDate));
+}
+function renderInsReconTable(editable){
+  const tbl = document.getElementById('insReconTable');
+  const note = document.getElementById('insReconFilterNote');
+  const list = getFilteredInsRecon();
+  if(note){
+    const pf0 = partnerScopeFilter('insurerId');
+    const allList0 = pf0 ? state.insReconciliations.filter(pf0) : state.insReconciliations;
+    note.innerHTML = globalYearFilter ? `Đang lọc theo <b>${escAttr(periodFilterDescText())}</b> (${list.length}/${allList0.length} kỳ — tính theo kỳ có giao với khoảng đang lọc).` : '';
+  }
   const isPartnerSelf = isPartnerAccount(currentUser());
   if(list.length===0){
     tbl.outerHTML = `<div class="empty"><div class="big">Chưa có kỳ đối soát nào</div>${editable?'Thêm kỳ đối soát ở form phía trên.':''}</div>`; return;
@@ -6124,6 +6333,8 @@ function migrateActivityLogTrashSplitV1(){
   document.addEventListener('click', (e)=>{
     const menu = document.getElementById('userMenu');
     if(menu && menu.classList.contains('open') && !e.target.closest('.user-chip-wrap')) menu.classList.remove('open');
+    const pmenu = document.getElementById('periodFilterMenu');
+    if(pmenu && pmenu.classList.contains('open') && !e.target.closest('.period-filter-wrap')) pmenu.classList.remove('open');
   });
   // Cảnh báo trước khi đóng tab/rời trang nếu vẫn còn thay đổi chưa kịp lưu xong (đang trong 800ms debounce
   // hoặc lượt ghi Firebase đang chạy dở) — tránh mất đúng thao tác cuối cùng nếu đóng tab quá nhanh.
@@ -6143,6 +6354,14 @@ function migrateActivityLogTrashSplitV1(){
   document.getElementById('globalSearchBtn').addEventListener('click', ()=>{
     if(!currentUser()){ return; } // chưa đăng nhập thì chưa có gì để tìm
     openGlobalSearch();
+  });
+  document.getElementById('periodFilterBtn').addEventListener('click', (e)=>{
+    e.stopPropagation();
+    if(!currentUser()) return;
+    const menu = document.getElementById('periodFilterMenu');
+    const willOpen = !menu.classList.contains('open');
+    if(willOpen) renderPeriodFilterMenu();
+    menu.classList.toggle('open', willOpen);
   });
   // Luôn có sẵn 1 bộ khung dữ liệu đầy đủ (mẫu) TRƯỚC khi tải dữ liệu thật — để subscribeBranch() có chỗ
   // gộp từng nhánh vào ngay khi tải xong (đặc biệt cần thiết cho luồng Firebase — xem loadShared()).
