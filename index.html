@@ -746,7 +746,7 @@ const SESSION_KEY = 'nccapp:session:v1';      // personal: {currentUserId}
 const FB_CONFIG_KEY = 'nccapp:firebaseConfig:v1'; // cấu hình Firebase (dùng chung để cả nhóm tự kết nối)
 const FB_DISABLED_KEY = 'nccapp:firebaseDisabled:v1'; // đánh dấu "đã chủ động ngắt" để không tự nối lại cấu hình mặc định
 const FB_ROOT = 'ncc_app_data'; // đường dẫn gốc trong Realtime Database — bên trong tách thành các nhánh /ncc /nh /bh /shared
-const FB_ROOT_LEGACY_PATH = 'ncc_app_data/shared_state'; // đường dẫn CŨ (trước khi tách nhánh) — chỉ dùng để di chuyển dữ liệu 1 lần, xem migrateToBranchesV1()
+const FB_ROOT_LEGACY_PATH = 'ncc_app_data/shared_state'; // đường dẫn CŨ (trước khi tách nhánh) — chỉ dùng để di chuyển dữ liệu 1 lần, xem migrateToPerRecordV1()
 // Mật khẩu "hàng rào mềm" khi chọn danh tính đăng nhập — LƯU Ý: đây KHÔNG phải bảo mật thật sự,
 // vì app chạy tĩnh trên trình duyệt (không có server) nên ai xem được mã nguồn trang cũng đọc được giá trị này.
 // Chỉ nhằm chặn việc bấm nhầm/chọn nhầm danh tính của người dùng thông thường trong nội bộ.
@@ -807,17 +807,40 @@ function accountHasPassword(acc){
 
 let storageMode = 'memory'; // 'firebase' | 'cloud' | 'local' | 'memory'
 let storageBackend = null;  // 'window.storage' | 'localStorage' | null
-let lastSavedJsonByBranch = {}; // {branchName: jsonString} — để nhận biết sự kiện Realtime Database nào là do chính mình vừa ghi, và bỏ qua ghi lại nếu nhánh đó không đổi
+let lastSavedJsonByBranch = {}; // chỉ còn dùng cho tầng dự phòng (__local) — xem saveState()
+let lastSavedRecords = {}; // 'branch/field' -> Map(id -> jsonString bản ghi đó) — theo dõi TỪNG BẢN GHI khi đồng bộ qua Firebase
+let lastSavedMeta = {};    // 'branch' -> jsonString của khối "meta" (field nhỏ, ít đổi) của nhánh đó
+function recordFieldKey(branch, field){ return branch+'/'+field; }
+// Khoá định danh của 1 bản ghi khi lưu theo node con riêng trên Firebase — hầu hết dùng .id, riêng các
+// mục trong Thùng rác dùng .trashId (không có field .id ở cấp ngoài cùng).
+function recordKeyOf(item){ return item && (item.id!==undefined ? item.id : item.trashId); }
 
 let fb = { status:'disconnected', db:null, refs:{}, unsubs:{}, error:null, config:null }; // 'disconnected'|'connecting'|'connected'|'error'
-// Mỗi nhánh chứa đúng các field nào của `state` — dùng để tách/gộp khi đọc/ghi Firebase. Mỗi tài khoản
-// chỉ cần tải/lắng nghe đúng nhánh module mình được cấp (xem branchesForCurrentUser) thay vì toàn bộ dữ
-// liệu 3 module gộp chung như trước — giảm băng thông đáng kể.
+// Field nào của mỗi nhánh là "tập hợp bản ghi" (khớp theo id) — được tách thành node con riêng trên
+// Firebase, lắng nghe bằng child_added/child_changed/child_removed để CHỈ tải đúng bản ghi vừa đổi, KHÔNG
+// tải lại nguyên khối mỗi khi có ai đó thao tác — quan trọng khi dữ liệu tích luỹ nhiều theo thời gian
+// (VD: 5.000 chứng từ mà chỉ 1 người vừa thêm 1 dòng, mọi người khác chỉ tải đúng 1 dòng đó, không phải cả 5.000).
+const BRANCH_RECORD_FIELDS = {
+  ncc:    ['suppliers','policies','transactions','reconciliations','activityLogNcc','trashNcc'],
+  nh:     ['banks','bankPolicies','bankTransactions','bankReconciliations','activityLogNh','trashNh'],
+  bh:     ['insurers','insRates','insTransactions','insReconciliations','insMonthlyRevenue','activityLogBh','trashBh'],
+  shared: ['accounts','activityLogShared','trashShared'],
+};
+// Field còn lại: nhỏ, ít đổi, không phình to theo lượng chứng từ/thời gian — vẫn đọc/ghi gộp chung 1 khối
+// "meta" đơn giản, không cần tối ưu theo bản ghi.
+const BRANCH_META_FIELDS = {
+  ncc:    ['nextSupplierNo','monitoring','reportDate'],
+  nh:     ['nextBankNo'],
+  bh:     ['insAllocAlertThreshold','nextInsNo'],
+  shared: ['units'],
+};
+// Toàn bộ field của 1 nhánh (gộp cả 2 loại trên) — dùng ở những chỗ chỉ cần biết "nhánh này có field gì"
+// mà không cần phân biệt loại (VD: reset dữ liệu khi unsubscribe, kiểm tra tên module hợp lệ, sao lưu).
 const BRANCHES = {
-  ncc:    ['suppliers','policies','transactions','reconciliations','nextSupplierNo','monitoring','reportDate','activityLogNcc','trashNcc'],
-  nh:     ['banks','bankPolicies','bankTransactions','bankReconciliations','nextBankNo','activityLogNh','trashNh'],
-  bh:     ['insurers','insRates','insTransactions','insReconciliations','insMonthlyRevenue','insAllocAlertThreshold','nextInsNo','activityLogBh','trashBh'],
-  shared: ['accounts','units','activityLogShared','trashShared'],
+  ncc:    [...BRANCH_RECORD_FIELDS.ncc, ...BRANCH_META_FIELDS.ncc],
+  nh:     [...BRANCH_RECORD_FIELDS.nh, ...BRANCH_META_FIELDS.nh],
+  bh:     [...BRANCH_RECORD_FIELDS.bh, ...BRANCH_META_FIELDS.bh],
+  shared: [...BRANCH_RECORD_FIELDS.shared, ...BRANCH_META_FIELDS.shared],
 };
 
 function loadScript(src){
@@ -891,58 +914,155 @@ function parseFirebaseConfigInput(raw){
 // (ncc_app_data/ncc, /nh, /bh, /shared) — chỉ chạy đúng 1 lần cho cả dự án Firebase (không phải 1 lần/máy):
 // hễ nhánh 'shared' mới đã tồn tại thì coi như đã di chuyển xong, các máy khác mở lên sau sẽ tự thấy dữ
 // liệu ở cấu trúc mới, không migrate lại. An toàn khi nhiều người cùng mở app lúc chưa migrate (idempotent).
-async function migrateToBranchesV1(db){
+// Di chuyển dữ liệu từ các cấu trúc CŨ (1 khối gộp chung ban đầu, hoặc "mỗi nhánh module 1 khối" ở giữa)
+// sang cấu trúc MỚI NHẤT — mỗi bản ghi 1 node con riêng theo id (xem BRANCH_RECORD_FIELDS). Chỉ chạy 1
+// lần cho cả dự án Firebase: hễ nhánh 'shared/meta' đã tồn tại thì coi như đã ở cấu trúc mới, bỏ qua. An
+// toàn khi nhiều người cùng mở app lúc chưa migrate (idempotent, không ghi đè nếu đã có).
+async function migrateToPerRecordV1(db){
   try{
-    const sharedSnap = await db.ref(FB_ROOT+'/shared').once('value');
-    if(sharedSnap.exists()) return; // đã có cấu trúc mới rồi
-    const oldSnap = await db.ref(FB_ROOT_LEGACY_PATH).once('value');
-    if(!oldSnap.exists()) return; // chưa từng có dữ liệu cũ -> để seedState() lo, không cần di chuyển
-    const oldData = oldSnap.val();
-    if(!oldData || !oldData.json) return;
-    const oldState = JSON.parse(oldData.json);
+    const metaSnap = await db.ref(FB_ROOT+'/shared/meta').once('value');
+    if(metaSnap.exists()) return; // đã ở cấu trúc mới rồi
     const updates = {};
-    for(const [branch, keys] of Object.entries(BRANCHES)){
-      const branchObj = {};
-      keys.forEach(k=>{ if(oldState[k]!==undefined) branchObj[k]=oldState[k]; });
-      updates[FB_ROOT+'/'+branch] = branchObj;
+    let foundAnything = false;
+
+    // Trường hợp A: đang ở cấu trúc "mỗi nhánh module 1 khối" (bản ngay trước thay đổi này)
+    for(const branch of Object.keys(BRANCHES)){
+      const snap = await db.ref(FB_ROOT+'/'+branch).once('value');
+      if(!snap.exists()) continue;
+      const blob = snap.val();
+      foundAnything = true;
+      const metaObj = {};
+      (BRANCH_META_FIELDS[branch]||[]).forEach(k=>{ if(blob[k]!==undefined) metaObj[k]=blob[k]; });
+      updates[FB_ROOT+'/'+branch+'/meta'] = metaObj;
+      (BRANCH_RECORD_FIELDS[branch]||[]).forEach(field=>{
+        const arr = blob[field];
+        if(!Array.isArray(arr)) return;
+        arr.forEach(item=>{
+          const key = recordKeyOf(item);
+          if(key===undefined || key===null) return;
+          updates[FB_ROOT+'/'+branch+'/'+field+'/'+key] = item;
+        });
+      });
+    }
+
+    // Trường hợp B: chưa từng có "mỗi nhánh 1 khối" -> thử tìm dữ liệu CŨ HƠN NỮA (1 khối gộp chung duy
+    // nhất, từ trước khi có khái niệm nhánh theo module).
+    if(!foundAnything){
+      const oldSnap = await db.ref(FB_ROOT_LEGACY_PATH).once('value');
+      if(oldSnap.exists() && oldSnap.val() && oldSnap.val().json){
+        const oldState = JSON.parse(oldSnap.val().json);
+        for(const [branch] of Object.entries(BRANCHES)){
+          const metaObj = {};
+          (BRANCH_META_FIELDS[branch]||[]).forEach(k=>{ if(oldState[k]!==undefined) metaObj[k]=oldState[k]; });
+          updates[FB_ROOT+'/'+branch+'/meta'] = metaObj;
+          (BRANCH_RECORD_FIELDS[branch]||[]).forEach(field=>{
+            const arr = oldState[field];
+            if(!Array.isArray(arr)) return;
+            arr.forEach(item=>{
+              const key = recordKeyOf(item);
+              if(key===undefined || key===null) return;
+              updates[FB_ROOT+'/'+branch+'/'+field+'/'+key] = item;
+            });
+          });
+        }
+      }
+    }
+
+    if(Object.keys(updates).length===0){
+      // Không tìm thấy dữ liệu cũ nào (cài đặt hoàn toàn mới) -> vẫn tạo nhánh shared/meta rỗng để đánh
+      // dấu "đã kiểm tra migration", tránh quét lại toàn bộ các nhánh mỗi lần kết nối sau này.
+      updates[FB_ROOT+'/shared/meta'] = {};
     }
     await db.ref().update(updates);
-  }catch(e){ console.error('Di chuyển dữ liệu sang cấu trúc nhánh mới thất bại', e); }
+  }catch(e){ console.error('Di chuyển dữ liệu sang cấu trúc theo bản ghi thất bại', e); }
 }
 // Tải (nếu chưa có) + lắng nghe real-time đúng 1 nhánh. Gọi lại nhiều lần với cùng branch là an toàn
-// (không subscribe trùng) vì đã kiểm tra fb.refs[branch] trước.
+// (không subscribe trùng) vì đã kiểm tra fb.refs[branch] trước. Phần "meta" (field nhỏ) vẫn tải/lắng nghe
+// gộp 1 khối như trước; phần "tập hợp bản ghi" lắng nghe theo TỪNG BẢN GHI (child_added/changed/removed) —
+// child_added tự bắn ra cho MỌI bản ghi đã có ngay khi vừa gắn listener, nên cũng đồng thời đóng vai trò
+// "tải lần đầu", không cần gọi once('value') riêng cho các field này nữa.
 async function subscribeBranch(branch){
   if(!fb.db || fb.refs[branch]) return;
-  const ref = fb.db.ref(FB_ROOT+'/'+branch);
-  fb.refs[branch] = ref;
+  fb.refs[branch] = true; // đánh dấu ĐANG subscribe nhánh này (chặn gọi trùng) — ref thật nằm trong closure bên dưới
+  fb.unsubs[branch] = [];
+  const branchPath = FB_ROOT+'/'+branch;
+
+  const metaRef = fb.db.ref(branchPath+'/meta');
   try{
-    const snap = await ref.once('value');
+    const snap = await metaRef.once('value');
     if(snap.exists()){
       const data = snap.val();
-      lastSavedJsonByBranch[branch] = JSON.stringify(data);
+      lastSavedMeta[branch] = JSON.stringify(data);
       Object.assign(state, data);
     }
-  }catch(e){ console.error('Lỗi tải nhánh "'+branch+'"', e); }
-  const listener = ref.on('value', snapshot=>{
+  }catch(e){ console.error('Lỗi tải meta nhánh "'+branch+'"', e); }
+  const metaListener = metaRef.on('value', snapshot=>{
     if(!snapshot.exists()) return;
     const data = snapshot.val();
     const json = JSON.stringify(data);
-    if(json === lastSavedJsonByBranch[branch]) return; // echo của chính mình vừa ghi -> bỏ qua
-    lastSavedJsonByBranch[branch] = json;
+    if(json===lastSavedMeta[branch]) return; // echo của chính mình vừa ghi -> bỏ qua
+    lastSavedMeta[branch] = json;
     Object.assign(state, data);
-    if(branch==='shared' && currentUserId && !(state.accounts||[]).some(a=>a.id===currentUserId)) currentUserId = null;
     renderAll();
-  }, err=>{ console.error('Lỗi lắng nghe nhánh "'+branch+'"', err); fb.status='error'; fb.error = err.message||String(err); });
-  fb.unsubs[branch] = ()=>ref.off('value', listener);
+  }, err=>{ console.error('Lỗi lắng nghe meta nhánh "'+branch+'"', err); fb.status='error'; fb.error = err.message||String(err); });
+  fb.unsubs[branch].push(()=>metaRef.off('value', metaListener));
+
+  for(const field of (BRANCH_RECORD_FIELDS[branch]||[])){
+    if(!Array.isArray(state[field])) state[field] = [];
+    const fieldRef = fb.db.ref(branchPath+'/'+field);
+    const fkey = recordFieldKey(branch, field);
+    const known = lastSavedRecords[fkey] || (lastSavedRecords[fkey] = new Map());
+
+    const onAdded = fieldRef.on('child_added', snap=>{
+      const id = snap.key;
+      if(recentlyDeletedIds.has(id)) return; // mình vừa chủ động xoá bản ghi này trong phiên này -> không hồi sinh nhầm
+      const data = snap.val();
+      const json = JSON.stringify(data);
+      if(known.get(id)===json) return; // đã biết đúng bản ghi này rồi (echo của chính mình, hoặc trùng)
+      known.set(id, json);
+      if(!state[field].some(x=>recordKeyOf(x)===id)) state[field].push(data);
+      renderAll();
+    }, err=>{ console.error('Lỗi lắng nghe (added) '+fkey, err); });
+
+    const onChanged = fieldRef.on('child_changed', snap=>{
+      const id = snap.key;
+      if(recentlyDeletedIds.has(id)) return;
+      const data = snap.val();
+      const json = JSON.stringify(data);
+      if(known.get(id)===json) return;
+      known.set(id, json);
+      const idx = state[field].findIndex(x=>recordKeyOf(x)===id);
+      if(idx!==-1) state[field][idx] = data; else state[field].push(data);
+      if(branch==='shared' && field==='accounts' && currentUserId && !(state.accounts||[]).some(a=>a.id===currentUserId)) currentUserId = null;
+      renderAll();
+    }, err=>{ console.error('Lỗi lắng nghe (changed) '+fkey, err); });
+
+    const onRemoved = fieldRef.on('child_removed', snap=>{
+      const id = snap.key;
+      known.delete(id);
+      const idx = state[field].findIndex(x=>recordKeyOf(x)===id);
+      if(idx!==-1) state[field].splice(idx,1);
+      renderAll();
+    }, err=>{ console.error('Lỗi lắng nghe (removed) '+fkey, err); });
+
+    fb.unsubs[branch].push(()=>{
+      fieldRef.off('child_added', onAdded);
+      fieldRef.off('child_changed', onChanged);
+      fieldRef.off('child_removed', onRemoved);
+    });
+  }
 }
 function unsubscribeBranch(branch){
-  if(fb.unsubs[branch]){ fb.unsubs[branch](); delete fb.unsubs[branch]; }
+  if(fb.unsubs[branch]){ fb.unsubs[branch].forEach(fn=>fn()); delete fb.unsubs[branch]; }
   delete fb.refs[branch];
   // Xoá luôn dữ liệu nhánh đó khỏi bộ nhớ (không chỉ ngừng lắng nghe) — quan trọng khi dùng chung 1 máy/
   // trình duyệt: nếu Admin đăng xuất rồi 1 tài khoản bị giới hạn module hơn đăng nhập vào (không tải lại
   // trang), mà không xoá thì dữ liệu module cũ (Admin từng tải) vẫn nằm sẵn trong bộ nhớ của người sau.
   const seed = seedState();
   (BRANCHES[branch]||[]).forEach(k=>{ state[k] = seed[k]; });
+  // Dọn cache theo-bản-ghi của nhánh này — lần subscribe lại sau sẽ tải mới hoàn toàn sạch, không lẫn cache cũ.
+  (BRANCH_RECORD_FIELDS[branch]||[]).forEach(field=>{ delete lastSavedRecords[recordFieldKey(branch,field)]; });
+  delete lastSavedMeta[branch];
 }
 // Nhánh nào cần tải cho tài khoản ĐANG đăng nhập hiện tại — 'shared' luôn cần (đăng nhập, đơn vị, nhật ký);
 // Admin luôn cần đủ cả 3 module; tài khoản khác chỉ cần đúng module được cấp (accountModules đã có sẵn).
@@ -1018,7 +1138,7 @@ async function connectFirebase(config){
     await ensureAppCheckActivated(); // phải bật TRƯỚC khi gọi database() để "con dấu" áp dụng cho mọi request sau đó
     fb.db = window.firebase.database();
     fb.status = 'connected';
-    await migrateToBranchesV1(fb.db); // chuyển dữ liệu cũ sang cấu trúc nhánh mới nếu cần, chỉ chạy 1 lần cho cả dự án
+    await migrateToPerRecordV1(fb.db); // chuyển dữ liệu cũ sang cấu trúc theo bản ghi nếu cần, chỉ chạy 1 lần cho cả dự án
     await subscribeBranch('shared'); // luôn cần — đồng thời việc tải này xác nhận kết nối/rules đang hoạt động
     setStoragePill('firebase');
     return {ok:true};
@@ -1141,50 +1261,14 @@ async function loadSession(){
 
 let saveTimer=null;
 let pendingSave = false; // true = có thay đổi đang chờ ghi (chưa chắc đã lưu xong) — dùng để cảnh báo khi rời trang
-/* ---------------------------- Xử lý xung đột khi nhiều người sửa gần như cùng lúc ----------------------------
-   Mỗi nhánh Firebase được ghi dưới dạng 1 khối object gộp (mảng suppliers/transactions/...) — nếu 2 người
-   cùng sửa 1 nhánh gần như đồng thời, cách ghi "toàn bộ khối" mặc định sẽ khiến người ghi SAU vô tình XOÁ
-   MẤT thay đổi của người ghi TRƯỚC (kể cả khi 2 người sửa 2 bản ghi hoàn toàn khác nhau, không hề đụng
-   chạm cùng 1 dòng dữ liệu) — vì bản ghi mới của người kia đơn giản là chưa kịp có trong bộ nhớ của người
-   ghi sau. Hàm dưới đây tự kiểm tra ngay TRƯỚC khi ghi: nếu dữ liệu trên server đã khác so với lần mình
-   biết gần nhất (nghĩa là có ai vừa ghi xen giữa), tự HỢP NHẤT theo từng bản ghi (khớp theo id) thay vì ghi
-   đè toàn bộ — bản ghi nào chỉ có ở 1 bên (mình mới thêm, hoặc người kia mới thêm) đều được giữ lại;
-   bản ghi trùng id ưu tiên bản đang lưu (coi là mới nhất theo góc nhìn người đang thao tác); riêng bản ghi
-   mình vừa CHỦ ĐỘNG xoá (softDelete) trong phiên này thì loại hẳn dù server có thể chưa kịp cập nhật.
-   LƯU Ý: đây là hợp nhất tốt nhất có thể trong giới hạn kiến trúc hiện tại (không phải merge 3-way hoàn
-   hảo) — vẫn tốn thêm 1 lượt đọc mạng cho mỗi nhánh có thay đổi trước khi ghi, đánh đổi lấy an toàn dữ liệu. */
-async function mergeBranchBeforeWrite(branch, localObj){
-  if(!fb.db) return {obj: localObj, conflicted: false};
-  try{
-    const snap = await fb.db.ref(FB_ROOT+'/'+branch).once('value');
-    if(!snap.exists()) return {obj: localObj, conflicted: false}; // chưa có gì trên server -> ghi bình thường
-    const serverObj = snap.val();
-    const serverJson = JSON.stringify(serverObj);
-    if(serverJson === lastSavedJsonByBranch[branch]) return {obj: localObj, conflicted: false}; // không ai ghi xen giữa
-    // Có người khác đã ghi nhánh này sau lần mình biết gần nhất -> hợp nhất theo từng mảng có id (hoặc
-    // trashId — dùng riêng cho các mảng Thùng rác, vì mỗi mục ở đó không có field .id mà dùng .trashId).
-    const merged = {};
-    let conflicted = false;
-    const keyOf = x => (x && (x.id!==undefined ? x.id : x.trashId));
-    Object.keys(localObj).forEach(key=>{
-      const localVal = localObj[key];
-      const serverVal = serverObj ? serverObj[key] : undefined;
-      const bothArraysOfObjWithId = Array.isArray(localVal) && (localVal.length===0 || (localVal[0] && typeof localVal[0]==='object' && keyOf(localVal[0])!==undefined));
-      if(bothArraysOfObjWithId && (serverVal===undefined || Array.isArray(serverVal))){
-        const map = new Map();
-        (serverVal||[]).forEach(x=>{ const k=keyOf(x); if(k!==undefined) map.set(k, x); });
-        localVal.forEach(x=>{ const k=keyOf(x); if(k!==undefined) map.set(k, x); }); // trùng key -> bản đang lưu (local) thắng
-        recentlyDeletedIds.forEach(id=>{ if(map.has(id)) map.delete(id); });
-        merged[key] = Array.from(map.values());
-        if(JSON.stringify(serverVal||[]) !== JSON.stringify(localVal)) conflicted = true;
-      } else {
-        merged[key] = localVal; // field đơn (vd reportDate, monitoring, insAllocAlertThreshold...) -> ưu tiên bản đang lưu
-      }
-    });
-    return {obj: merged, conflicted};
-  }catch(e){ console.error('Hợp nhất trước khi ghi thất bại — ghi bình thường theo dữ liệu cục bộ', e); return {obj: localObj, conflicted: false}; }
-}
-
+/* ---------------------------- Ghi dữ liệu theo TỪNG BẢN GHI ----------------------------
+   Mỗi field "tập hợp bản ghi" (suppliers/transactions/reconciliations/...) giờ lưu trên Firebase dưới
+   dạng 1 node con riêng cho từng bản ghi (khớp theo id), thay vì gộp chung thành 1 mảng lớn trong 1 field
+   — nên chỉ cần ghi ĐÚNG bản ghi nào thực sự thay đổi/mới thêm/bị xoá, không phải ghi lại cả mảng mỗi lần.
+   Nhờ vậy 2 người thêm/sửa 2 bản ghi KHÁC NHAU gần như cùng lúc tự động không đụng nhau (khác đường dẫn
+   Firebase) — không cần đọc lại server trước khi ghi để "hợp nhất" như cách làm trước đây nữa. Chỉ còn
+   đúng 1 tình huống hiếm: 2 người sửa ĐÚNG CÙNG 1 bản ghi cùng lúc — khi đó ai ghi sau thắng đúng bản ghi
+   đó (chấp nhận được, không ảnh hưởng các bản ghi khác). */
 function saveState(){
   pendingSave = true;
   clearTimeout(saveTimer);
@@ -1194,37 +1278,50 @@ function saveState(){
       // CHỈ ghi những nhánh mình đang thực sự lắng nghe (Object.keys(fb.refs)) — bắt buộc phải giới hạn thế
       // này, vì nếu ghi cả nhánh chưa từng tải (vd 1 Nhân viên chỉ có module Ngân hàng thì KHÔNG có dữ liệu
       // NCC thật trong bộ nhớ, `state.suppliers`... vẫn đang là dữ liệu mẫu mặc định) sẽ VÔ TÌNH GHI ĐÈ/XOÁ
-      // MẤT dữ liệu thật của module đó trên Firebase. Mỗi nhánh so sánh riêng với lần lưu gần nhất của
-      // chính nhánh đó — nhánh nào không đổi thì bỏ qua, không ghi lại (giữ nguyên tối ưu đã làm trước đây).
+      // MẤT dữ liệu thật của module đó trên Firebase.
       const updates = {};
       let anyChange = false;
-      let anyConflictResolved = false;
       for(const branch of Object.keys(fb.refs)){
-        let branchObj = {};
-        (BRANCHES[branch]||[]).forEach(k=>{ branchObj[k] = state[k]; });
-        const localJson = JSON.stringify(branchObj);
-        if(localJson === lastSavedJsonByBranch[branch]) continue; // nhánh này bản thân mình không đổi gì -> khỏi cần kiểm tra xung đột
-        const {obj: mergedObj, conflicted} = await mergeBranchBeforeWrite(branch, branchObj);
-        if(conflicted){
-          anyConflictResolved = true;
-          // Cập nhật lại state cục bộ theo đúng kết quả đã hợp nhất, để giao diện hiển thị khớp với những
-          // gì thực sự được lưu (kể cả bản ghi người khác vừa thêm/sửa mà mình chưa từng thấy qua).
-          (BRANCHES[branch]||[]).forEach(k=>{ state[k] = mergedObj[k]; });
+        // Phần "meta" (field nhỏ, ít đổi: nextSupplierNo, reportDate, units...) — vẫn so sánh + ghi gộp
+        // như 1 khối nhỏ, không cần tối ưu theo bản ghi vì hiếm khi đổi và không phình to theo thời gian.
+        const metaObj = {};
+        (BRANCH_META_FIELDS[branch]||[]).forEach(k=>{ metaObj[k] = state[k]; });
+        const metaJson = JSON.stringify(metaObj);
+        if(metaJson !== lastSavedMeta[branch]){
+          lastSavedMeta[branch] = metaJson;
+          updates[FB_ROOT+'/'+branch+'/meta'] = metaObj;
+          anyChange = true;
         }
-        const json = JSON.stringify(mergedObj);
-        if(json === lastSavedJsonByBranch[branch]) continue;
-        lastSavedJsonByBranch[branch] = json;
-        updates[FB_ROOT+'/'+branch] = mergedObj;
-        anyChange = true;
-      }
-      if(anyConflictResolved){
-        toast('Đã tự động hợp nhất với thay đổi của người khác vừa lưu gần như cùng lúc');
+        // Từng field "tập hợp bản ghi" — so sánh TỪNG BẢN GHI với lần lưu gần nhất, chỉ ghi đúng bản ghi
+        // mới/đổi (set) hoặc đã bị xoá khỏi mảng cục bộ (set = null để xoá trên Firebase).
+        for(const field of (BRANCH_RECORD_FIELDS[branch]||[])){
+          const fkey = recordFieldKey(branch, field);
+          const known = lastSavedRecords[fkey] || (lastSavedRecords[fkey] = new Map());
+          const currentArr = Array.isArray(state[field]) ? state[field] : [];
+          const seenIds = new Set();
+          currentArr.forEach(item=>{
+            const id = recordKeyOf(item);
+            if(id===undefined || id===null) return;
+            seenIds.add(id);
+            const json = JSON.stringify(item);
+            if(known.get(id) === json) return; // không đổi so với lần lưu gần nhất -> bỏ qua
+            known.set(id, json);
+            updates[FB_ROOT+'/'+branch+'/'+field+'/'+id] = item;
+            anyChange = true;
+          });
+          known.forEach((_, id)=>{
+            if(!seenIds.has(id)){
+              known.delete(id);
+              updates[FB_ROOT+'/'+branch+'/'+field+'/'+id] = null; // ghi null = xoá đúng bản ghi đó trên Firebase
+              anyChange = true;
+            }
+          });
+        }
       }
       if(anyChange){
         try{
           await fb.db.ref().update(updates);
           setStoragePill('firebase');
-          if(anyConflictResolved) renderAll(); // vẽ lại để hiện đúng dữ liệu vừa hợp nhất
           return;
         }catch(e){ console.error('Firebase save failed, dùng tầng dự phòng', e); }
       } else {
@@ -1260,6 +1357,29 @@ async function saveSession(){
     }
   }catch(e){}
   try{ localStorage.setItem(SESSION_KEY, json); }catch(e){}
+}
+
+/* ---------------------------- Tự đăng xuất khi không thao tác ----------------------------
+   Đăng nhập vẫn giữ kết nối/lắng nghe real-time tới các nhánh Firebase của module được cấp — nếu mở app
+   rồi để đó không dùng, vẫn tốn băng thông tải về mỗi khi có ai khác ghi dữ liệu. Sau NGƯỠNG phút không có
+   bất kỳ thao tác nào (chuột/gõ phím/chạm/cuộn), tự đăng xuất — ngừng lắng nghe mọi nhánh module (chỉ còn
+   nhánh 'shared' tối thiểu để hiện màn đăng nhập), giảm hẳn lượng tải về khi không có ai thực sự dùng. */
+const INACTIVITY_LIMIT_MINUTES = 10;
+let inactivityTimer = null;
+function resetInactivityTimer(){
+  if(!currentUserId) return; // chưa đăng nhập -> không cần đếm
+  clearTimeout(inactivityTimer);
+  inactivityTimer = setTimeout(autoLogoutIdle, INACTIVITY_LIMIT_MINUTES*60*1000);
+}
+async function autoLogoutIdle(){
+  if(!currentUserId) return;
+  const menu = document.getElementById('userMenu'); if(menu) menu.classList.remove('open');
+  closeModal();
+  currentUserId = null;
+  saveSession();
+  await syncBranchesForCurrentUser(); // ngừng lắng nghe mọi nhánh module, chỉ còn 'shared'
+  renderAll();
+  toast(`Đã tự động đăng xuất do không thao tác trong ${INACTIVITY_LIMIT_MINUTES} phút`);
 }
 
 function fbStatusLabel(){
@@ -2473,7 +2593,7 @@ function renderUserChip(){
   `;
   chip.onclick = (e)=>{ e.stopPropagation(); menu.classList.toggle('open'); };
   menu.querySelector('#menuChangePw').onclick = (e)=>{ e.stopPropagation(); menu.classList.remove('open'); openChangePasswordModal(u.id); };
-  menu.querySelector('#menuLogout').onclick = (e)=>{ e.stopPropagation(); menu.classList.remove('open'); currentUserId = null; saveSession(); syncBranchesForCurrentUser(); renderAll(); };
+  menu.querySelector('#menuLogout').onclick = (e)=>{ e.stopPropagation(); menu.classList.remove('open'); currentUserId = null; clearTimeout(inactivityTimer); saveSession(); syncBranchesForCurrentUser(); renderAll(); };
 }
 
 /* Đổi mật khẩu cho chính tài khoản đang đăng nhập (mọi vai trò đều dùng được, kể cả Admin).
@@ -2622,6 +2742,7 @@ function renderLoginScreen(){
     if(!ok){ showErr('Sai mật khẩu.'); pwInput.value=''; pwInput.focus(); return; }
     currentUserId = acc.id;
     saveSession();
+    resetInactivityTimer(); // bắt đầu đếm 10 phút không thao tác kể từ lúc đăng nhập
     await syncBranchesForCurrentUser(); // tải thêm đúng nhánh module của tài khoản vừa đăng nhập (nếu đang dùng Firebase)
     screen.remove();
     renderAll();
@@ -3525,12 +3646,12 @@ function renderAllocation(c){
     <thead>
     <tr>
       <th>NCC</th>${state.units.map(u=>matrixUnitHeaderCell(u)).join('')}
-      <th class="num">Tổng</th><th class="num">Tỷ trọng lớn nhất</th><th>Đơn vị chính</th><th>Gợi ý</th>
+      <th class="num">Tổng</th>${partnerAcc?'':'<th class="num">Tỷ trọng lớn nhất</th>'}<th>Đơn vị chính</th>${partnerAcc?'':'<th>Gợi ý</th>'}
     </tr>
     <tr style="background:#fff">
       <th style="font-weight:400;color:var(--slate);font-size:10px">Người phụ trách</th>
       ${state.units.map(u=>`<th class="num unit-col" style="font-weight:400;color:var(--slate);font-size:10px;text-transform:none" title="${escAttr(unitOwners[u].join(', '))}"><span class="unit-col-inner">${escHtml(unitOwners[u][0]||'—')}</span></th>`).join('')}
-      <th></th><th></th><th></th><th></th>
+      <th></th>${partnerAcc?'':'<th></th>'}<th></th>${partnerAcc?'':'<th></th>'}
     </tr>
     </thead>
     <tbody>${rows.map(r=>`
@@ -3544,9 +3665,9 @@ function renderAllocation(c){
           return `<td class="num">${v>0?fmt(v):'—'}${pct!==null?`<div style="font-size:10px;font-weight:700;color:${pctColor}">${pct}%</div>`:''}</td>`;
         }).join('')}
         <td class="num" style="font-weight:700">${fmt(r.total)}</td>
-        <td class="num">${r.total>0?fmtPct(r.share):'—'}</td>
+        ${partnerAcc?'':`<td class="num">${r.total>0?fmtPct(r.share):'—'}</td>`}
         <td>${escHtml(r.topUnit)}</td>
-        <td>${r.total===0?'—': (r.share>=0.5? '<span class="stamp warn">Xem xét đàm phán riêng</span>':'<span class="stamp muted">Theo dõi</span>')}</td>
+        ${partnerAcc?'':`<td>${r.total===0?'—': (r.share>=0.5? '<span class="stamp warn">Xem xét đàm phán riêng</span>':'<span class="stamp muted">Theo dõi</span>')}</td>`}
       </tr>`).join('')}</tbody>`;
   wireStickyHeaderRows(tbl);
 }
@@ -6057,7 +6178,11 @@ function renderSettings(c){
           const backup = await fetchBackup(date);
           if(!backup){ toast('Không tải được bản sao lưu này'); return; }
           state = Object.assign(seedState(), ...Object.values(backup.data));
-          Object.keys(BRANCHES).forEach(branch=>{ lastSavedJsonByBranch[branch] = undefined; }); // ép ghi lại toàn bộ, không bị coi là "không đổi"
+          // KHÔNG xoá cache lastSavedRecords/lastSavedMeta ở đây — cố ý giữ nguyên, để saveState() ngay
+          // sau đây tự so sánh đúng bản ghi nào khác so với dữ liệu đang có trên Firebase: bản ghi nào
+          // backup có mà giờ khác/thiếu sẽ được ghi lại đúng, và QUAN TRỌNG — bản ghi nào KHÔNG có trong
+          // backup nhưng đang tồn tại trên Firebase (thêm SAU thời điểm backup) sẽ tự động bị xoá đúng
+          // nghĩa "khôi phục về đúng thời điểm đó" (rollback thật), thay vì chỉ cộng dồn thêm dữ liệu cũ.
           logActivity('update','Cài đặt', `Khôi phục dữ liệu từ bản sao lưu ngày ${date}`);
           toast('Đã khôi phục — đang lưu lại lên Firebase...');
           saveState();
@@ -6535,6 +6660,11 @@ function migrateActivityLogTrashSplitV1(){
   window.addEventListener('error', (e)=>{
     try{ logActivity('update','Lỗi hệ thống', `${e.message||'Lỗi không rõ'} (${(e.filename||'').split('/').pop()}:${e.lineno||'?'})`); saveState(); }catch(err){}
   });
+  // Theo dõi hoạt động để tự đăng xuất sau 10 phút không thao tác (xem resetInactivityTimer/autoLogoutIdle) —
+  // {passive:true} vì chỉ đọc sự kiện, không cần gọi preventDefault, giúp cuộn trang mượt hơn.
+  ['mousemove','keydown','mousedown','touchstart','scroll'].forEach(evt=>{
+    document.addEventListener(evt, resetInactivityTimer, {passive:true});
+  });
   window.addEventListener('unhandledrejection', (e)=>{
     try{ logActivity('update','Lỗi hệ thống', 'Promise bị từ chối: '+(e.reason && e.reason.message ? e.reason.message : String(e.reason))); saveState(); }catch(err){}
   });
@@ -6568,6 +6698,7 @@ function migrateActivityLogTrashSplitV1(){
   if(await migratePasswordsV1()) saveState();
   if(currentRole()==='Admin' && migrateActivityLogTrashSplitV1()) saveState(); // cần đủ cả 4 nhánh nên chỉ Admin chạy được đúng
   setStoragePill(storageMode);
+  resetInactivityTimer(); // nếu phiên đăng nhập cũ còn hiệu lực (đã có currentUserId), bắt đầu đếm luôn từ lúc mở trang
   renderAll();
 })();
 </script>
