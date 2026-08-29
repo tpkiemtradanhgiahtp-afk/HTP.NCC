@@ -112,6 +112,33 @@
     display:inline-flex; align-items:center; justify-content:center; padding:0 4px;
   }
   .subtab-item .alert-dot{ margin-left:6px; }
+  /* Chớp sáng 1 nhịp để chỉ đúng dòng vừa tạo — dùng cho "Yêu cầu / Trao đổi" sau khi gửi yêu cầu mới,
+     tránh người dùng phải tự dò tìm trong danh sách (đặc biệt khi nó không nằm ở đầu danh sách). */
+  @keyframes flashHighlight{ 0%{ background:var(--gold-soft); } 100%{ background:transparent; } }
+  .flash-highlight{ animation: flashHighlight 1.8s ease-out; }
+  /* Spinner nhỏ dùng cho các trạng thái "đang xử lý" (upload, gửi email...) — cho người dùng thấy rõ hệ
+     thống đang chạy chứ không phải bị đứng, nhất là khi mạng chậm và phải chờ lâu. */
+  @keyframes miniSpin{ to{ transform:rotate(360deg); } }
+  .mini-spinner{
+    display:inline-block; width:12px; height:12px; margin-right:6px; vertical-align:-2px;
+    border:2px solid var(--line); border-top-color:var(--slate); border-radius:50%;
+    animation:miniSpin .7s linear infinite;
+  }
+  .hint-banner{
+    display:flex; align-items:flex-start; justify-content:space-between; gap:12px;
+    background:var(--gold-soft); border:1px solid var(--gold); border-radius:10px;
+    padding:12px 14px; margin-bottom:16px; font-size:13px; line-height:1.5;
+  }
+  .hint-banner .hint-dismiss{
+    border:none; background:none; cursor:pointer; color:var(--slate); font-size:14px;
+    flex:0 0 auto; padding:0 2px;
+  }
+  .hint-banner .hint-dismiss:hover{ color:var(--ink); }
+  .info-toggle{
+    background:none; border:1px solid var(--line); border-radius:6px; padding:3px 10px;
+    font-size:11.5px; color:var(--slate); cursor:pointer;
+  }
+  .info-toggle:hover{ background:#FBFAF3; color:var(--ink); }
   .nav-section{
     font-size:10.5px; text-transform:uppercase; letter-spacing:0.06em; font-weight:700;
     color:#9BA3C4; margin:4px 2px 8px; padding:14px 10px 10px;
@@ -491,9 +518,28 @@
   #insRevenueTable input.cell-edit{ font-size:12.5px; }
 
   @media (max-width:900px){
-    .sidebar{ display:none; }
     .content{ padding:18px 14px 40px; }
     .topbar{ padding:14px 16px; }
+    .sidebar-toggle-btn{ display:inline-flex; }
+    .sidebar{
+      position:fixed; inset:0 auto 0 0; z-index:600; width:280px;
+      transform:translateX(-100%); transition:transform .22s ease;
+      box-shadow:20px 0 40px rgba(0,0,0,0.25);
+    }
+    .sidebar.mobile-open{ transform:translateX(0); }
+    .sidebar-backdrop{
+      display:none; position:fixed; inset:0; background:rgba(0,0,0,0.4); z-index:590;
+    }
+    .sidebar-backdrop.show{ display:block; }
+    /* Tăng kích thước vùng chạm cho ngón tay — chỉ áp dụng ở màn hình nhỏ, không đổi gì trên máy tính. */
+    .btn{ padding:10px 16px; min-height:40px; }
+    .row-del{ padding:6px 9px; font-size:16px; }
+    .nav-item{ padding:11px 12px; }
+  }
+  .sidebar-toggle-btn{
+    display:none; align-items:center; justify-content:center;
+    width:38px; height:38px; border-radius:9px; border:1px solid var(--line);
+    background:var(--panel); cursor:pointer; font-size:18px; flex:0 0 auto; margin-right:10px;
   }
 
   /* ---------- Login gate (dark theme) ---------- */
@@ -619,6 +665,7 @@
 <body>
 
 <div class="shell">
+  <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
   <aside class="sidebar">
     <div class="brand">
       <div class="mark"><span class="l1">Quản trị</span><span class="l2">Mục tiêu Đối tác/NCC</span></div>
@@ -630,9 +677,12 @@
 
   <div class="main">
     <div class="topbar">
-      <div>
-        <h1 id="pageTitle">Dashboard</h1>
-        <div class="meta" id="pageMeta">—</div>
+      <div style="display:flex;align-items:center">
+        <button type="button" id="sidebarToggleBtn" class="sidebar-toggle-btn" title="Mở menu" aria-label="Mở menu">☰</button>
+        <div>
+          <h1 id="pageTitle">Dashboard</h1>
+          <div class="meta" id="pageMeta">—</div>
+        </div>
       </div>
       <div class="topbar-right">
         <button type="button" id="globalSearchBtn" class="btn btn-ghost" title="Tìm kiếm toàn hệ thống (khách hàng, NCC, mã chứng từ...)">🔍 Tìm kiếm</button>
@@ -1452,6 +1502,51 @@ function toast(msg){
   clearTimeout(toast._t);
   toast._t = setTimeout(()=>t.classList.remove('show'), 2200);
 }
+/* ---------------------------- Gợi ý lần đầu dùng (dismissible) ----------------------------
+   Xuất hiện 1 lần cho tới khi người dùng bấm ✕ — lưu vào localStorage của TRÌNH DUYỆT (không đồng bộ qua
+   Firebase, vì đây chỉ là sở thích hiển thị của riêng máy đó, không phải dữ liệu nghiệp vụ). Nếu người
+   dùng đổi máy/trình duyệt khác, gợi ý sẽ hiện lại — chấp nhận được vì đây không phải hạn chế nghiêm trọng.*/
+function hintDismissed(hintId){
+  try{ return localStorage.getItem('hintDismissed_'+hintId)==='1'; }catch(e){ return false; }
+}
+function dismissHint(hintId){
+  try{ localStorage.setItem('hintDismissed_'+hintId, '1'); }catch(e){}
+}
+function hintBannerHTML(hintId, text){
+  if(hintDismissed(hintId)) return '';
+  return `<div class="hint-banner" data-hint-id="${escAttr(hintId)}">
+    <span>💡 ${text}</span>
+    <button class="hint-dismiss" data-dismiss-hint="${escAttr(hintId)}" title="Không hiện lại gợi ý này">✕</button>
+  </div>`;
+}
+// Gọi sau khi đổ hintBannerHTML() vào DOM, truyền đúng phần tử cha chứa nó.
+function wireHintDismiss(container){
+  container.querySelectorAll('[data-dismiss-hint]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      dismissHint(btn.dataset.dismissHint);
+      const banner = btn.closest('.hint-banner');
+      if(banner) banner.remove();
+    });
+  });
+}
+/* ---------------------------- Giải thích thu gọn (nút "?") ----------------------------
+   Dùng cho các đoạn giải thích dài trong Cài đặt — mặc định ẩn, bấm mới hiện, để trang đỡ rối mắt cho việc
+   dùng hàng ngày (người mới cần đọc kỹ mới bấm xem, người quen thao tác nhanh không bị đoạn dài chắn tầm nhìn).*/
+function collapsibleInfoHTML(id, text){
+  return `<button type="button" class="info-toggle" data-info-toggle="${escAttr(id)}">ⓘ Xem giải thích</button>
+    <div class="helper" id="${escAttr(id)}" style="display:none;margin-top:8px">${text}</div>`;
+}
+function wireInfoToggles(container){
+  container.querySelectorAll('[data-info-toggle]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      const el = document.getElementById(btn.dataset.infoToggle);
+      if(!el) return;
+      const show = el.style.display==='none';
+      el.style.display = show ? '' : 'none';
+      btn.textContent = show ? 'ⓘ Ẩn giải thích' : 'ⓘ Xem giải thích';
+    });
+  });
+}
 
 /* ---------------------------- Modal dùng chung (dùng cho Đính kèm hợp đồng và các popup sau này) ----------------------------
    openModal(title, desc, bodyHtml, onMount): chèn 1 overlay full-màn-hình vào <body>, đóng bằng nút X, click nền, hoặc phím Esc.
@@ -1480,6 +1575,36 @@ function closeModal(){
   const el = document.getElementById('activeModal');
   if(el) el.remove();
   document.removeEventListener('keydown', modalEscHandler);
+}
+// Modal xác nhận dùng chung — thay cho confirm() mặc định xấu xí của trình duyệt, đồng bộ giao diện app.
+// KHÁC BIỆT QUAN TRỌNG với confirm(): confirm() CHẶN code chạy tiếp cho tới khi người dùng bấm nút (đồng
+// bộ), còn modal này KHÔNG chặn được — code viết ngay sau lời gọi confirmModal() sẽ chạy luôn, không đợi
+// người dùng bấm gì cả. Vì vậy mọi việc cần làm SAU KHI xác nhận phải đặt trong tham số onConfirm (callback),
+// không được viết nối tiếp ngay dưới dòng gọi confirmModal() như thói quen cũ với confirm().
+// opts.danger=false nếu là hành động nhẹ nhàng (mặc định coi là hành động cần cẩn trọng, nút đỏ).
+function confirmModal(message, onConfirm, opts){
+  opts = opts || {};
+  const danger = opts.danger !== false;
+  openModal(opts.title || 'Xác nhận thao tác', '',
+    `<div style="font-size:14px;line-height:1.65;white-space:pre-wrap">${escHtml(message)}</div>
+     <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:20px">
+       <button class="btn btn-ghost" id="confirmModalCancelBtn">Huỷ</button>
+       <button class="btn ${danger?'btn-danger-ghost':'btn-primary'}" id="confirmModalOkBtn">${escHtml(opts.confirmLabel||'Xác nhận')}</button>
+     </div>`,
+    (body)=>{
+      body.querySelector('#confirmModalCancelBtn').addEventListener('click', closeModal);
+      body.querySelector('#confirmModalOkBtn').addEventListener('click', ()=>{ closeModal(); onConfirm(); });
+    });
+}
+// Modal thông báo dùng chung — thay cho alert() mặc định của trình duyệt.
+function alertModal(message, opts){
+  opts = opts || {};
+  openModal(opts.title || 'Thông báo', '',
+    `<div style="font-size:14px;line-height:1.65;white-space:pre-wrap">${escHtml(message)}</div>
+     <div style="display:flex;justify-content:flex-end;margin-top:20px">
+       <button class="btn btn-primary" id="alertModalOkBtn">Đã hiểu</button>
+     </div>`,
+    (body)=>{ body.querySelector('#alertModalOkBtn').addEventListener('click', closeModal); });
 }
 
 /* ---------------------------- Upload ảnh/PDF lên Google Drive (qua Google Apps Script) ----------------------------
@@ -1594,7 +1719,7 @@ function wireDriveUploadButton(fileInputEl, statusEl, subfolder, onDone){
   fileInputEl.addEventListener('change', async ()=>{
     const file = fileInputEl.files && fileInputEl.files[0];
     if(!file) return;
-    statusEl.textContent = 'Đang tải lên Google Drive...';
+    statusEl.innerHTML = '<span class="mini-spinner"></span>Đang tải lên Google Drive...';
     statusEl.style.color = 'var(--slate)';
     try{
       const sf = typeof subfolder==='function' ? subfolder() : subfolder;
@@ -1851,10 +1976,11 @@ function openContractsModal(obj, list, entityLabel, editable, unitFilter){
           markContractSuperseded(obj, b.dataset.markSuperseded, entityLabel, unitFilter);
         }));
         body.querySelectorAll('[data-del-contract]').forEach(b=>b.addEventListener('click', ()=>{
-          if(!confirm('Xoá bản hợp đồng này khỏi lịch sử?')) return;
-          obj.contracts = contractList(obj).filter(ct=>ct.id!==b.dataset.delContract);
-          logActivity('delete', entityLabel+' · Hợp đồng', `${obj.name}: xoá 1 bản hợp đồng`);
-          saveState(); renderAll(); openContractsModal(obj, list, entityLabel, editable, unitFilter);
+          confirmModal('Xoá bản hợp đồng này khỏi lịch sử?', ()=>{
+            obj.contracts = contractList(obj).filter(ct=>ct.id!==b.dataset.delContract);
+            logActivity('delete', entityLabel+' · Hợp đồng', `${obj.name}: xoá 1 bản hợp đồng`);
+            saveState(); renderAll(); openContractsModal(obj, list, entityLabel, editable, unitFilter);
+          });
         }));
       };
       wireListButtons();
@@ -2008,6 +2134,18 @@ function openRequestThreadModal(req, obj, cfg){
       }
     });
 }
+// Cuộn tới đúng 1 thread trong danh sách "Yêu cầu / Trao đổi" + chớp sáng 1 nhịp để dễ nhận ra — dùng
+// requestAnimationFrame để chắc chắn DOM đã vẽ xong (renderAll() tuy chạy đồng bộ nhưng để trình duyệt kịp
+// tính toán layout trước khi scrollIntoView, tránh cuộn sai vị trí ở 1 số trường hợp hiếm).
+function scrollToAndFlashRequest(reqId){
+  requestAnimationFrame(()=>{
+    const el = document.querySelector(`[data-open-req="${reqId}"]`);
+    if(!el) return;
+    el.scrollIntoView({behavior:'smooth', block:'center'});
+    el.classList.add('flash-highlight');
+    setTimeout(()=> el.classList.remove('flash-highlight'), 1800);
+  });
+}
 // Trang "Yêu cầu / Trao đổi" dùng chung cho cả 3 module — cfg: {objs, idKey, nameOf, entityLabel, entityShort}.
 function renderRequestsTab(c, cfg){
   const u = currentUser();
@@ -2037,8 +2175,12 @@ function renderRequestsTab(c, cfg){
     : '';
 
   let filterObjText = '', filterStatus = ''; // chỉ nội bộ mới thấy 2 bộ lọc này — Đối tác đã tự lọc sẵn theo chính họ
+  const hintText = partner
+    ? 'Đây là nơi bạn gửi thắc mắc/đề nghị cho chúng tôi — chúng tôi sẽ trả lời trực tiếp tại đây, bạn sẽ nhận được email báo khi có phản hồi mới.'
+    : 'Đối tác có thể gửi thắc mắc/đề nghị ở đây. Bạn cũng chủ động viết trước cho họ được — chọn đúng '+cfg.entityShort+' rồi gửi như bình thường.';
 
   c.innerHTML = `
+    ${hintBannerHTML('req_intro_'+cfg.moduleId, hintText)}
     ${noEmailWarning}
     <div class="panel">
       <div class="panel-head"><div><h2>Gửi yêu cầu mới</h2>
@@ -2066,6 +2208,7 @@ function renderRequestsTab(c, cfg){
       <div class="panel-body flush" id="reqListBox"></div>
     </div>
   `;
+  wireHintDismiss(c);
   const sendBtn = document.getElementById('reqSendBtn');
   sendBtn.addEventListener('click', ()=>{
     if(sendBtn.disabled) return; // chặn bấm nhiều lần liên tiếp tạo trùng yêu cầu
@@ -2076,14 +2219,14 @@ function renderRequestsTab(c, cfg){
     sendBtn.disabled = true; sendBtn.textContent = 'Đang gửi...';
     if(!obj.requests) obj.requests = [];
     const now = new Date().toISOString();
-    obj.requests.push({
-      id: uid('req'), status: 'moi', createdAt: now, updatedAt: now,
-      messages: [{ id: uid('msg'), text, authorName: u?u.name:'(không rõ)', authorRole: role, at: now }],
-    });
+    const newReq = { id: uid('req'), status: 'moi', createdAt: now, updatedAt: now,
+      messages: [{ id: uid('msg'), text, authorName: u?u.name:'(không rõ)', authorRole: role, at: now }] };
+    obj.requests.push(newReq);
     logActivity('create', cfg.entityLabel, `${cfg.nameOf(obj)}: yêu cầu mới từ ${u?u.name:''}`);
     toast('Đã gửi yêu cầu');
     saveState(); renderAll(); // renderAll() vẽ lại toàn trang -> nút mới tự về trạng thái bình thường, không cần tự bật lại disabled=false
     notifyAboutRequestMessage(obj, cfg, partner, u?u.name:'(không rõ)', text);
+    scrollToAndFlashRequest(newReq.id); // vì danh sách sắp "còn mở: cũ nhất lên đầu", yêu cầu vừa tạo (mới nhất) có thể nằm khá xa đầu trang — cuộn tới cho người dùng thấy ngay, khỏi tự dò
   });
   if(!partner){
     document.getElementById('reqf_filter_obj').addEventListener('input', e=>{ filterObjText = e.target.value; drawReqList(); });
@@ -4256,10 +4399,11 @@ function renderAllocation(c){
       const msg = usage.total>0
         ? `Đơn vị "${u}" đang được ${usage.accountsUsing} tài khoản phụ trách và có ${usage.txUsing} chứng từ ghi nhận. Xoá khỏi danh sách sẽ gỡ liên kết khỏi các tài khoản đó (chứng từ cũ vẫn giữ nguyên). Vẫn xoá?`
         : `Xoá đơn vị "${u}" khỏi danh sách?`;
-      if(!confirm(msg)) return;
-      deleteUnit(u);
-      toast('Đã xoá đơn vị "'+u+'"');
-      renderAll();
+      confirmModal(msg, ()=>{
+        deleteUnit(u);
+        toast('Đã xoá đơn vị "'+u+'"');
+        renderAll();
+      });
     });
   });
   const tbl = document.getElementById('allocTable');
@@ -4424,10 +4568,11 @@ function wireLockToggle(tbl){
       const cfg = MODULES[moduleKey]; if(!cfg) return;
       const list = cfg.list();
       const r = list.find(x=>x.id===reconId); if(!r) return;
-      if(!confirm(`Hồ sơ này thuộc kỳ đối soát "${r.period}" đã chốt. Mở khoá CẢ KỲ này để sửa/xoá hồ sơ?`)) return;
-      unlockReconciliation(r, cfg.entity, r.period);
-      toast('Đã mở khoá kỳ "'+r.period+'"');
-      renderAll();
+      confirmModal(`Hồ sơ này thuộc kỳ đối soát "${r.period}" đã chốt. Mở khoá CẢ KỲ này để sửa/xoá hồ sơ?`, ()=>{
+        unlockReconciliation(r, cfg.entity, r.period);
+        toast('Đã mở khoá kỳ "'+r.period+'"');
+        renderAll();
+      });
     });
   });
 }
@@ -4634,22 +4779,24 @@ function renderReconTable(editable){
         if(!r) return;
         const rc = reconCalc(r);
         const s = supplierById(r.supplierId);
-        if(!confirm(`Chốt kỳ "${r.period}" (${s?s.name:''})?\nSố CK phải hưởng sẽ được chốt lại: ${fmt(rc.totalDue)}đ.\nMọi hồ sơ Doanh số của NCC này trong khoảng ${r.fromDate} → ${r.toDate} sẽ bị khoá sửa/xoá (trừ Admin).`)) return;
-        lockReconciliation(r, rc, 'Đối soát CK', r.period);
-        toast('Đã chốt kỳ "'+r.period+'"');
-        saveState();
-        renderAll();
+        confirmModal(`Chốt kỳ "${r.period}" (${s?s.name:''})?\nSố CK phải hưởng sẽ được chốt lại: ${fmt(rc.totalDue)}đ.\nMọi hồ sơ Doanh số của NCC này trong khoảng ${r.fromDate} → ${r.toDate} sẽ bị khoá sửa/xoá (trừ Admin).`, ()=>{
+          lockReconciliation(r, rc, 'Đối soát CK', r.period);
+          toast('Đã chốt kỳ "'+r.period+'"');
+          saveState();
+          renderAll();
+        });
       });
     });
     tbl.querySelectorAll('[data-unlock-recon]').forEach(btn=>{
       btn.addEventListener('click', ()=>{
         const r = state.reconciliations.find(x=>x.id===btn.dataset.unlockRecon);
         if(!r) return;
-        if(!confirm(`Mở khoá kỳ "${r.period}"? Hồ sơ trong kỳ này sẽ sửa/xoá được bình thường trở lại.`)) return;
-        unlockReconciliation(r, 'Đối soát CK', r.period);
-        toast('Đã mở khoá kỳ "'+r.period+'"');
-        saveState();
-        renderAll();
+        confirmModal(`Mở khoá kỳ "${r.period}"? Hồ sơ trong kỳ này sẽ sửa/xoá được bình thường trở lại.`, ()=>{
+          unlockReconciliation(r, 'Đối soát CK', r.period);
+          toast('Đã mở khoá kỳ "'+r.period+'"');
+          saveState();
+          renderAll();
+        });
       });
     });
     tbl.querySelectorAll('[data-add-pay]').forEach(btn=>{
@@ -4675,11 +4822,12 @@ function renderReconTable(editable){
         const [rid, pid] = btn.dataset.delPay.split('|');
         const r = state.reconciliations.find(x=>x.id===rid);
         if(!r) return;
-        if(!confirm('Xoá lần thanh toán này khỏi Sổ nhận tiền?')) return;
-        r.payments = ensureReconciliationPayments(r).filter(p=>p.id!==pid);
-        logActivity('delete','Đối soát CK', `Xoá 1 lần thanh toán ở kỳ "${r.period}"`);
-        saveState();
-        renderReconTable(editable);
+        confirmModal('Xoá lần thanh toán này khỏi Sổ nhận tiền?', ()=>{
+          r.payments = ensureReconciliationPayments(r).filter(p=>p.id!==pid);
+          logActivity('delete','Đối soát CK', `Xoá 1 lần thanh toán ở kỳ "${r.period}"`);
+          saveState();
+          renderReconTable(editable);
+        });
       });
     });
     tbl.querySelectorAll('[data-del]').forEach(btn=>{
@@ -4687,10 +4835,11 @@ function renderReconTable(editable){
         const r = state.reconciliations.find(x=>x.id===btn.dataset.del);
         if(r && r.locked && currentRole()!=='Admin'){ toast('Kỳ đã chốt — chỉ Admin được xoá'); return; }
         const s = r ? supplierById(r.supplierId) : null;
-        if(!confirm(`Xoá kỳ "${r?r.period:''}"${r&&r.locked?' (đã chốt)':''}?`)) return;
-        softDelete('reconciliations', r, 'Đối soát CK');
-        logActivity('delete','Đối soát CK', `Xoá kỳ "${r?r.period:''}" (${s?s.name:''})`);
-        renderAll();
+        confirmModal(`Xoá kỳ "${r?r.period:''}"${r&&r.locked?' (đã chốt)':''}?`, ()=>{
+          softDelete('reconciliations', r, 'Đối soát CK');
+          logActivity('delete','Đối soát CK', `Xoá kỳ "${r?r.period:''}" (${s?s.name:''})`);
+          renderAll();
+        });
       });
     });
   }
@@ -5002,10 +5151,11 @@ function renderBankPolicies(c){
       btn.addEventListener('click', ()=>{
         const p = state.bankPolicies.find(x=>x.id===btn.dataset.del);
         const b = p ? bankById(p.bankId) : null;
-        if(!confirm(`Xoá chính sách ${p?monthLabel(p.month):''} của "${b?b.name:''}"?`)) return;
-        softDelete('bankPolicies', p, 'Chính sách CK (NH)');
-        logActivity('delete','Chính sách CK (NH)', `Xoá chính sách ${p?monthLabel(p.month):''} — ${b?b.name:''}`);
-        renderAll();
+        confirmModal(`Xoá chính sách ${p?monthLabel(p.month):''} của "${b?b.name:''}"?`, ()=>{
+          softDelete('bankPolicies', p, 'Chính sách CK (NH)');
+          logActivity('delete','Chính sách CK (NH)', `Xoá chính sách ${p?monthLabel(p.month):''} — ${b?b.name:''}`);
+          renderAll();
+        });
       });
     });
   }
@@ -5487,22 +5637,24 @@ function renderBankReconTable(editable){
         if(!r) return;
         const rc = bankReconCalc(r);
         const b = bankById(r.bankId);
-        if(!confirm(`Chốt kỳ "${r.period}" (${b?b.name:''})?\nHoa hồng phải hưởng sẽ được chốt lại: ${fmt(rc.totalDue)}đ.\nMọi hồ sơ vay của ngân hàng này trong khoảng ${r.fromDate} → ${r.toDate} sẽ bị khoá sửa/xoá (trừ Admin).`)) return;
-        lockReconciliation(r, rc, 'Đối soát CK (NH)', r.period);
-        toast('Đã chốt kỳ "'+r.period+'"');
-        saveState();
-        renderAll();
+        confirmModal(`Chốt kỳ "${r.period}" (${b?b.name:''})?\nHoa hồng phải hưởng sẽ được chốt lại: ${fmt(rc.totalDue)}đ.\nMọi hồ sơ vay của ngân hàng này trong khoảng ${r.fromDate} → ${r.toDate} sẽ bị khoá sửa/xoá (trừ Admin).`, ()=>{
+          lockReconciliation(r, rc, 'Đối soát CK (NH)', r.period);
+          toast('Đã chốt kỳ "'+r.period+'"');
+          saveState();
+          renderAll();
+        });
       });
     });
     tbl.querySelectorAll('[data-unlock-recon]').forEach(btn=>{
       btn.addEventListener('click', ()=>{
         const r = state.bankReconciliations.find(x=>x.id===btn.dataset.unlockRecon);
         if(!r) return;
-        if(!confirm(`Mở khoá kỳ "${r.period}"? Hồ sơ trong kỳ này sẽ sửa/xoá được bình thường trở lại.`)) return;
-        unlockReconciliation(r, 'Đối soát CK (NH)', r.period);
-        toast('Đã mở khoá kỳ "'+r.period+'"');
-        saveState();
-        renderAll();
+        confirmModal(`Mở khoá kỳ "${r.period}"? Hồ sơ trong kỳ này sẽ sửa/xoá được bình thường trở lại.`, ()=>{
+          unlockReconciliation(r, 'Đối soát CK (NH)', r.period);
+          toast('Đã mở khoá kỳ "'+r.period+'"');
+          saveState();
+          renderAll();
+        });
       });
     });
     tbl.querySelectorAll('[data-add-pay]').forEach(btn=>{
@@ -5528,11 +5680,12 @@ function renderBankReconTable(editable){
         const [rid, pid] = btn.dataset.delPay.split('|');
         const r = state.bankReconciliations.find(x=>x.id===rid);
         if(!r) return;
-        if(!confirm('Xoá lần thanh toán này khỏi Sổ nhận tiền?')) return;
-        r.payments = ensureReconciliationPayments(r).filter(p=>p.id!==pid);
-        logActivity('delete','Đối soát CK (NH)', `Xoá 1 lần thanh toán ở kỳ "${r.period}"`);
-        saveState();
-        renderBankReconTable(editable);
+        confirmModal('Xoá lần thanh toán này khỏi Sổ nhận tiền?', ()=>{
+          r.payments = ensureReconciliationPayments(r).filter(p=>p.id!==pid);
+          logActivity('delete','Đối soát CK (NH)', `Xoá 1 lần thanh toán ở kỳ "${r.period}"`);
+          saveState();
+          renderBankReconTable(editable);
+        });
       });
     });
     tbl.querySelectorAll('[data-del]').forEach(btn=>{
@@ -5540,10 +5693,11 @@ function renderBankReconTable(editable){
         const r = state.bankReconciliations.find(x=>x.id===btn.dataset.del);
         if(r && r.locked && currentRole()!=='Admin'){ toast('Kỳ đã chốt — chỉ Admin được xoá'); return; }
         const b = r ? bankById(r.bankId) : null;
-        if(!confirm(`Xoá kỳ "${r?r.period:''}"${r&&r.locked?' (đã chốt)':''}?`)) return;
-        softDelete('bankReconciliations', r, 'Đối soát CK (NH)');
-        logActivity('delete','Đối soát CK (NH)', `Xoá kỳ "${r?r.period:''}" (${b?b.name:''})`);
-        renderAll();
+        confirmModal(`Xoá kỳ "${r?r.period:''}"${r&&r.locked?' (đã chốt)':''}?`, ()=>{
+          softDelete('bankReconciliations', r, 'Đối soát CK (NH)');
+          logActivity('delete','Đối soát CK (NH)', `Xoá kỳ "${r?r.period:''}" (${b?b.name:''})`);
+          renderAll();
+        });
       });
     });
   }
@@ -5822,10 +5976,11 @@ function renderInsPolicies(c){
       btn.addEventListener('click', ()=>{
         const row = state.insRates.find(x=>x.id===btn.dataset.del);
         const ins = row ? insurerById(row.insurerId) : null;
-        if(!confirm(`Xoá khoảng "${row?row.valueLabel:''}" của "${ins?ins.name:''}"?`)) return;
-        softDelete('insRates', row, 'Biểu phí Bảo hiểm');
-        logActivity('delete','Biểu phí Bảo hiểm', `Xoá khoảng "${row?row.valueLabel:''}" — ${ins?ins.name:''}`);
-        renderAll();
+        confirmModal(`Xoá khoảng "${row?row.valueLabel:''}" của "${ins?ins.name:''}"?`, ()=>{
+          softDelete('insRates', row, 'Biểu phí Bảo hiểm');
+          logActivity('delete','Biểu phí Bảo hiểm', `Xoá khoảng "${row?row.valueLabel:''}" — ${ins?ins.name:''}`);
+          renderAll();
+        });
       });
     });
   }
@@ -6725,22 +6880,24 @@ function renderInsReconTable(editable){
         if(!r) return;
         const rc = insReconCalc(r);
         const ins = insurerById(r.insurerId);
-        if(!confirm(`Chốt kỳ "${r.period}" (${ins?ins.name:''})?\nHoa hồng phải hưởng sẽ được chốt lại: ${fmt(rc.totalDue)}đ.\nMọi hợp đồng của NCC bảo hiểm này trong khoảng ${r.fromDate} → ${r.toDate} sẽ bị khoá sửa/xoá (trừ Admin).`)) return;
-        lockReconciliation(r, rc, 'Đối soát CK (Bảo hiểm)', r.period);
-        toast('Đã chốt kỳ "'+r.period+'"');
-        saveState();
-        renderAll();
+        confirmModal(`Chốt kỳ "${r.period}" (${ins?ins.name:''})?\nHoa hồng phải hưởng sẽ được chốt lại: ${fmt(rc.totalDue)}đ.\nMọi hợp đồng của NCC bảo hiểm này trong khoảng ${r.fromDate} → ${r.toDate} sẽ bị khoá sửa/xoá (trừ Admin).`, ()=>{
+          lockReconciliation(r, rc, 'Đối soát CK (Bảo hiểm)', r.period);
+          toast('Đã chốt kỳ "'+r.period+'"');
+          saveState();
+          renderAll();
+        });
       });
     });
     tbl.querySelectorAll('[data-unlock-recon]').forEach(btn=>{
       btn.addEventListener('click', ()=>{
         const r = state.insReconciliations.find(x=>x.id===btn.dataset.unlockRecon);
         if(!r) return;
-        if(!confirm(`Mở khoá kỳ "${r.period}"? Hồ sơ trong kỳ này sẽ sửa/xoá được bình thường trở lại.`)) return;
-        unlockReconciliation(r, 'Đối soát CK (Bảo hiểm)', r.period);
-        toast('Đã mở khoá kỳ "'+r.period+'"');
-        saveState();
-        renderAll();
+        confirmModal(`Mở khoá kỳ "${r.period}"? Hồ sơ trong kỳ này sẽ sửa/xoá được bình thường trở lại.`, ()=>{
+          unlockReconciliation(r, 'Đối soát CK (Bảo hiểm)', r.period);
+          toast('Đã mở khoá kỳ "'+r.period+'"');
+          saveState();
+          renderAll();
+        });
       });
     });
     tbl.querySelectorAll('[data-add-pay]').forEach(btn=>{
@@ -6766,11 +6923,12 @@ function renderInsReconTable(editable){
         const [rid, pid] = btn.dataset.delPay.split('|');
         const r = state.insReconciliations.find(x=>x.id===rid);
         if(!r) return;
-        if(!confirm('Xoá lần thanh toán này khỏi Sổ nhận tiền?')) return;
-        r.payments = ensureReconciliationPayments(r).filter(p=>p.id!==pid);
-        logActivity('delete','Đối soát CK (Bảo hiểm)', `Xoá 1 lần thanh toán ở kỳ "${r.period}"`);
-        saveState();
-        renderInsReconTable(editable);
+        confirmModal('Xoá lần thanh toán này khỏi Sổ nhận tiền?', ()=>{
+          r.payments = ensureReconciliationPayments(r).filter(p=>p.id!==pid);
+          logActivity('delete','Đối soát CK (Bảo hiểm)', `Xoá 1 lần thanh toán ở kỳ "${r.period}"`);
+          saveState();
+          renderInsReconTable(editable);
+        });
       });
     });
     tbl.querySelectorAll('[data-del]').forEach(btn=>{
@@ -6778,10 +6936,11 @@ function renderInsReconTable(editable){
         const r = state.insReconciliations.find(x=>x.id===btn.dataset.del);
         if(r && r.locked && currentRole()!=='Admin'){ toast('Kỳ đã chốt — chỉ Admin được xoá'); return; }
         const ins = r ? insurerById(r.insurerId) : null;
-        if(!confirm(`Xoá kỳ "${r?r.period:''}"${r&&r.locked?' (đã chốt)':''}?`)) return;
-        softDelete('insReconciliations', r, 'Đối soát CK (Bảo hiểm)');
-        logActivity('delete','Đối soát CK (Bảo hiểm)', `Xoá kỳ "${r?r.period:''}" (${ins?ins.name:''})`);
-        renderAll();
+        confirmModal(`Xoá kỳ "${r?r.period:''}"${r&&r.locked?' (đã chốt)':''}?`, ()=>{
+          softDelete('insReconciliations', r, 'Đối soát CK (Bảo hiểm)');
+          logActivity('delete','Đối soát CK (Bảo hiểm)', `Xoá kỳ "${r?r.period:''}" (${ins?ins.name:''})`);
+          renderAll();
+        });
       });
     });
   }
@@ -6811,6 +6970,7 @@ function renderInsRenewal(c){
   const dueSoonCount = allRows.filter(r=>r.status==='due_soon').length;
   const inProgressCount = allRows.filter(r=>r.status==='in_progress').length;
   c.innerHTML = `
+    ${hintBannerHTML('renewal_intro', 'Danh sách này tự động lọc ra các hồ sơ vay thuộc gói yêu cầu mua lại bảo hiểm hằng năm, liên kết theo biển số xe với Doanh số Bảo hiểm — nếu khớp sai, bấm "Sửa liên kết" ở cột cuối để chỉnh tay.')}
     <div class="panel">
       <div class="panel-head">
         <div><h2>Bộ lọc</h2><div class="desc">Chỉ tính hồ sơ vay "Đã giải ngân" thuộc gói vay đã bật "Yêu cầu mua lại bảo hiểm hằng năm" ở Chính sách CK (Ngân hàng). Liên kết tự động theo biển số xe, dự phòng SĐT/tên khách hàng khi thiếu biển số — có thể sửa tay nếu khớp sai.</div></div>
@@ -6852,6 +7012,7 @@ function renderInsRenewal(c){
       <div class="panel-body flush"><div class="tbl-wrap"><table class="data" id="renewalTable"></table></div></div>
     </div>
   `;
+  wireHintDismiss(c);
   document.getElementById('irwf_unit').addEventListener('input', e=>{ insRenewalUnitFilter=e.target.value; drawRenewalTable(); });
   document.getElementById('irwf_bank').addEventListener('input', e=>{ insRenewalBankFilter=e.target.value; drawRenewalTable(); });
   document.getElementById('irwf_status').addEventListener('change', e=>{ insRenewalStatusFilter=e.target.value; drawRenewalTable(); });
@@ -7077,10 +7238,7 @@ function renderSettings(c){
           ${fb.status==='connected' ? `<button class="btn btn-ghost" id="fbDisconnectBtn" style="border-color:var(--rust);color:var(--rust)">Ngắt kết nối</button>` : ''}
         </div>
         ${fb.status==='error' ? `<div class="helper" style="color:var(--rust)">Lỗi kết nối: ${escAttr(fb.error||'')}</div>` : ''}
-        <div class="helper">
-          <b>Lấy cấu hình ở đâu:</b> Firebase Console → chọn dự án → biểu tượng bánh răng ⚙ → Cài đặt dự án → mục "Ứng dụng của bạn" → chọn (hoặc thêm mới) ứng dụng Web → sao chép object <code>firebaseConfig</code>, dán nguyên vào ô trên.<br><br>
-          <b>Lưu ý quan trọng:</b> cấu hình này chỉ giúp app kết nối đúng dự án Firebase của bạn, không phải mật khẩu. Việc ai được đọc/ghi dữ liệu vẫn do <b>Realtime Database → Rules</b> trên Firebase Console quyết định. Nếu chưa cấu hình Rules chặt chẽ, dữ liệu ở chế độ mở — giống hệt giới hạn "không mật khẩu" của phần Quản trị tài khoản trong app. Firebase chỉ nâng cấp phần đồng bộ real-time, không tự thêm bảo mật đăng nhập.
-        </div>
+        ${collapsibleInfoHTML('fbHelpInfo', '<b>Lấy cấu hình ở đâu:</b> Firebase Console → chọn dự án → biểu tượng bánh răng ⚙ → Cài đặt dự án → mục "Ứng dụng của bạn" → chọn (hoặc thêm mới) ứng dụng Web → sao chép object <code>firebaseConfig</code>, dán nguyên vào ô trên.<br><br><b>Lưu ý quan trọng:</b> cấu hình này chỉ giúp app kết nối đúng dự án Firebase của bạn, không phải mật khẩu. Việc ai được đọc/ghi dữ liệu vẫn do <b>Realtime Database → Rules</b> trên Firebase Console quyết định. Nếu chưa cấu hình Rules chặt chẽ, dữ liệu ở chế độ mở — giống hệt giới hạn "không mật khẩu" của phần Quản trị tài khoản trong app. Firebase chỉ nâng cấp phần đồng bộ real-time, không tự thêm bảo mật đăng nhập.')}
         ` : lockedNote('Chỉ Admin mới cấu hình kết nối Firebase.')}
       </div>
     </div>
@@ -7141,6 +7299,7 @@ function renderSettings(c){
       <div class="panel-body" id="dedupResultBox"></div>
     </div>` : ''}
   `;
+  wireInfoToggles(c);
   if(isAdmin){
     document.getElementById('driveSaveBtn').addEventListener('click', ()=>{
       state.driveUploadUrl = document.getElementById('driveUrlInput').value.trim();
@@ -7154,33 +7313,34 @@ function renderSettings(c){
       const to = document.getElementById('testMailInput').value.trim();
       if(!to){ toast('Nhập email nhận thử trước'); return; }
       const btn = document.getElementById('testMailBtn');
-      btn.disabled = true; btn.textContent = 'Đang gửi...';
+      btn.disabled = true; btn.innerHTML = '<span class="mini-spinner"></span>Đang gửi...';
       try{
         await sendEmailNotification([to], '[QT NCC] Email thử nghiệm', 'Đây là email thử để kiểm tra cấu hình gửi thông báo của hệ thống Quản trị NCC/NH/Bảo hiểm.\n\nNếu bạn nhận được email này, cấu hình đã hoạt động đúng.');
         toast('✓ Đã gửi — kiểm tra hộp thư (kể cả mục Spam) trong vài phút');
       }catch(err){
-        alert('Gửi email thử thất bại:\n\n'+err.message+'\n\nKiểm tra lại: đã deploy lại Apps Script sau khi thêm phần gửi mail chưa? Đã cho phép quyền MailApp lần đầu chưa?');
+        alertModal('Gửi email thử thất bại:\n\n'+err.message+'\n\nKiểm tra lại: đã deploy lại Apps Script sau khi thêm phần gửi mail chưa? Đã cho phép quyền MailApp lần đầu chưa?');
       }finally{
         btn.disabled = false; btn.textContent = 'Gửi email thử';
       }
     });
-    document.getElementById('emailKillSwitchBtn').addEventListener('click', async ()=>{
+    document.getElementById('emailKillSwitchBtn').addEventListener('click', ()=>{
       const turningOff = state.emailNotifyEnabled; // đang bật -> bấm để khoá lại
       const label = turningOff ? 'KHOÁ' : 'MỞ LẠI';
-      if(!confirm(`Xác nhận ${label} việc gửi email của toàn hệ thống?`+(turningOff?' Mọi thông báo email (kể cả "Yêu cầu / Trao đổi") sẽ ngừng gửi cho tới khi bạn mở lại.':''))) return;
-      const btn = document.getElementById('emailKillSwitchBtn');
-      btn.disabled = true; btn.textContent = 'Đang xử lý...';
-      try{
-        await setRemoteEmailEnabled(!turningOff);
-        state.emailNotifyEnabled = !turningOff;
-        logActivity('update','Cài đặt', `${turningOff?'🔒 KHOÁ':'🔓 Mở lại'} công tắc khẩn cấp gửi email`);
-        saveState();
-        toast(turningOff ? 'Đã khoá gửi email' : 'Đã mở lại gửi email');
-        renderAll();
-      }catch(err){
-        alert('Không đổi được trạng thái:\n\n'+err.message+'\n\nTrạng thái gửi email hiện KHÔNG đổi — kiểm tra lại kết nối/cấu hình rồi thử lại.');
-        btn.disabled = false; btn.textContent = turningOff ? '🔒 Khoá gửi email' : '🔓 Mở lại gửi email';
-      }
+      confirmModal(`Xác nhận ${label} việc gửi email của toàn hệ thống?`+(turningOff?' Mọi thông báo email (kể cả "Yêu cầu / Trao đổi") sẽ ngừng gửi cho tới khi bạn mở lại.':''), async ()=>{
+        const btn = document.getElementById('emailKillSwitchBtn');
+        btn.disabled = true; btn.innerHTML = '<span class="mini-spinner"></span>Đang xử lý...';
+        try{
+          await setRemoteEmailEnabled(!turningOff);
+          state.emailNotifyEnabled = !turningOff;
+          logActivity('update','Cài đặt', `${turningOff?'🔒 KHOÁ':'🔓 Mở lại'} công tắc khẩn cấp gửi email`);
+          saveState();
+          toast(turningOff ? 'Đã khoá gửi email' : 'Đã mở lại gửi email');
+          renderAll();
+        }catch(err){
+          alertModal('Không đổi được trạng thái:\n\n'+err.message+'\n\nTrạng thái gửi email hiện KHÔNG đổi — kiểm tra lại kết nối/cấu hình rồi thử lại.');
+          btn.disabled = false; btn.textContent = turningOff ? '🔒 Khoá gửi email' : '🔓 Mở lại gửi email';
+        }
+      }, {danger: turningOff});
     });
     document.getElementById('fbConnectBtn').addEventListener('click', async ()=>{
       const raw = document.getElementById('fbConfigArea').value;
@@ -7202,13 +7362,14 @@ function renderSettings(c){
       renderAll();
     });
     if(fb.status==='connected') document.getElementById('fbDisconnectBtn').addEventListener('click', ()=>{
-      if(!confirm('Ngắt kết nối Firebase? App sẽ quay lại lưu trong trò chuyện Claude / trình duyệt này.')) return;
-      disconnectFirebase();
-      saveFirebaseConfigToBootstrap(null);
-      logActivity('update','Cài đặt', 'Ngắt kết nối Firebase');
-      setStoragePill(storageMode==='firebase'?'memory':storageMode);
-      toast('Đã ngắt kết nối Firebase');
-      renderAll();
+      confirmModal('Ngắt kết nối Firebase? App sẽ quay lại lưu trong trò chuyện Claude / trình duyệt này.', ()=>{
+        disconnectFirebase();
+        saveFirebaseConfigToBootstrap(null);
+        logActivity('update','Cài đặt', 'Ngắt kết nối Firebase');
+        setStoragePill(storageMode==='firebase'?'memory':storageMode);
+        toast('Đã ngắt kết nối Firebase');
+        renderAll();
+      });
     });
   }
   if(canUnits){
@@ -7230,10 +7391,11 @@ function renderSettings(c){
         const msg = usage.total>0
           ? `Đơn vị "${u}" đang được ${usage.accountsUsing} tài khoản phụ trách và có ${usage.txUsing} chứng từ ghi nhận. Xoá khỏi danh sách sẽ gỡ liên kết khỏi các tài khoản đó (chứng từ cũ vẫn giữ nguyên). Vẫn xoá?`
           : `Xoá đơn vị "${u}" khỏi danh sách?`;
-        if(!confirm(msg)) return;
-        deleteUnit(u);
-        toast('Đã xoá đơn vị "'+u+'"');
-        renderAll();
+        confirmModal(msg, ()=>{
+          deleteUnit(u);
+          toast('Đã xoá đơn vị "'+u+'"');
+          renderAll();
+        });
       });
     });
   }
@@ -7264,13 +7426,14 @@ function renderSettings(c){
       reader.readAsText(file);
     });
     document.getElementById('resetBtn').addEventListener('click', ()=>{
-      if(!confirm('Xoá toàn bộ dữ liệu hiện tại (kể cả tài khoản khác) và nạp lại dữ liệu mẫu?')) return;
-      const keepMe = currentUser();
-      state = seedState();
-      if(keepMe){ state.accounts = [keepMe]; currentUserId = keepMe.id; }
-      logActivity('delete','Cài đặt', 'Xoá toàn bộ dữ liệu, nạp lại dữ liệu mẫu');
-      toast('Đã nạp lại dữ liệu mẫu');
-      renderAll();
+      confirmModal('Xoá toàn bộ dữ liệu hiện tại (kể cả tài khoản khác) và nạp lại dữ liệu mẫu?', ()=>{
+        const keepMe = currentUser();
+        state = seedState();
+        if(keepMe){ state.accounts = [keepMe]; currentUserId = keepMe.id; }
+        logActivity('delete','Cài đặt', 'Xoá toàn bộ dữ liệu, nạp lại dữ liệu mẫu');
+        toast('Đã nạp lại dữ liệu mẫu');
+        renderAll();
+      });
     });
   }
   if(isAdmin && fb.status==='connected'){
@@ -7300,22 +7463,24 @@ function renderSettings(c){
         });
       });
       box.querySelectorAll('[data-backup-restore]').forEach(btn=>{
-        btn.addEventListener('click', async ()=>{
+        btn.addEventListener('click', ()=>{
           const date = btn.dataset.backupRestore;
-          if(!confirm(`Khôi phục dữ liệu về đúng thời điểm bản sao lưu ngày ${date}?\n\nToàn bộ thay đổi SAU ngày đó (của mọi module, mọi người) sẽ bị THAY THẾ. Hành động này ghi thẳng lên Firebase, ảnh hưởng tới mọi người đang dùng app.`)) return;
-          if(!confirm('Xác nhận LẦN CUỐI — chắc chắn khôi phục?')) return;
-          const backup = await fetchBackup(date);
-          if(!backup){ toast('Không tải được bản sao lưu này'); return; }
-          state = Object.assign(seedState(), ...Object.values(backup.data));
-          // KHÔNG xoá cache lastSavedRecords/lastSavedMeta ở đây — cố ý giữ nguyên, để saveState() ngay
-          // sau đây tự so sánh đúng bản ghi nào khác so với dữ liệu đang có trên Firebase: bản ghi nào
-          // backup có mà giờ khác/thiếu sẽ được ghi lại đúng, và QUAN TRỌNG — bản ghi nào KHÔNG có trong
-          // backup nhưng đang tồn tại trên Firebase (thêm SAU thời điểm backup) sẽ tự động bị xoá đúng
-          // nghĩa "khôi phục về đúng thời điểm đó" (rollback thật), thay vì chỉ cộng dồn thêm dữ liệu cũ.
-          logActivity('update','Cài đặt', `Khôi phục dữ liệu từ bản sao lưu ngày ${date}`);
-          toast('Đã khôi phục — đang lưu lại lên Firebase...');
-          saveState();
-          renderAll();
+          confirmModal(`Khôi phục dữ liệu về đúng thời điểm bản sao lưu ngày ${date}?\n\nToàn bộ thay đổi SAU ngày đó (của mọi module, mọi người) sẽ bị THAY THẾ. Hành động này ghi thẳng lên Firebase, ảnh hưởng tới mọi người đang dùng app.`, ()=>{
+            confirmModal('Xác nhận LẦN CUỐI — chắc chắn khôi phục?', async ()=>{
+              const backup = await fetchBackup(date);
+              if(!backup){ toast('Không tải được bản sao lưu này'); return; }
+              state = Object.assign(seedState(), ...Object.values(backup.data));
+              // KHÔNG xoá cache lastSavedRecords/lastSavedMeta ở đây — cố ý giữ nguyên, để saveState() ngay
+              // sau đây tự so sánh đúng bản ghi nào khác so với dữ liệu đang có trên Firebase: bản ghi nào
+              // backup có mà giờ khác/thiếu sẽ được ghi lại đúng, và QUAN TRỌNG — bản ghi nào KHÔNG có trong
+              // backup nhưng đang tồn tại trên Firebase (thêm SAU thời điểm backup) sẽ tự động bị xoá đúng
+              // nghĩa "khôi phục về đúng thời điểm đó" (rollback thật), thay vì chỉ cộng dồn thêm dữ liệu cũ.
+              logActivity('update','Cài đặt', `Khôi phục dữ liệu từ bản sao lưu ngày ${date}`);
+              toast('Đã khôi phục — đang lưu lại lên Firebase...');
+              saveState();
+              renderAll();
+            });
+          });
         });
       });
     });
@@ -7345,22 +7510,24 @@ function renderSettings(c){
         btn.addEventListener('click', ()=>{
           const d = dups.find(x=>x.field===btn.dataset.dedupField);
           if(!d) return;
-          if(!confirm(`Xoá ${d.extraCount} bản ghi thừa của "${d.label}"? Sẽ chuyển vào Thùng rác, khôi phục lại được.`)) return;
-          d.groups.forEach(g=>removeDuplicateGroup(d.field, d.entity, g));
-          logActivity('delete','Cài đặt', `Dọn ${d.extraCount} bản ghi trùng lặp — ${d.label}`);
-          toast(`Đã dọn ${d.extraCount} bản ghi thừa của "${d.label}"`);
-          saveState();
-          renderDedupBox();
+          confirmModal(`Xoá ${d.extraCount} bản ghi thừa của "${d.label}"? Sẽ chuyển vào Thùng rác, khôi phục lại được.`, ()=>{
+            d.groups.forEach(g=>removeDuplicateGroup(d.field, d.entity, g));
+            logActivity('delete','Cài đặt', `Dọn ${d.extraCount} bản ghi trùng lặp — ${d.label}`);
+            toast(`Đã dọn ${d.extraCount} bản ghi thừa của "${d.label}"`);
+            saveState();
+            renderDedupBox();
+          });
         });
       });
       const allBtn = document.getElementById('dedupAllBtn');
       if(allBtn) allBtn.addEventListener('click', ()=>{
-        if(!confirm(`Xoá TẤT CẢ ${totalExtra} bản ghi thừa (mọi loại dữ liệu)? Sẽ chuyển vào Thùng rác, khôi phục lại được.`)) return;
-        dups.forEach(d=>{ d.groups.forEach(g=>removeDuplicateGroup(d.field, d.entity, g)); });
-        logActivity('delete','Cài đặt', `Dọn tổng cộng ${totalExtra} bản ghi trùng lặp (mọi loại dữ liệu)`);
-        toast(`Đã dọn ${totalExtra} bản ghi thừa`);
-        saveState();
-        renderDedupBox();
+        confirmModal(`Xoá TẤT CẢ ${totalExtra} bản ghi thừa (mọi loại dữ liệu)? Sẽ chuyển vào Thùng rác, khôi phục lại được.`, ()=>{
+          dups.forEach(d=>{ d.groups.forEach(g=>removeDuplicateGroup(d.field, d.entity, g)); });
+          logActivity('delete','Cài đặt', `Dọn tổng cộng ${totalExtra} bản ghi trùng lặp (mọi loại dữ liệu)`);
+          toast(`Đã dọn ${totalExtra} bản ghi thừa`);
+          saveState();
+          renderDedupBox();
+        });
       });
     }
     const dedupBtn = document.getElementById('dedupScanBtn');
@@ -7448,21 +7615,23 @@ function renderTrash(c){
       });
       document.getElementById('trashBulkPurge').addEventListener('click', ()=>{
         const ids = Array.from(trashSelected);
-        if(!confirm(`Xoá VĨNH VIỄN ${ids.length} mục đã chọn? Không thể khôi phục sau bước này.`)) return;
-        ids.forEach(id=> purgeTrashEntry(id));
-        logActivity('delete','Thùng rác', `Xoá vĩnh viễn hàng loạt: ${ids.length} mục đã chọn`);
-        saveState();
-        toast(`Đã xoá vĩnh viễn ${ids.length} mục`);
-        renderAll();
+        confirmModal(`Xoá VĨNH VIỄN ${ids.length} mục đã chọn? Không thể khôi phục sau bước này.`, ()=>{
+          ids.forEach(id=> purgeTrashEntry(id));
+          logActivity('delete','Thùng rác', `Xoá vĩnh viễn hàng loạt: ${ids.length} mục đã chọn`);
+          saveState();
+          toast(`Đã xoá vĩnh viễn ${ids.length} mục`);
+          renderAll();
+        });
       });
     }
     document.getElementById('trashPurgeAll').addEventListener('click', ()=>{
-      if(!confirm(`Xoá VĨNH VIỄN TOÀN BỘ ${list.length} mục trong Thùng rác? Không thể khôi phục sau bước này.`)) return;
-      list.forEach(t=> purgeTrashEntry(t.trashId));
-      logActivity('delete','Thùng rác', `Xoá vĩnh viễn toàn bộ Thùng rác (${list.length} mục)`);
-      saveState();
-      toast('Đã xoá vĩnh viễn toàn bộ Thùng rác');
-      renderAll();
+      confirmModal(`Xoá VĨNH VIỄN TOÀN BỘ ${list.length} mục trong Thùng rác? Không thể khôi phục sau bước này.`, ()=>{
+        list.forEach(t=> purgeTrashEntry(t.trashId));
+        logActivity('delete','Thùng rác', `Xoá vĩnh viễn toàn bộ Thùng rác (${list.length} mục)`);
+        saveState();
+        toast('Đã xoá vĩnh viễn toàn bộ Thùng rác');
+        renderAll();
+      });
     });
   }
   updateBulkBar();
@@ -7493,11 +7662,12 @@ function renderTrash(c){
   tbl.querySelectorAll('[data-purge]').forEach(btn=>{
     btn.addEventListener('click', ()=>{
       const entry = list.find(t=>t.trashId===btn.dataset.purge);
-      if(!confirm(`Xoá VĨNH VIỄN "${entry?trashItemSummary(entry):''}"? Không thể khôi phục sau bước này.`)) return;
-      purgeTrashEntry(btn.dataset.purge);
-      logActivity('delete', entry?entry.entityLabel:'Thùng rác', `Xoá vĩnh viễn: ${entry?trashItemSummary(entry):''}`);
-      toast('Đã xoá vĩnh viễn');
-      renderAll();
+      confirmModal(`Xoá VĨNH VIỄN "${entry?trashItemSummary(entry):''}"? Không thể khôi phục sau bước này.`, ()=>{
+        purgeTrashEntry(btn.dataset.purge);
+        logActivity('delete', entry?entry.entityLabel:'Thùng rác', `Xoá vĩnh viễn: ${entry?trashItemSummary(entry):''}`);
+        toast('Đã xoá vĩnh viễn');
+        renderAll();
+      });
     });
   });
 }
@@ -7550,8 +7720,7 @@ function renderAccounts(c){
           </div>
           <button class="btn btn-primary" id="addAccountBtn">+ Thêm tài khoản</button>
         </div>
-        <div class="helper">Mỗi tài khoản có <b>Tên hiển thị</b> (hiện trên giao diện, Nhật ký hoạt động...) và <b>Tài khoản</b> riêng (dùng để gõ vào ô "Tên đăng nhập" ở màn đăng nhập) — hai thứ có thể khác nhau, ví dụ Tên hiển thị "Thủ kho TTB" nhưng Tài khoản đăng nhập là "thukhottb". Đặt mật khẩu cho tài khoản nào thì tài khoản đó sẽ phải nhập đúng mật khẩu ở màn đăng nhập. Để trống ô mật khẩu = đăng nhập không cần mật khẩu (như trước đây). "Module được phép dùng" quyết định tài khoản đó thấy được những tab nào (Admin luôn thấy đủ mọi module bất kể chọn gì ở đây). <b>Email</b> không bắt buộc — nhân sự nào không có email cứ để trống, hệ thống bỏ qua khi gửi thông báo, không ảnh hưởng gì tới việc dùng app.<br>
-        <b>Tài khoản Đối tác</b>: dùng cho chính NCC/Ngân hàng/hãng Bảo hiểm tự đăng nhập xem dữ liệu của họ — chỉ thấy đúng module đã chọn, chỉ thấy Chính sách + Doanh số/Đối soát CK của ĐÚNG đối tác được gán (không thấy Dashboard, Danh mục toàn bộ đối tác, hay Phân bổ đơn vị vì các mục đó liệt kê nhiều đối tác cùng lúc), và được tự sửa ô "xác nhận" hoa hồng của chính mình ở Đối soát CK — mọi thứ khác chỉ xem, không sửa được gì khác. Đây vẫn là "hàng rào mềm" — không phải bảo mật thật sự vì app chạy tĩnh trên trình duyệt.</div>
+        ${collapsibleInfoHTML('accountsHelpInfo', 'Mỗi tài khoản có <b>Tên hiển thị</b> (hiện trên giao diện, Nhật ký hoạt động...) và <b>Tài khoản</b> riêng (dùng để gõ vào ô "Tên đăng nhập" ở màn đăng nhập) — hai thứ có thể khác nhau, ví dụ Tên hiển thị "Thủ kho TTB" nhưng Tài khoản đăng nhập là "thukhottb". Đặt mật khẩu cho tài khoản nào thì tài khoản đó sẽ phải nhập đúng mật khẩu ở màn đăng nhập. Để trống ô mật khẩu = đăng nhập không cần mật khẩu (như trước đây). "Module được phép dùng" quyết định tài khoản đó thấy được những tab nào (Admin luôn thấy đủ mọi module bất kể chọn gì ở đây). <b>Email</b> không bắt buộc — nhân sự nào không có email cứ để trống, hệ thống bỏ qua khi gửi thông báo, không ảnh hưởng gì tới việc dùng app.<br><br><b>Tài khoản Đối tác</b>: dùng cho chính NCC/Ngân hàng/hãng Bảo hiểm tự đăng nhập xem dữ liệu của họ — chỉ thấy đúng module đã chọn, chỉ thấy Chính sách + Doanh số/Đối soát CK của ĐÚNG đối tác được gán (không thấy Dashboard, Danh mục toàn bộ đối tác, hay Phân bổ đơn vị vì các mục đó liệt kê nhiều đối tác cùng lúc), và được tự sửa ô "xác nhận" hoa hồng của chính mình ở Đối soát CK — mọi thứ khác chỉ xem, không sửa được gì khác. Đây vẫn là "hàng rào mềm" — không phải bảo mật thật sự vì app chạy tĩnh trên trình duyệt.')}
       </div>
     </div>
     <div class="panel">
@@ -7583,6 +7752,7 @@ function renderAccounts(c){
       </div>
     </div>
   `;
+  wireInfoToggles(c);
   const kindSel = document.getElementById('af_kind');
   const roleField = document.getElementById('af_role_field');
   const unitField = document.getElementById('af_unit_field');
@@ -7744,14 +7914,15 @@ function renderAccounts(c){
     });
   });
   tbl.querySelectorAll('[data-clear-pw]').forEach(btn=>{
-    btn.addEventListener('click', async ()=>{
+    btn.addEventListener('click', ()=>{
       const acc = state.accounts.find(a=>a.id===btn.dataset.clearPw);
       if(!acc) return;
-      if(!confirm(`Xoá mật khẩu của tài khoản "${acc.name}"? Sau đó đăng nhập không cần mật khẩu.`)) return;
-      await setAccountPassword(acc, '');
-      logActivity('update','Tài khoản', `Sửa tài khoản "${acc.name}" (xoá mật khẩu)`);
-      toast('Đã xoá mật khẩu');
-      renderAll();
+      confirmModal(`Xoá mật khẩu của tài khoản "${acc.name}"? Sau đó đăng nhập không cần mật khẩu.`, async ()=>{
+        await setAccountPassword(acc, '');
+        logActivity('update','Tài khoản', `Sửa tài khoản "${acc.name}" (xoá mật khẩu)`);
+        toast('Đã xoá mật khẩu');
+        renderAll();
+      });
     });
   });
   tbl.querySelectorAll('[data-del]').forEach(btn=>{
@@ -7760,10 +7931,11 @@ function renderAccounts(c){
       if(state.accounts.filter(a=>a.role==='Admin').length<=1 && acc.role==='Admin'){
         toast('Cần giữ lại ít nhất 1 tài khoản Admin'); return;
       }
-      if(!confirm(`Xoá tài khoản "${acc.name}"?`)) return;
-      softDelete('accounts', acc, 'Tài khoản');
-      logActivity('delete','Tài khoản', `Xoá tài khoản "${acc.name}"`);
-      renderAll();
+      confirmModal(`Xoá tài khoản "${acc.name}"?`, ()=>{
+        softDelete('accounts', acc, 'Tài khoản');
+        logActivity('delete','Tài khoản', `Xoá tài khoản "${acc.name}"`);
+        renderAll();
+      });
     });
   });
 
@@ -7786,10 +7958,11 @@ function renderAccounts(c){
       const msg = usage.total>0
         ? `Đơn vị "${u}" đang được ${usage.accountsUsing} tài khoản phụ trách và có ${usage.txUsing} chứng từ ghi nhận. Xoá khỏi danh sách sẽ gỡ liên kết khỏi các tài khoản đó (chứng từ cũ vẫn giữ nguyên). Vẫn xoá?`
         : `Xoá đơn vị "${u}" khỏi danh sách?`;
-      if(!confirm(msg)) return;
-      deleteUnit(u);
-      toast('Đã xoá đơn vị "'+u+'"');
-      renderAll();
+      confirmModal(msg, ()=>{
+        deleteUnit(u);
+        toast('Đã xoá đơn vị "'+u+'"');
+        renderAll();
+      });
     });
   });
 }
@@ -7919,6 +8092,20 @@ function migrateActivityLogTrashSplitV1(){
   document.getElementById('globalSearchBtn').addEventListener('click', ()=>{
     if(!currentUser()){ return; } // chưa đăng nhập thì chưa có gì để tìm
     openGlobalSearch();
+  });
+  // Sidebar trên di động: mặc định ẩn (trượt ra khi bấm nút ☰), có lớp phủ tối để bấm ra ngoài là đóng lại,
+  // và tự đóng ngay khi chọn xong 1 mục trong menu (đỡ phải tự bấm đóng sau khi điều hướng xong).
+  function closeMobileSidebar(){
+    document.querySelector('.sidebar').classList.remove('mobile-open');
+    document.getElementById('sidebarBackdrop').classList.remove('show');
+  }
+  document.getElementById('sidebarToggleBtn').addEventListener('click', ()=>{
+    document.querySelector('.sidebar').classList.add('mobile-open');
+    document.getElementById('sidebarBackdrop').classList.add('show');
+  });
+  document.getElementById('sidebarBackdrop').addEventListener('click', closeMobileSidebar);
+  document.getElementById('navList').addEventListener('click', (e)=>{
+    if(e.target.closest('.nav-item')) closeMobileSidebar();
   });
   document.getElementById('periodFilterBtn').addEventListener('click', (e)=>{
     e.stopPropagation();
