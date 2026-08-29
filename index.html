@@ -6835,6 +6835,7 @@ function renderSettings(c){
 
 /* ---------------------------- Quản trị tài khoản (Admin) ---------------------------- */
 /* ---------------------------- Thùng rác ---------------------------- */
+let trashSelected = new Set(); // chọn tạm để thao tác hàng loạt — reset mỗi lần mở lại tab Thùng rác
 function renderTrash(c){
   // Tự dọn các mục đã quá 30 ngày — im lặng, không cần thông báo, chỉ để tránh phình dữ liệu vô hạn.
   const cutoff = Date.now() - 30*24*60*60*1000;
@@ -6847,24 +6848,30 @@ function renderTrash(c){
   });
   if(anyCleaned) saveState();
 
+  trashSelected = new Set();
   const list = combinedTrash();
   setTitle('Thùng rác', list.length+' mục đã xoá gần đây — khôi phục nếu xoá nhầm, tự dọn sau 30 ngày');
   c.innerHTML = `
     <div class="panel">
-      <div class="panel-head"><div><h2>Các mục đã xoá</h2>
-      <div class="desc">Áp dụng cho Doanh số, Đối soát CK, Chính sách/Biểu phí, Danh mục NCC/NH/Bảo hiểm và Tài khoản ở cả 3 module.</div></div></div>
+      <div class="panel-head">
+        <div><h2>Các mục đã xoá</h2>
+        <div class="desc">Áp dụng cho Doanh số, Đối soát CK, Chính sách/Biểu phí, Danh mục NCC/NH/Bảo hiểm và Tài khoản ở cả 3 module. Tích chọn nhiều dòng để khôi phục/xoá hàng loạt, hoặc xoá vĩnh viễn toàn bộ.</div></div>
+        <div id="trashBulkBar" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"></div>
+      </div>
       <div class="panel-body flush"><div class="tbl-wrap"><table class="data" id="trashTable"></table></div></div>
     </div>
   `;
+  const bulkBar = document.getElementById('trashBulkBar');
   const tbl = document.getElementById('trashTable');
   if(list.length===0){
     tbl.outerHTML = `<div class="empty"><div class="big">Thùng rác trống</div></div>`; return;
   }
   tbl.innerHTML = `
-    <thead><tr><th>Loại</th><th class="wrap">Nội dung</th><th>Xoá lúc</th><th>Người xoá</th><th></th></tr></thead>
+    <thead><tr><th style="width:32px"><input type="checkbox" id="trashSelectAll" title="Chọn tất cả"></th><th>Loại</th><th class="wrap">Nội dung</th><th>Xoá lúc</th><th>Người xoá</th><th></th></tr></thead>
     <tbody>${list.map(t=>{
       const deleter = state.accounts.find(a=>a.id===t.deletedBy);
       return `<tr>
+        <td><input type="checkbox" class="trash-check" data-id="${t.trashId}"></td>
         <td><span class="tag">${escHtml(t.entityLabel)}</span></td>
         <td class="wrap">${escHtml(trashItemSummary(t))}</td>
         <td>${new Date(t.deletedAt).toLocaleString('vi-VN')}</td>
@@ -6875,6 +6882,69 @@ function renderTrash(c){
         </td>
       </tr>`;
     }).join('')}</tbody>`;
+
+  function refreshSelectAllState(){
+    const selectAllCb = document.getElementById('trashSelectAll');
+    if(!selectAllCb) return;
+    selectAllCb.checked = list.length>0 && trashSelected.size===list.length;
+    selectAllCb.indeterminate = trashSelected.size>0 && trashSelected.size<list.length;
+  }
+  function updateBulkBar(){
+    const n = trashSelected.size;
+    bulkBar.innerHTML = `
+      ${n>0 ? `
+        <span style="font-size:12.5px;color:var(--slate)">${n} mục đã chọn</span>
+        <button class="btn btn-ghost" id="trashBulkRestore">↩ Khôi phục đã chọn</button>
+        <button class="btn btn-danger-ghost" id="trashBulkPurge">✕ Xoá vĩnh viễn đã chọn (${n})</button>
+      ` : ''}
+      <button class="btn btn-danger-ghost" id="trashPurgeAll">🗑 Xoá vĩnh viễn tất cả (${list.length})</button>
+    `;
+    if(n>0){
+      document.getElementById('trashBulkRestore').addEventListener('click', ()=>{
+        const ids = Array.from(trashSelected);
+        let count = 0;
+        ids.forEach(id=>{
+          const restored = restoreFromTrash(id);
+          if(restored){ logActivity('create', restored.entityLabel, `Khôi phục hàng loạt từ thùng rác: ${trashItemSummary(restored)}`); count++; }
+        });
+        saveState();
+        toast(`Đã khôi phục ${count} mục`);
+        renderAll();
+      });
+      document.getElementById('trashBulkPurge').addEventListener('click', ()=>{
+        const ids = Array.from(trashSelected);
+        if(!confirm(`Xoá VĨNH VIỄN ${ids.length} mục đã chọn? Không thể khôi phục sau bước này.`)) return;
+        ids.forEach(id=> purgeTrashEntry(id));
+        logActivity('delete','Thùng rác', `Xoá vĩnh viễn hàng loạt: ${ids.length} mục đã chọn`);
+        saveState();
+        toast(`Đã xoá vĩnh viễn ${ids.length} mục`);
+        renderAll();
+      });
+    }
+    document.getElementById('trashPurgeAll').addEventListener('click', ()=>{
+      if(!confirm(`Xoá VĨNH VIỄN TOÀN BỘ ${list.length} mục trong Thùng rác? Không thể khôi phục sau bước này.`)) return;
+      list.forEach(t=> purgeTrashEntry(t.trashId));
+      logActivity('delete','Thùng rác', `Xoá vĩnh viễn toàn bộ Thùng rác (${list.length} mục)`);
+      saveState();
+      toast('Đã xoá vĩnh viễn toàn bộ Thùng rác');
+      renderAll();
+    });
+  }
+  updateBulkBar();
+
+  tbl.querySelectorAll('.trash-check').forEach(cb=>{
+    cb.addEventListener('change', ()=>{
+      if(cb.checked) trashSelected.add(cb.dataset.id); else trashSelected.delete(cb.dataset.id);
+      refreshSelectAllState();
+      updateBulkBar();
+    });
+  });
+  document.getElementById('trashSelectAll').addEventListener('change', (e)=>{
+    if(e.target.checked) list.forEach(t=>trashSelected.add(t.trashId));
+    else trashSelected.clear();
+    tbl.querySelectorAll('.trash-check').forEach(cb=>{ cb.checked = trashSelected.has(cb.dataset.id); });
+    updateBulkBar();
+  });
   tbl.querySelectorAll('[data-restore]').forEach(btn=>{
     btn.addEventListener('click', ()=>{
       const restored = restoreFromTrash(btn.dataset.restore);
