@@ -1988,7 +1988,14 @@ function renderRequestsTab(c, cfg){
   const scopedObjs = scopedObjsFor(cfg.idKey, cfg.objs);
   let allThreads = [];
   scopedObjs.forEach(o=> requestList(o).forEach(r=> allThreads.push({req:r, obj:o})));
-  allThreads.sort((a,b)=> (b.req.updatedAt||'').localeCompare(a.req.updatedAt||''));
+  // Nhóm "còn mở" (Mới/Đang xử lý) LÊN TRÊN, cũ nhất lên đầu (giống hàng chờ — việc tồn đọng lâu nhất phải
+  // thấy trước, không bị đội mất công thao tác nhỡ tay đè lên). Nhóm "Đã xử lý" xuống dưới cùng, mới nhất lên
+  // trước, chỉ để tra cứu lại — không cần ai để ý ưu tiên trong nhóm này.
+  allThreads.sort((a,b)=>{
+    const ra = a.req.status==='da_xu_ly' ? 1 : 0, rb = b.req.status==='da_xu_ly' ? 1 : 0;
+    if(ra!==rb) return ra-rb;
+    return ra===0 ? (a.req.createdAt||'').localeCompare(b.req.createdAt||'') : (b.req.updatedAt||'').localeCompare(a.req.updatedAt||'');
+  });
   const openCount = allThreads.filter(t=>t.req.status!=='da_xu_ly').length;
   setTitle('Yêu cầu / Trao đổi', allThreads.length+' yêu cầu — '+openCount+' chưa xử lý xong');
 
@@ -1996,8 +2003,15 @@ function renderRequestsTab(c, cfg){
     c.innerHTML = lockedNote('Tài khoản của bạn chưa được gán đúng '+cfg.entityShort+' — liên hệ Admin để cấu hình lại.');
     return;
   }
+  const eligibleInternalEmails = state.accounts.filter(a=> ['Admin','Quản lý'].includes(a.role) && hasModuleAccess(cfg.moduleId, a) && a.email && a.email.trim());
+  const noEmailWarning = (!partner && eligibleInternalEmails.length===0)
+    ? `<div class="helper" style="color:var(--rust);margin-bottom:10px">⚠ Chưa có Admin/Quản lý nào của module này điền Email ở "Quản trị tài khoản" — Đối tác gửi yêu cầu sẽ KHÔNG có ai nhận được thông báo qua email (vẫn thấy được trong app như bình thường).</div>`
+    : '';
+
+  let filterObjText = '', filterStatus = ''; // chỉ nội bộ mới thấy 2 bộ lọc này — Đối tác đã tự lọc sẵn theo chính họ
 
   c.innerHTML = `
+    ${noEmailWarning}
     <div class="panel">
       <div class="panel-head"><div><h2>Gửi yêu cầu mới</h2>
       <div class="desc">${partner ? 'Viết nội dung bạn cần đề nghị/thắc mắc — nội bộ sẽ nhận được và phản hồi ngay tại đây.' : 'Chọn đúng '+cfg.entityShort+' liên quan — nội dung sẽ hiện cho Đối tác đó xem và trả lời.'}</div></div></div>
@@ -2010,7 +2024,17 @@ function renderRequestsTab(c, cfg){
       </div>
     </div>
     <div class="panel">
-      <div class="panel-head"><div><h2>Danh sách yêu cầu</h2></div></div>
+      <div class="panel-head">
+        <div><h2>Danh sách yêu cầu</h2></div>
+        ${partner ? '' : `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <input id="reqf_filter_obj" list="reqf_filter_obj_list" placeholder="Lọc theo ${cfg.entityShort}..." style="max-width:200px">
+          <datalist id="reqf_filter_obj_list">${scopedObjs.map(o=>`<option value="${escAttr(cfg.nameOf(o))}">`).join('')}</datalist>
+          <select id="reqf_filter_status" style="max-width:150px">
+            <option value="">Tất cả trạng thái</option>
+            ${REQUEST_STATUSES.map(s=>`<option value="${s.id}">${s.label}</option>`).join('')}
+          </select>
+        </div>`}
+      </div>
       <div class="panel-body flush" id="reqListBox"></div>
     </div>
   `;
@@ -2030,11 +2054,28 @@ function renderRequestsTab(c, cfg){
     saveState(); renderAll();
     notifyAboutRequestMessage(obj, cfg, partner);
   });
-  const listBox = document.getElementById('reqListBox');
-  if(allThreads.length===0){
-    listBox.innerHTML = `<div class="empty"><div class="big">Chưa có yêu cầu nào</div></div>`;
-  } else {
-    listBox.innerHTML = allThreads.map(({req,obj})=>{
+  if(!partner){
+    document.getElementById('reqf_filter_obj').addEventListener('input', e=>{ filterObjText = e.target.value; drawReqList(); });
+    document.getElementById('reqf_filter_status').addEventListener('change', e=>{ filterStatus = e.target.value; drawReqList(); });
+  }
+  drawReqList();
+
+  function drawReqList(){
+    const listBox = document.getElementById('reqListBox');
+    const visible = allThreads.filter(({req,obj})=>{
+      if(filterObjText && cfg.nameOf(obj).trim().toLowerCase()!==filterObjText.trim().toLowerCase()) return false;
+      if(filterStatus && req.status!==filterStatus) return false;
+      return true;
+    });
+    if(allThreads.length===0){
+      listBox.innerHTML = `<div class="empty"><div class="big">Chưa có yêu cầu nào</div></div>`;
+      return;
+    }
+    if(visible.length===0){
+      listBox.innerHTML = `<div class="empty"><div class="big">Không có yêu cầu nào khớp bộ lọc</div></div>`;
+      return;
+    }
+    listBox.innerHTML = visible.map(({req,obj})=>{
       const last = req.messages[req.messages.length-1];
       const meta = requestStatusMeta(req.status);
       const snippet = last ? (last.text.length>140 ? last.text.slice(0,140)+'...' : last.text) : '';
@@ -7023,6 +7064,11 @@ function renderSettings(c){
           <button class="btn btn-primary" id="driveSaveBtn">Lưu cấu hình</button>
         </div>
         <div class="helper">${driveUploadConfigured() ? '✓ Đã cấu hình — mọi người dùng nút "📷 Chụp/Chọn file" ở Hợp đồng sẽ tự tải lên đúng nơi này.' : 'Chưa cấu hình — nút "📷 Chụp/Chọn file" sẽ báo lỗi cho tới khi điền xong 2 ô trên.'}</div>
+        <div class="form-grid" style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)">
+          <div class="field"><label>Gửi email thử tới</label><input id="testMailInput" type="email" placeholder="VD: ${escAttr((currentUser()&&currentUser().email)||'ban@congty.com')}" value="${escAttr((currentUser()&&currentUser().email)||'')}"></div>
+          <button class="btn btn-ghost" id="testMailBtn" style="align-self:flex-end">Gửi email thử</button>
+        </div>
+        <div class="helper">Dùng để kiểm tra riêng phần gửi email (mục "Yêu cầu / Trao đổi") — nếu báo lỗi ở đây, làm theo đúng thông báo hiện ra (thường là do quên deploy lại Apps Script sau khi thêm phần gửi mail, hoặc chưa cho phép quyền MailApp lần đầu).</div>
         ` : lockedNote('Chỉ Admin mới cấu hình nơi lưu trữ Google Drive.')}
       </div>
     </div>
@@ -7062,6 +7108,20 @@ function renderSettings(c){
       saveState();
       toast('Đã lưu cấu hình Google Drive');
       renderAll();
+    });
+    document.getElementById('testMailBtn').addEventListener('click', async ()=>{
+      const to = document.getElementById('testMailInput').value.trim();
+      if(!to){ toast('Nhập email nhận thử trước'); return; }
+      const btn = document.getElementById('testMailBtn');
+      btn.disabled = true; btn.textContent = 'Đang gửi...';
+      try{
+        await sendEmailNotification([to], '[QT NCC] Email thử nghiệm', 'Đây là email thử để kiểm tra cấu hình gửi thông báo của hệ thống Quản trị NCC/NH/Bảo hiểm.\n\nNếu bạn nhận được email này, cấu hình đã hoạt động đúng.');
+        toast('✓ Đã gửi — kiểm tra hộp thư (kể cả mục Spam) trong vài phút');
+      }catch(err){
+        alert('Gửi email thử thất bại:\n\n'+err.message+'\n\nKiểm tra lại: đã deploy lại Apps Script sau khi thêm phần gửi mail chưa? Đã cho phép quyền MailApp lần đầu chưa?');
+      }finally{
+        btn.disabled = false; btn.textContent = 'Gửi email thử';
+      }
     });
     document.getElementById('fbConnectBtn').addEventListener('click', async ()=>{
       const raw = document.getElementById('fbConfigArea').value;
