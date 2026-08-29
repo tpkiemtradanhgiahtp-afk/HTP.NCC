@@ -187,12 +187,12 @@
 
   .content{ padding:28px 32px 60px; max-width:1400px; }
 
-  /* ---------- Cards / KPI ---------- */
-  .kpi-row{ display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin-bottom:26px; }
+  /* ---------- Cards / KPI (thu gọn — chỉ Dashboard dùng .kpi-*, an toàn khi chỉnh riêng ở đây) ---------- */
+  .kpi-row{ display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin-bottom:14px; }
   @media (max-width:1100px){ .kpi-row{ grid-template-columns:repeat(2,1fr);} }
   .kpi-card{
-    background:var(--panel); border:1px solid var(--line); border-radius:10px;
-    padding:18px 18px 16px; position:relative; overflow:hidden;
+    background:var(--panel); border:1px solid var(--line); border-radius:8px;
+    padding:12px 14px 10px; position:relative; overflow:hidden;
   }
   .kpi-card::before{
     content:""; position:absolute; left:0; top:0; bottom:0; width:3px; background:var(--gold);
@@ -200,9 +200,9 @@
   .kpi-card.rust::before{ background:var(--rust); }
   .kpi-card.forest::before{ background:var(--forest); }
   .kpi-card.amber::before{ background:var(--amber); }
-  .kpi-label{ font-size:11px; text-transform:uppercase; letter-spacing:0.08em; color:var(--slate); }
-  .kpi-value{ font-family:var(--font-tabular); font-variant-numeric:tabular-nums; font-size:24px; font-weight:600; margin-top:8px; letter-spacing:-0.01em; }
-  .kpi-sub{ font-size:11.5px; color:var(--slate); margin-top:4px; }
+  .kpi-label{ font-size:10px; text-transform:uppercase; letter-spacing:0.06em; color:var(--slate); line-height:1.35; }
+  .kpi-value{ font-family:var(--font-tabular); font-variant-numeric:tabular-nums; font-size:18px; font-weight:600; margin-top:3px; letter-spacing:-0.01em; }
+  .kpi-sub{ font-size:10.5px; color:var(--slate); margin-top:2px; line-height:1.4; }
   .mini-stats-row{ display:flex; gap:22px; align-items:center; }
   .mini-stat{ text-align:right; }
   .mini-stat-label{ font-size:10px; text-transform:uppercase; letter-spacing:0.06em; color:var(--slate); white-space:nowrap; }
@@ -210,9 +210,19 @@
   @media (max-width:900px){ .mini-stats-row{ width:100%; justify-content:flex-start; } .mini-stat{ text-align:left; } }
   .section-divider{
     font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.08em; color:var(--slate);
-    margin:30px 0 12px; padding-top:22px; border-top:1px solid var(--line);
   }
-  .section-divider:first-child{ margin-top:0; padding-top:0; border-top:none; }
+  /* Hàng tiêu đề khối Dashboard: tên khối bên trái + biểu đồ cột nhỏ xu hướng 6 tháng bên phải (góc tương
+     ứng của từng khối NCC/Ngân hàng/Bảo hiểm), thay cho .section-divider tự mang margin/border trước đây. */
+  .section-head-row{
+    display:flex; align-items:flex-end; justify-content:space-between; gap:16px; flex-wrap:wrap;
+    margin:20px 0 10px; padding-top:16px; border-top:1px solid var(--line);
+  }
+  .section-head-row:first-child{ margin-top:0; padding-top:0; border-top:none; }
+  .section-head-row .section-divider{ margin:0; padding:0; border:none; }
+  .dash-trend{ display:flex; align-items:center; gap:8px; }
+  .dash-trend svg{ display:block; flex:0 0 auto; }
+  .dash-trend-label{ font-size:9.5px; text-transform:uppercase; letter-spacing:0.05em; color:var(--slate); white-space:nowrap; }
+  .dash-trend-delta{ font-size:12px; margin-top:1px; white-space:nowrap; }
 
   /* ---------- Dải thống kê gọn (thay cho kpi-card khi cần tiết kiệm chiều cao) ---------- */
   .stat-strip{
@@ -2127,7 +2137,7 @@ function canEdit(area){
   if(!role) return false;
   return (EDIT_PERMS[area]||[]).includes(role);
 }
-function roleClass(role){ return role.replace(/\s+/g,'-').replace('ả','a').replace('ậ','a').replace('ý','y').replace('ậ','a'); }
+// (Đã xoá hàm roleClass() cũ — không được gọi ở đâu trong app, mọi nơi đều dùng roleBadgeClass() bên dưới.)
 // (roleClass chỉ cần khớp với CSS .role-badge.Admin/.Quan-ly/.Nhan-vien — map thủ công cho chắc)
 function roleBadgeClass(role){
   if(role==='Admin') return 'Admin';
@@ -2865,12 +2875,56 @@ function renderLoginScreen(){
   userInput.focus();
 }
 /* ---------------------------- Dashboard ---------------------------- */
+/* ---------------------------- Dashboard · biểu đồ xu hướng nhỏ theo góc từng khối ----------------------------
+   Chỉ để MINH HOẠ xu hướng 6 tháng gần nhất (theo lịch, không phụ thuộc bộ lọc Kỳ theo dõi/Tháng-Năm của
+   Dashboard) — vẽ trực tiếp bằng SVG nhỏ, không cần thư viện chart ngoài, đặt ở góc phải tiêu đề mỗi khối. */
+function lastNMonthKeys(n){
+  const out=[]; const now=new Date();
+  for(let i=n-1;i>=0;i--){ const d=new Date(now.getFullYear(), now.getMonth()-i, 1); out.push(d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')); }
+  return out;
+}
+function dashMonthlySums(list, dateField, valueFn, monthKeys){
+  const map = {}; monthKeys.forEach(mk=>map[mk]=0);
+  list.forEach(item=>{
+    const mk = String(item[dateField]||'').slice(0,7);
+    if(mk in map) map[mk] += valueFn(item);
+  });
+  return monthKeys.map(mk=>Math.max(0, map[mk]));
+}
+function dashTrendSVG(values, colorVar){
+  const w=104, h=30, n=values.length || 1;
+  const max = Math.max(1, ...values);
+  const gap = 3;
+  const barW = (w-(n-1)*gap)/n;
+  const bars = values.map((v,i)=>{
+    const bh = Math.max(2, round2((v/max)*h));
+    const x = round2(i*(barW+gap));
+    const y = round2(h-bh);
+    const isLast = i===n-1;
+    return `<rect x="${x}" y="${y}" width="${round2(barW)}" height="${bh}" rx="1.5" fill="${colorVar}" opacity="${isLast?1:0.32}"/>`;
+  }).join('');
+  return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">${bars}</svg>`;
+}
+// title: nhãn ngắn; values: mảng số theo tháng (cũ -> mới); colorVar: màu CSS var dùng cho cột.
+function dashTrendWidgetHTML(title, values, colorVar){
+  const prev = values[values.length-2], last = values[values.length-1];
+  const delta = (prev>0) ? (last-prev)/prev : null;
+  const deltaHTML = delta===null ? '<span style="color:var(--slate)">—</span>'
+    : `<span style="color:${delta>=0?'var(--forest)':'var(--rust)'};font-weight:700">${delta>=0?'▲':'▼'} ${fmtPct(Math.abs(delta))}</span>`;
+  return `<div class="dash-trend" title="Xu hướng 6 tháng gần nhất (theo lịch), so tháng này với tháng trước">
+    ${dashTrendSVG(values, colorVar)}
+    <div><div class="dash-trend-label">${escHtml(title)}</div><div class="dash-trend-delta">${deltaHTML}</div></div>
+  </div>`;
+}
+
 function renderDashboard(c){
   const acc = currentUser();
   const showNcc = hasModuleAccess('ncc', acc);
   const showNh = hasModuleAccess('nh', acc);
   const showBh = hasModuleAccess('bh', acc);
   const {from: pfFrom, to: pfTo} = periodFilterDateObjects();
+  const dashMonthKeys = lastNMonthKeys(6);
+  const dashMonthShortLabel = 'T'+Number(dashMonthKeys[0].slice(5,7))+'–T'+Number(dashMonthKeys[dashMonthKeys.length-1].slice(5,7));
   setTitle('Dashboard', 'Tổng quan doanh số & chiết khấu toàn hệ thống'+(globalYearFilter?' — đang lọc theo '+periodFilterDescText()+' (riêng Doanh số/CK dự kiến của NCC vẫn theo đúng Chu kỳ theo dõi riêng, không theo bộ lọc này)':' — ngày báo cáo '+(toDate(state.reportDate)||new Date()).toLocaleDateString('vi-VN')));
 
   let blocks = '';
@@ -2894,8 +2948,12 @@ function renderDashboard(c){
       return acc;
     }, {due:0, received:0, owed:0});
     nccTop = rows.filter(r=>r.calc.revenue!==null && r.calc.next).sort((a,b)=>b.calc.opportunity-a.calc.opportunity).slice(0,15);
+    const nccTrend = dashMonthlySums(state.transactions, 'date', t=>(Number(t.gross)||0)-(Number(t.returns)||0), dashMonthKeys);
     blocks += `
-      <div class="section-divider">NCC Dịch vụ Ô tô - Xe máy</div>
+      <div class="section-head-row">
+        <div class="section-divider">NCC Dịch vụ Ô tô - Xe máy</div>
+        ${dashTrendWidgetHTML('Doanh số '+dashMonthShortLabel, nccTrend, 'var(--gold)')}
+      </div>
       <div class="kpi-row">
         <div class="kpi-card">
           <div class="kpi-label">Tổng doanh số kỳ theo dõi</div>
@@ -2944,8 +3002,12 @@ function renderDashboard(c){
       const owed = nhReconList.filter(r=>r.bankId===b.id).reduce((s,r)=>s+bankReconCalc(r).stillOwed, 0);
       return {b, owed};
     }).filter(x=>x.owed>0).sort((a,b)=>b.owed-a.owed).slice(0,10);
+    const nhTrend = dashMonthlySums(state.bankTransactions, 'date', t=> t.status==='Đã giải ngân' ? (Number(t.loanAmount)||0) : 0, dashMonthKeys);
     blocks += `
-      <div class="section-divider">Ngân hàng</div>
+      <div class="section-head-row">
+        <div class="section-divider">Ngân hàng</div>
+        ${dashTrendWidgetHTML('Giải ngân '+dashMonthShortLabel, nhTrend, 'var(--forest)')}
+      </div>
       <div class="kpi-row">
         <div class="kpi-card">
           <div class="kpi-label">Tổng số tiền giải ngân${globalYearFilter?' ('+escHtml(periodFilterDescText())+')':' kỳ theo dõi'}</div>
@@ -2991,8 +3053,12 @@ function renderDashboard(c){
       const owed = bhReconList.filter(r=>r.insurerId===ins.id).reduce((s,r)=>s+insReconCalc(r).stillOwed, 0);
       return {ins, owed};
     }).filter(x=>x.owed>0).sort((a,b)=>b.owed-a.owed).slice(0,10);
+    const bhTrend = dashMonthlySums(state.insTransactions, 'date', t=> t.status==='Đã cấp đơn' ? (Number(t.premiumAmount)||0) : 0, dashMonthKeys);
     blocks += `
-      <div class="section-divider">Bảo hiểm</div>
+      <div class="section-head-row">
+        <div class="section-divider">Bảo hiểm</div>
+        ${dashTrendWidgetHTML('Phí thu '+dashMonthShortLabel, bhTrend, 'var(--amber)')}
+      </div>
       <div class="kpi-row">
         <div class="kpi-card">
           <div class="kpi-label">Tổng phí bảo hiểm thu${globalYearFilter?' ('+escHtml(periodFilterDescText())+')':' kỳ theo dõi'}</div>
@@ -3297,6 +3363,7 @@ function wireCellEdits(tbl, arr, entityName, labelFn){
       if(el.classList.contains('money')) val = parseMoneyInput(val);
       else if(el.classList.contains('pct')) val = (Number(val)||0)/100;
       else if(el.classList.contains('num')) val = Number(val)||0;
+      else if(el.dataset.field==='vehicle') val = formatVehicleField(val);
       const before = item[el.dataset.field];
       // Chặn Ngày kết thúc sớm hơn Ngày bắt đầu khi sửa trực tiếp trong bảng (áp dụng cho mọi bảng có cả
       // 2 field này — Chính sách CK/Chính sách NH/Biểu phí bảo hiểm — không ảnh hưởng bảng khác vì chúng
@@ -3313,6 +3380,7 @@ function wireCellEdits(tbl, arr, entityName, labelFn){
       item[el.dataset.field] = val;
       if(el.classList.contains('money')) el.value = formatMoneyValue(val);
       if(el.classList.contains('pct')) el.value = round2(val*100);
+      if(el.dataset.field==='vehicle') el.value = val;
       if(entityName) logActivity('update', entityName, `${labelFn?labelFn(item):item.id}: ${el.dataset.field} "${before}" → "${val}"`);
       saveState();
       if(['name','supplierId','type','threshold','rate','startDate','endDate','confirmed','product'].includes(el.dataset.field)) renderAll();
@@ -3462,11 +3530,24 @@ function renderPolicies(c){
   }
 }
 
-/* ---------------------------- Doanh số ---------------------------- */
-function canDeleteTx(t){
-  if(isRecordLockedForMe(t, state.reconciliations, 'supplierId')) return false;
-  return ['Admin','Quản lý'].includes(currentRole()) || t.createdBy===currentUserId;
+/* ---------------------------- Doanh số ----------------------------
+   Luật xoá dùng chung cho cả 3 sổ Doanh số (NCC/Ngân hàng/Bảo hiểm): Admin/Quản lý luôn xoá được (miễn
+   không bị khoá bởi kỳ đối soát đã chốt). Nhân viên chỉ được xoá ĐÚNG bản ghi do mình nhập, và CHỈ trong
+   vòng 24 giờ kể từ lúc nhập — quá 24h thì nút xoá tự ẩn với Nhân viên (kể cả bản ghi của chính họ), muốn
+   xoá phải nhờ Quản lý/Admin. Bản ghi cũ chưa từng có `createdAt` (tạo trước khi có luật này) được coi như
+   đã quá hạn 24h, để không vô tình mở lại quyền xoá dữ liệu cũ cho Nhân viên. */
+const DELETE_WINDOW_MS = 24*3600*1000;
+function canDeleteTxGeneric(t, reconList, idField){
+  if(isRecordLockedForMe(t, reconList, idField)) return false;
+  if(['Admin','Quản lý'].includes(currentRole())) return true;
+  if(t.createdBy!==currentUserId) return false;
+  if(!t.createdAt) return false;
+  return (Date.now() - new Date(t.createdAt).getTime()) <= DELETE_WINDOW_MS;
 }
+function canDeleteTx(t){ return canDeleteTxGeneric(t, state.reconciliations, 'supplierId'); }
+function canDeleteBankTx(t){ return canDeleteTxGeneric(t, state.bankReconciliations, 'bankId'); }
+function canDeleteInsTx(t){ return canDeleteTxGeneric(t, state.insReconciliations, 'insurerId'); }
+
 function renderTransactions(c){
   setTitle('Doanh số', state.transactions.length+' chứng từ — mỗi dòng là 1 hoá đơn/chứng từ theo đơn vị & NCC');
   const editable = canEdit('transactions'); // Admin, Quản lý, Nhân viên đều được ghi nhận doanh số
@@ -3563,7 +3644,7 @@ function renderTransactions(c){
       doc: document.getElementById('tf_doc').value.trim(),
       category: document.getElementById('tf_cat').value.trim(),
       gross, returns,
-      createdBy: currentUserId,
+      createdBy: currentUserId, createdAt: new Date().toISOString(),
     });
     document.getElementById('tf_gross').value=''; document.getElementById('tf_return').value=''; document.getElementById('tf_doc').value='';
     logActivity('create','Doanh số', `${unit} → ${s?s.name:''}: ${fmt(gross)}đ`);
@@ -4577,10 +4658,10 @@ function renderBankTransactions(c){
         unit, bankId: bank.id, product: (document.getElementById('btf_product').value||'').trim() || DEFAULT_BANK_PRODUCT,
         customer: document.getElementById('btf_customer').value.trim(),
         phone: document.getElementById('btf_phone').value.trim(),
-        vehicle: document.getElementById('btf_vehicle').value.trim(),
+        vehicle: formatVehicleField(document.getElementById('btf_vehicle').value),
         refCode: document.getElementById('btf_refcode').value.trim(),
         loanAmount: amount, status, note: document.getElementById('btf_note').value.trim(),
-        createdBy: currentUserId,
+        createdBy: currentUserId, createdAt: new Date().toISOString(),
       });
       document.getElementById('btf_amount').value=''; document.getElementById('btf_customer').value='';
       document.getElementById('btf_phone').value=''; document.getElementById('btf_vehicle').value='';
@@ -4671,7 +4752,7 @@ function renderBankTxTable(editable){
       const lockR = lockingReconOf(t, state.bankReconciliations, 'bankId');
       const lockedForMe = !!lockR && currentRole()!=='Admin';
       const dis = (editable && !lockedForMe)?'':'disabled';
-      const canDelRow = editable && !lockedForMe;
+      const canDelRow = editable && canDeleteBankTx(t);
       return `<tr>
         <td>
           <div class="stack-cell">
@@ -5453,33 +5534,66 @@ function insReconCalc(r){
 /* ---------------------------- Bảo hiểm · Lịch tái tục hằng năm ----------------------------
    Với các hồ sơ vay thuộc gói yêu cầu "tái tục hằng năm" (annualRenewalRequired trên Chính sách CK NH,
    VD gói TFS): tự liên kết sang Doanh số Bảo hiểm theo BIỂN SỐ XE (đáng tin cậy nhất, không đổi theo thời
-   gian) — nếu xe chưa có biển số ghi nhận thì dự phòng bằng SĐT, rồi tới tên khách hàng. Mốc đến hạn tiếp
-   theo = ngày mua bảo hiểm gần nhất của đúng xe đó + 1 năm; nếu xe chưa từng mua bảo hiểm nào thì tính từ
-   ngày giải ngân + 1 năm (giả định năm đầu được mua kèm ngay lúc giải ngân/nằm ngoài sổ Doanh số BH). */
+   gian) — nếu xe chưa có biển số ghi nhận thì dự phòng bằng SĐT, rồi tới tên khách hàng. Chỉ hợp đồng đã
+   "Đã cấp đơn" mới được coi là đã hoàn tất 1 chu kỳ (dời mốc đến hạn sang năm sau); hợp đồng "Đang xử lý"/
+   "Đã duyệt" chỉ được dùng để hiển thị trạng thái "Đang xử lý tái tục", KHÔNG dời mốc, để không mất dấu
+   nếu hồ sơ đó cuối cùng không chốt được. Mốc đến hạn = ngày CẤP ĐƠN gần nhất + 1 năm; nếu xe chưa từng có
+   đơn nào thì tính từ ngày giải ngân + 1 năm (giả định năm đầu mua kèm lúc giải ngân, ngoài sổ Doanh số BH).
+
+   bankTransactions.renewalLink (tuỳ chọn, mặc định không có = tự động khớp theo biển số/SĐT/tên):
+     - id của 1 insTransactions cụ thể -> ép khớp đúng hợp đồng đó (Admin/Quản lý gán tay khi tự động sai)
+     - 'NONE' -> đã xác nhận thủ công là CHƯA có hợp đồng nào phù hợp, không tự khớp nữa (tránh khớp nhầm
+       liên tục hiện ra rồi bị người dùng bỏ qua) */
 function renewalAlertDays(){ return Number(state.insRenewalAlertDays ?? 45) || 45; }
-function normalizePlate(s){ return String(s||'').toLowerCase().replace(/[^a-z0-9]/g,''); }
+// Trường "Xe (biển số / mẫu xe)" là 1 ô tự do gộp cả biển số lẫn mẫu xe (VD "29A-123.45 · Honda SH") —
+// phải tách lấy đúng phần biển số (trước dấu "·") trước khi so khớp, nếu không 2 hồ sơ cùng biển số nhưng
+// ghi khác nhau ("có ghi mẫu xe" vs "không ghi") sẽ bị coi là khác nhau và không bao giờ khớp được.
+function extractPlateToken(v){ return String(v||'').split('·')[0].trim(); }
+function normalizePlate(s){ return extractPlateToken(s).toLowerCase().replace(/[^a-z0-9]/g,''); }
 function normalizePhone(s){ return String(s||'').replace(/[^0-9]/g,''); }
-function normalizeName(s){ return String(s||'').trim().toLowerCase(); }
-// Trả về mọi hợp đồng bảo hiểm (chưa Huỷ) khớp với 1 hồ sơ vay — ưu tiên khớp biển số, chỉ dùng SĐT/tên
-// khi không có biển số nào khớp, để tránh 2 xe trùng tên chủ/SĐT người thân bị gộp nhầm vào nhau.
-function insMatchesForBankTx(t){
+// Bỏ dấu tiếng Việt trước khi so khớp tên — nhân viên NH/BH có thể gõ tên khách có dấu hoặc không dấu
+// không nhất quán giữa 2 sổ, nếu so khớp nguyên văn có dấu sẽ bỏ sót nhiều trường hợp lẽ ra khớp được.
+function stripDiacritics(s){ return String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/gi,'d'); }
+function normalizeName(s){ return stripDiacritics(s).trim().toLowerCase(); }
+// Chuẩn hoá cách viết ô "Xe (biển số / mẫu xe)" khi rời khỏi ô nhập: viết hoa phần biển số, giữ nguyên
+// cách viết phần mẫu xe (không ép hoa/thường tên mẫu xe) — giảm sai lệch biển số do gõ hoa/thường lẫn lộn.
+function formatVehicleField(raw){
+  const parts = String(raw||'').split('·');
+  const plate = parts[0].trim().toUpperCase();
+  const rest = parts.slice(1).join('·').trim();
+  return rest ? `${plate} · ${rest}` : plate;
+}
+function matchMethodLabel(method){
+  return ({plate:'Biển số xe', phone:'SĐT khách hàng', name:'Tên khách hàng (không dấu)',
+    manual:'Liên kết thủ công', manual_none:'Đã xác nhận: chưa có hợp đồng phù hợp', none:'Chưa khớp được'})[method] || 'Chưa khớp được';
+}
+// Tìm hợp đồng bảo hiểm khớp với 1 hồ sơ vay — ưu tiên: liên kết thủ công (nếu có) > biển số > SĐT > tên.
+// Trả về {matches, method} để giao diện hiển thị rõ đang khớp theo cách nào, tránh coi kết quả suy đoán
+// như dữ liệu chắc chắn.
+function computeRenewalMatches(t){
+  if(t.renewalLink==='NONE') return {matches:[], method:'manual_none'};
+  if(t.renewalLink){
+    const forced = state.insTransactions.find(it=>it.id===t.renewalLink && it.status!=='Huỷ');
+    if(forced) return {matches:[forced], method:'manual'};
+    // Liên kết thủ công trỏ tới hợp đồng đã bị xoá/Huỷ -> rơi về tự động thay vì báo lỗi im lặng.
+  }
   const plate = normalizePlate(t.vehicle);
   const phone = normalizePhone(t.phone);
   const name = normalizeName(t.customer);
   const active = state.insTransactions.filter(it=>it.status!=='Huỷ');
   if(plate){
     const byPlate = active.filter(it=>normalizePlate(it.vehicle)===plate);
-    if(byPlate.length) return byPlate;
+    if(byPlate.length) return {matches:byPlate, method:'plate'};
   }
   if(phone){
     const byPhone = active.filter(it=>normalizePhone(it.phone)===phone);
-    if(byPhone.length) return byPhone;
+    if(byPhone.length) return {matches:byPhone, method:'phone'};
   }
   if(name){
     const byName = active.filter(it=>normalizeName(it.customer)===name);
-    if(byName.length) return byName;
+    if(byName.length) return {matches:byName, method:'name'};
   }
-  return [];
+  return {matches:[], method:'none'};
 }
 function addYearsToDate(dateStr, n){
   const d = toDate(dateStr);
@@ -5494,23 +5608,29 @@ function renewalRowFor(t){
   if(t.status!=='Đã giải ngân') return null;
   const policy = activeBankPolicy(t.bankId, t.date, t.product);
   if(!policy || !policy.annualRenewalRequired) return null;
-  const matches = insMatchesForBankTx(t).slice().sort((a,b)=> b.date.localeCompare(a.date));
-  const lastIns = matches[0] || null;
-  const anchorDate = lastIns ? lastIns.date : t.date;
+  const {matches, method} = computeRenewalMatches(t);
+  const sorted = matches.slice().sort((a,b)=> b.date.localeCompare(a.date));
+  const issuedMatches = sorted.filter(m=>m.status==='Đã cấp đơn');
+  const pendingMatches = sorted.filter(m=>m.status!=='Đã cấp đơn');
+  const lastIssued = issuedMatches[0] || null;
+  const anchorDate = lastIssued ? lastIssued.date : t.date;
   const nextDue = addYearsToDate(anchorDate, 1);
   if(!nextDue) return null;
   const today = new Date(); today.setHours(0,0,0,0);
   const daysLeft = Math.round((nextDue-today)/86400000);
   const threshold = renewalAlertDays();
-  let status = 'ok';
-  if(daysLeft<0) status = 'overdue';
-  else if(daysLeft<=threshold) status = 'due_soon';
-  return {t, policy, lastIns, anchorDate, nextDue, daysLeft, status};
+  let status = daysLeft<0 ? 'overdue' : (daysLeft<=threshold ? 'due_soon' : 'ok');
+  // Đã có hợp đồng đang xử lý/đã duyệt nhắm đúng chu kỳ này (tạo sau lần cấp đơn gần nhất) -> nhân viên đã
+  // đang xử lý, không nên xếp chung với "chưa ai động vào" dù kỹ thuật vẫn coi là chưa cấp đơn chính thức.
+  const hasPendingForCycle = pendingMatches.some(m=> m.date>=anchorDate);
+  if(status!=='ok' && hasPendingForCycle) status = 'in_progress';
+  return {t, policy, lastIssued, pendingMatches, anchorDate, nextDue, daysLeft, status, matchMethod:method};
 }
 function allRenewalRows(){
   return state.bankTransactions.map(renewalRowFor).filter(Boolean);
 }
-// Số hồ sơ Sắp đến hạn + Quá hạn — dùng để gắn chấm đỏ trên menu Bảo hiểm (giống cơ chế insAllocAlertCount).
+// Số hồ sơ Sắp đến hạn + Quá hạn thật sự cần hành động — dùng để gắn chấm đỏ trên menu Bảo hiểm (giống cơ
+// chế insAllocAlertCount). Hồ sơ đang "in_progress" không tính vào đây vì nhân viên đã đang xử lý rồi.
 function renewalAlertCount(){
   return allRenewalRows().filter(r=>r.status==='overdue'||r.status==='due_soon').length;
 }
@@ -5609,10 +5729,10 @@ function renderInsTransactions(c){
         unit, insurerId: ins.id, product: document.getElementById('itf_product').value,
         customer: document.getElementById('itf_customer').value.trim(),
         phone: document.getElementById('itf_phone').value.trim(),
-        vehicle: document.getElementById('itf_vehicle').value.trim(),
+        vehicle: formatVehicleField(document.getElementById('itf_vehicle').value),
         policyNo: document.getElementById('itf_policyno').value.trim(),
         premiumAmount: amount, status, note: document.getElementById('itf_note').value.trim(),
-        createdBy: currentUserId,
+        createdBy: currentUserId, createdAt: new Date().toISOString(),
       });
       document.getElementById('itf_amount').value=''; document.getElementById('itf_customer').value='';
       document.getElementById('itf_phone').value=''; document.getElementById('itf_vehicle').value='';
@@ -5702,7 +5822,7 @@ function renderInsTxTable(editable){
       const lockR = lockingReconOf(t, state.insReconciliations, 'insurerId');
       const lockedForMe = !!lockR && currentRole()!=='Admin';
       const dis = (editable && !lockedForMe)?'':'disabled';
-      const canDelRow = editable && !lockedForMe;
+      const canDelRow = editable && canDeleteInsTx(t);
       return `<tr>
         <td>
           <div class="stack-cell">
@@ -6202,11 +6322,14 @@ function renderInsReconTable(editable){
 }
 
 /* ---------------------------- Bảo hiểm · Lịch tái tục hằng năm ---------------------------- */
+// Nhãn 'ok' đổi thành "Chưa tới hạn" thay vì "Đã khai thác đúng hạn" trước đây — 'ok' chỉ có nghĩa là mốc
+// đến hạn còn xa (kể cả với hồ sơ mới giải ngân chưa từng mua bảo hiểm lần nào), không có nghĩa là ĐÃ có
+// người mua — gọi là "đã khai thác" trong trường hợp đó là sai bản chất, dễ khiến người xem hiểu nhầm.
 function renewalStatusLabel(status){
-  return status==='overdue' ? 'Quá hạn chưa khai thác' : status==='due_soon' ? 'Sắp đến hạn' : 'Đã khai thác đúng hạn';
+  return ({overdue:'Quá hạn chưa khai thác', due_soon:'Sắp đến hạn', in_progress:'Đang xử lý tái tục', ok:'Chưa tới hạn'})[status] || status;
 }
 function renewalStatusStampHTML(status){
-  const cls = status==='overdue' ? 'warn' : status==='due_soon' ? 'pending' : 'ok';
+  const cls = ({overdue:'warn', due_soon:'pending', in_progress:'muted', ok:'ok'})[status] || 'muted';
   return `<span class="stamp ${cls}">${renewalStatusLabel(status)}</span>`;
 }
 function renderInsRenewal(c){
@@ -6214,18 +6337,21 @@ function renderInsRenewal(c){
   const lockedUnit = (u && u.role==='Nhân viên' && u.unit) ? u.unit : '';
   if(lockedUnit) insRenewalUnitFilter = lockedUnit;
   const isAdmin = currentRole()==='Admin';
+  const canManageLinks = currentRole()==='Admin' || currentRole()==='Quản lý';
   const alertDays = renewalAlertDays();
   const allRows = allRenewalRows();
   setTitle('Lịch tái tục', allRows.length+' hồ sơ vay thuộc gói yêu cầu mua lại bảo hiểm hằng năm — tự liên kết theo biển số xe với Doanh số Bảo hiểm');
   const overdueCount = allRows.filter(r=>r.status==='overdue').length;
   const dueSoonCount = allRows.filter(r=>r.status==='due_soon').length;
+  const inProgressCount = allRows.filter(r=>r.status==='in_progress').length;
   c.innerHTML = `
     <div class="panel">
       <div class="panel-head">
-        <div><h2>Bộ lọc</h2><div class="desc">Chỉ tính hồ sơ vay "Đã giải ngân" thuộc gói vay đã bật "Yêu cầu mua lại bảo hiểm hằng năm" ở Chính sách CK (Ngân hàng). Liên kết tự động theo biển số xe, dự phòng SĐT/tên khách hàng khi thiếu biển số.</div></div>
+        <div><h2>Bộ lọc</h2><div class="desc">Chỉ tính hồ sơ vay "Đã giải ngân" thuộc gói vay đã bật "Yêu cầu mua lại bảo hiểm hằng năm" ở Chính sách CK (Ngân hàng). Liên kết tự động theo biển số xe, dự phòng SĐT/tên khách hàng khi thiếu biển số — có thể sửa tay nếu khớp sai.</div></div>
         <div class="mini-stats-row">
           <div class="mini-stat"><div class="mini-stat-label">Quá hạn</div><div class="mini-stat-value" style="color:var(--rust)">${overdueCount}</div></div>
           <div class="mini-stat"><div class="mini-stat-label">Sắp đến hạn</div><div class="mini-stat-value" style="color:var(--amber)">${dueSoonCount}</div></div>
+          <div class="mini-stat"><div class="mini-stat-label">Đang xử lý</div><div class="mini-stat-value" style="color:var(--slate)">${inProgressCount}</div></div>
           <div class="mini-stat"><div class="mini-stat-label">Tổng theo dõi</div><div class="mini-stat-value">${allRows.length}</div></div>
         </div>
       </div>
@@ -6245,7 +6371,8 @@ function renderInsRenewal(c){
               <option value="">Tất cả trạng thái</option>
               <option value="overdue" ${insRenewalStatusFilter==='overdue'?'selected':''}>Quá hạn chưa khai thác</option>
               <option value="due_soon" ${insRenewalStatusFilter==='due_soon'?'selected':''}>Sắp đến hạn</option>
-              <option value="ok" ${insRenewalStatusFilter==='ok'?'selected':''}>Đã khai thác đúng hạn</option>
+              <option value="in_progress" ${insRenewalStatusFilter==='in_progress'?'selected':''}>Đang xử lý tái tục</option>
+              <option value="ok" ${insRenewalStatusFilter==='ok'?'selected':''}>Chưa tới hạn</option>
             </select>
           </div>
           ${isAdmin ? `<div class="field" style="max-width:170px"><label>Ngưỡng "Sắp đến hạn" (ngày)</label><input id="irwAlertDaysInput" type="number" min="0" step="1" value="${alertDays}"></div>` : ''}
@@ -6255,7 +6382,7 @@ function renderInsRenewal(c){
       </div>
     </div>
     <div class="panel">
-      <div class="panel-head"><div><h2>Danh sách hồ sơ cần theo dõi</h2><div class="desc">Sắp xếp theo mức độ khẩn cấp — Quá hạn lâu nhất lên trước, rồi tới Sắp đến hạn sớm nhất.</div></div></div>
+      <div class="panel-head"><div><h2>Danh sách hồ sơ cần theo dõi</h2><div class="desc">Sắp xếp theo mức độ khẩn cấp — Quá hạn lâu nhất lên trước, rồi tới Sắp đến hạn sớm nhất. Cột "Cách khớp" cho biết kết quả liên kết là suy đoán tự động hay đã xác nhận thủ công.</div></div></div>
       <div class="panel-body flush"><div class="tbl-wrap"><table class="data" id="renewalTable"></table></div></div>
     </div>
   `;
@@ -6283,7 +6410,8 @@ function renderInsRenewal(c){
       return {
         'Đơn vị': r.t.unit, 'Khách hàng': r.t.customer||'', 'SĐT': r.t.phone||'', 'Biển số': r.t.vehicle||'',
         'Ngân hàng': b?b.name:'', 'Gói vay': r.t.product||DEFAULT_BANK_PRODUCT, 'Ngày giải ngân': r.t.date,
-        'Lần mua BH gần nhất': r.lastIns ? r.lastIns.date : '', 'Mốc đến hạn tiếp theo': r.nextDue.toISOString().slice(0,10),
+        'Lần cấp đơn BH gần nhất': r.lastIssued ? r.lastIssued.date : '', 'Cách khớp': matchMethodLabel(r.matchMethod),
+        'Mốc đến hạn tiếp theo': r.nextDue.toISOString().slice(0,10),
         'Số ngày còn lại (âm = quá hạn)': r.daysLeft, 'Trạng thái': renewalStatusLabel(r.status),
       };
     });
@@ -6316,23 +6444,102 @@ function renderInsRenewal(c){
     tbl.innerHTML = `
       <thead><tr>
         <th class="wrap">Khách hàng</th><th>Biển số</th><th class="wrap">Ngân hàng / Gói vay</th><th>Ngày giải ngân</th>
-        <th>Lần mua BH gần nhất</th><th>Mốc đến hạn tiếp theo</th><th class="num">Số ngày</th><th>Trạng thái</th>
+        <th>Lần cấp đơn BH gần nhất</th><th>Cách khớp</th><th>Mốc đến hạn tiếp theo</th><th class="num">Số ngày</th><th>Trạng thái</th><th></th>
       </tr></thead>
       <tbody>${rows.map(r=>{
         const b = bankById(r.t.bankId);
         const daysTxt = r.daysLeft<0 ? `Quá ${-r.daysLeft} ngày` : `Còn ${r.daysLeft} ngày`;
+        const lastInsCell = r.lastIssued ? r.lastIssued.date
+          : (r.pendingMatches.length ? `<em title="Có hợp đồng ngày ${escAttr(r.pendingMatches[0].date)} nhưng chưa Đã cấp đơn">Đang xử lý (${r.pendingMatches[0].date})</em>`
+          : '<em>Chưa có</em>');
         return `<tr>
           <td class="wrap"><b>${escHtml(r.t.customer||'(chưa có tên KH)')}</b><div class="meta-line">${escHtml(r.t.phone||'')} · ${escHtml(r.t.unit)}</div></td>
           <td>${escHtml(r.t.vehicle||'—')}</td>
           <td class="wrap">${b?escHtml(b.name):'<em>(đã xoá)</em>'}<div class="meta-line">${escHtml(r.t.product||DEFAULT_BANK_PRODUCT)}</div></td>
           <td>${r.t.date}</td>
-          <td>${r.lastIns ? r.lastIns.date : '<em>Chưa có</em>'}</td>
+          <td>${lastInsCell}</td>
+          <td class="meta-line">${escHtml(matchMethodLabel(r.matchMethod))}</td>
           <td>${r.nextDue.toISOString().slice(0,10)}</td>
           <td class="num" style="font-weight:600;${r.status==='overdue'?'color:var(--rust)':r.status==='due_soon'?'color:var(--amber)':''}">${daysTxt}</td>
           <td>${renewalStatusStampHTML(r.status)}</td>
+          <td>${canManageLinks ? `<button class="btn btn-ghost" data-editlink="${r.t.id}" style="font-size:11.5px;padding:4px 8px;white-space:nowrap">Sửa liên kết</button>` : ''}</td>
         </tr>`;
       }).join('')}</tbody>`;
+    if(canManageLinks){
+      tbl.querySelectorAll('[data-editlink]').forEach(btn=>{
+        btn.addEventListener('click', ()=> openRenewalLinkModal(btn.dataset.editlink));
+      });
+    }
   }
+}
+
+// Modal cho Admin/Quản lý sửa tay khi hệ thống khớp sai (hoặc xác nhận "chưa có hợp đồng phù hợp") — xem
+// bankTransactions.renewalLink ở phần comment đầu khối "Lịch tái tục hằng năm" phía trên.
+function openRenewalLinkModal(bankTxId){
+  const t = state.bankTransactions.find(x=>x.id===bankTxId);
+  if(!t) return;
+  const {matches, method} = computeRenewalMatches(t);
+  const current = matches[0] || null;
+  const renderList = (q)=>{
+    const qq = (q||'').trim().toLowerCase();
+    const candidates = state.insTransactions.filter(it=>it.status!=='Huỷ').filter(it=>{
+      if(!qq) return true;
+      const hay = [it.customer, it.phone, it.vehicle, it.policyNo].join(' ').toLowerCase();
+      return hay.includes(qq);
+    }).sort((a,b)=> b.date.localeCompare(a.date)).slice(0,30);
+    if(candidates.length===0) return `<div class="helper">Không tìm thấy hợp đồng bảo hiểm nào khớp từ khoá tìm.</div>`;
+    return candidates.map(it=>{
+      const ins = insurerById(it.insurerId);
+      const selected = t.renewalLink===it.id;
+      return `<div class="renewal-pick-row" data-pick="${it.id}" style="padding:10px 12px;border:1px solid var(--line);border-radius:8px;margin-bottom:6px;cursor:pointer;${selected?'background:var(--forest-soft);border-color:var(--forest)':''}">
+        <b>${escHtml(it.customer||'(chưa có tên KH)')}</b> · ${escHtml(it.vehicle||'—')}
+        <div class="meta-line">${ins?escHtml(ins.name):''} · ${it.date} · ${escHtml(it.status)}${selected?' · <b>Đang chọn</b>':''}</div>
+      </div>`;
+    }).join('');
+  };
+  openModal('Sửa liên kết tái tục',
+    `Hồ sơ vay: <b>${escHtml(t.customer||'(chưa có tên KH)')}</b> · ${escHtml(t.vehicle||'—')} · ${t.date}`,
+    `<div class="helper" style="margin-bottom:10px">Đang khớp theo: <b>${escHtml(matchMethodLabel(method))}</b>${current?` — ${escHtml(current.customer||'')} · ${current.date}`:''}</div>
+     <div class="field" style="margin-bottom:10px"><input id="rlm_search" placeholder="Tìm theo tên KH / biển số / SĐT / số đơn bảo hiểm..." autocomplete="off"></div>
+     <div id="rlm_list" style="max-height:320px;overflow:auto"></div>
+     <div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap">
+       <button class="btn btn-danger-ghost" id="rlm_none">Đánh dấu: chưa có hợp đồng phù hợp</button>
+       ${t.renewalLink ? `<button class="btn btn-ghost" id="rlm_reset">Dùng lại khớp tự động</button>` : ''}
+     </div>`,
+    (body)=>{
+      const listEl = body.querySelector('#rlm_list');
+      const searchEl = body.querySelector('#rlm_search');
+      const bindPicks = ()=>{
+        listEl.querySelectorAll('[data-pick]').forEach(row=>{
+          row.addEventListener('click', ()=>{
+            const it = state.insTransactions.find(x=>x.id===row.dataset.pick);
+            t.renewalLink = row.dataset.pick;
+            logActivity('update','Doanh số (NH)', `${t.customer||''} (${t.vehicle||''}) — Gán thủ công liên kết tái tục → hợp đồng BH ${it?it.date:''} (${it?it.customer:''})`);
+            saveState();
+            closeModal();
+            renderAll();
+          });
+        });
+      };
+      listEl.innerHTML = renderList('');
+      bindPicks();
+      searchEl.addEventListener('input', ()=>{ listEl.innerHTML = renderList(searchEl.value); bindPicks(); });
+      body.querySelector('#rlm_none').addEventListener('click', ()=>{
+        t.renewalLink = 'NONE';
+        logActivity('update','Doanh số (NH)', `${t.customer||''} (${t.vehicle||''}) — Xác nhận thủ công: chưa có hợp đồng bảo hiểm phù hợp cho chu kỳ tái tục`);
+        saveState();
+        closeModal();
+        renderAll();
+      });
+      const resetBtn = body.querySelector('#rlm_reset');
+      if(resetBtn) resetBtn.addEventListener('click', ()=>{
+        delete t.renewalLink;
+        logActivity('update','Doanh số (NH)', `${t.customer||''} (${t.vehicle||''}) — Bỏ liên kết thủ công, dùng lại khớp tự động cho chu kỳ tái tục`);
+        saveState();
+        closeModal();
+        renderAll();
+      });
+    });
 }
 
 function renderComingSoon(c, t){
