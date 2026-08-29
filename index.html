@@ -849,7 +849,7 @@ const BRANCH_META_FIELDS = {
   ncc:    ['nextSupplierNo','monitoring','reportDate'],
   nh:     ['nextBankNo'],
   bh:     ['insAllocAlertThreshold','nextInsNo','insRenewalAlertDays'],
-  shared: ['units'],
+  shared: ['units','driveUploadUrl','driveUploadSecret'],
 };
 // Toàn bộ field của 1 nhánh (gộp cả 2 loại trên) — dùng ở những chỗ chỉ cần biết "nhánh này có field gì"
 // mà không cần phân biệt loại (VD: reset dữ liệu khi unsubscribe, kiểm tra tên module hợp lệ, sao lưu).
@@ -1488,6 +1488,161 @@ function closeModal(){
   document.removeEventListener('keydown', modalEscHandler);
 }
 
+/* ---------------------------- Upload ảnh/PDF lên Google Drive (qua Google Apps Script) ----------------------------
+   App không có backend riêng nên không tự gọi thẳng Drive API được — thay vào đó gửi file (dạng base64) tới
+   1 Google Apps Script Web App do Admin tự deploy 1 lần (xem hướng dẫn kèm theo), script đó lưu file vào
+   đúng thư mục Drive chỉ định và trả về link chia sẻ. Cấu hình URL + mã bí mật ở tab Cài đặt. */
+function driveUploadConfigured(){ return !!(state.driveUploadUrl && state.driveUploadUrl.trim()); }
+function fileToBase64(file){
+  return new Promise((resolve, reject)=>{
+    const reader = new FileReader();
+    reader.onload = ()=> resolve(String(reader.result).split(',')[1] || ''); // bỏ phần "data:...;base64," ở đầu
+    reader.onerror = ()=> reject(new Error('Không đọc được file'));
+    reader.readAsDataURL(file);
+  });
+}
+// subfolder: tên thư mục con muốn gộp file vào bên trong thư mục gốc đã cấu hình ở script (VD tên NCC/NH/BH)
+// — script Apps Script mẫu sẽ tự tạo thư mục con này nếu chưa có, giúp hồ sơ không bị dồn hết vào 1 chỗ.
+//
+// LƯU Ý KỸ THUẬT: KHÔNG dùng fetch() thẳng tới URL Apps Script — trình duyệt sẽ báo lỗi CORS
+// "Failed to fetch" ở phần lớn trường hợp (giới hạn đã biết của Apps Script khi gọi từ 1 domain khác,
+// không phải lỗi cấu hình). Thay vào đó dùng 1 <form> ẩn POST vào 1 <iframe> ẩn (giống submit form bình
+// thường, không bị CORS chặn), script phía Google trả về 1 trang HTML nhỏ gọi postMessage() để gửi kết
+// quả ngược lại cho app đang lắng nghe — đây là cách né CORS chuẩn cho đúng tình huống Apps Script.
+let driveUploadReqSeq = 0;
+function uploadFileToDrive(file, subfolder){
+  return new Promise(async (resolve, reject)=>{
+    if(!driveUploadConfigured()){ reject(new Error('Chưa cấu hình nơi lưu trữ Google Drive — vào Cài đặt (Admin) để thiết lập trước.')); return; }
+    if(file.size > 15*1024*1024){ reject(new Error('File quá lớn (>15MB) — vui lòng chụp ảnh nhẹ hơn hoặc nén PDF trước khi tải lên.')); return; }
+    let dataBase64;
+    try{ dataBase64 = await fileToBase64(file); }catch(err){ reject(err); return; }
+
+    const payload = JSON.stringify({ secret: state.driveUploadSecret||'', filename: file.name, mimeType: file.type||'application/octet-stream', subfolder: subfolder||'', dataBase64 });
+    const reqId = 'driveUp_'+(++driveUploadReqSeq)+'_'+Date.now();
+
+    const iframe = document.createElement('iframe');
+    iframe.name = reqId; iframe.style.display = 'none';
+    const form = document.createElement('form');
+    form.method = 'POST'; form.action = state.driveUploadUrl; form.target = reqId; form.style.display = 'none';
+    const input = document.createElement('input'); input.type = 'hidden'; input.name = 'payload'; input.value = payload;
+    form.appendChild(input);
+    document.body.appendChild(iframe);
+    document.body.appendChild(form);
+
+    const timeoutId = setTimeout(()=>{ cleanup(); reject(new Error('Hết thời gian chờ phản hồi từ Google Drive (30s) — kiểm tra lại mạng hoặc cấu hình URL ở Cài đặt.')); }, 30000);
+    function cleanup(){
+      clearTimeout(timeoutId);
+      window.removeEventListener('message', onMessage);
+      form.remove();
+      setTimeout(()=> iframe.remove(), 500); // đợi 1 nhịp để tránh huỷ iframe giữa lúc nó còn đang chạy script trả kết quả
+    }
+    function onMessage(ev){
+      if(ev.source !== iframe.contentWindow) return; // bỏ qua message không phải từ đúng iframe này (VD từ extension khác)
+      let data;
+      try{ data = JSON.parse(ev.data); }catch(err){ return; }
+      if(!data || typeof data.ok==='undefined') return;
+      cleanup();
+      if(data.ok) resolve({ url: data.url, name: data.name });
+      else reject(new Error(data.error || 'Upload thất bại — kiểm tra lại URL Web App ở Cài đặt.'));
+    }
+    window.addEventListener('message', onMessage);
+    form.submit();
+  });
+}
+// Gắn 1 input[type=file] + 1 span trạng thái vào cơ chế upload chung: chọn file -> tự upload -> gọi onDone(url).
+// Dùng chung cho mọi nơi cần nút "📷 Chụp ảnh / Chọn file" (Hợp đồng, Doanh số...).
+// subfolder có thể là chuỗi cố định, hoặc 1 hàm () => chuỗi để lấy tên thư mục con ĐÚNG THỜI ĐIỂM bấm chọn
+// file (VD lấy đúng tên NCC/NH/BH đang gõ trong form ngay lúc đó, thay vì cố định từ lúc mở trang).
+function wireDriveUploadButton(fileInputEl, statusEl, subfolder, onDone){
+  fileInputEl.addEventListener('change', async ()=>{
+    const file = fileInputEl.files && fileInputEl.files[0];
+    if(!file) return;
+    statusEl.textContent = 'Đang tải lên Google Drive...';
+    statusEl.style.color = 'var(--slate)';
+    try{
+      const sf = typeof subfolder==='function' ? subfolder() : subfolder;
+      const { url, name } = await uploadFileToDrive(file, sf);
+      statusEl.textContent = '✓ Đã tải lên: '+name;
+      statusEl.style.color = 'var(--forest)';
+      onDone(url);
+    }catch(err){
+      statusEl.textContent = '✕ '+err.message;
+      statusEl.style.color = 'var(--rust)';
+    }finally{
+      fileInputEl.value = ''; // cho phép chọn lại đúng file đó lần nữa nếu cần thử lại
+    }
+  });
+}
+
+/* ---------------------------- Đính kèm hoá đơn ở Doanh số (NCC/Ngân hàng/Bảo hiểm) ----------------------------
+   Dùng chung cho cả 3 sổ Doanh số: (1) khối HTML + wiring cho form "Ghi nhận..." (chụp/chọn lúc nhập mới),
+   (2) 1 cột "Hoá đơn" trong bảng Sổ chứng từ cho phép đính kèm sau nếu lúc nhập chưa kịp chụp — dùng 1
+   input[type=file] ẩn DÙNG CHUNG cho cả bảng thay vì tạo N input riêng cho từng dòng. */
+function invoiceUploadFieldHTML(idPrefix){
+  return `<div class="field" style="grid-column:1/-1">
+    <label>Hoá đơn (ảnh/PDF, không bắt buộc — để đối chiếu sau này)</label>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <input id="${idPrefix}_invoice" placeholder="Dán link, hoặc bấm nút bên cạnh để chụp/tải lên" style="flex:1;min-width:220px">
+      <label class="btn btn-ghost" style="cursor:pointer;white-space:nowrap;margin:0">📷 Chụp ảnh<input id="${idPrefix}_invoice_cam" type="file" accept="image/*" capture="environment" style="display:none"></label>
+      <label class="btn btn-ghost" style="cursor:pointer;white-space:nowrap;margin:0">📁 Chọn file<input id="${idPrefix}_invoice_file" type="file" accept="image/*,application/pdf" style="display:none"></label>
+    </div>
+    <div id="${idPrefix}_invoice_status" class="helper" style="margin-top:2px"></div>
+  </div>`;
+}
+function wireInvoiceUploadField(idPrefix, subfolder){
+  const linkInput = document.getElementById(idPrefix+'_invoice');
+  const statusEl = document.getElementById(idPrefix+'_invoice_status');
+  wireDriveUploadButton(document.getElementById(idPrefix+'_invoice_cam'), statusEl, subfolder, url=>{ linkInput.value = url; });
+  wireDriveUploadButton(document.getElementById(idPrefix+'_invoice_file'), statusEl, subfolder, url=>{ linkInput.value = url; });
+}
+function resetInvoiceUploadField(idPrefix){
+  const linkInput = document.getElementById(idPrefix+'_invoice');
+  const statusEl = document.getElementById(idPrefix+'_invoice_status');
+  if(linkInput) linkInput.value = '';
+  if(statusEl) statusEl.textContent = '';
+}
+// Ô "Hoá đơn" trong 1 dòng bảng Sổ chứng từ — link xem (nếu đã có) + nút đính kèm/đổi (nếu editable).
+function invoiceCellHTML(t, editable){
+  const safeLink = t.invoiceLink && /^https?:\/\//i.test(t.invoiceLink) ? t.invoiceLink : null;
+  const viewPart = safeLink ? `<a href="${escAttr(safeLink)}" target="_blank" rel="noopener" class="contract-link">🧾 Xem</a>` : (editable ? '' : '<span style="color:var(--slate)">—</span>');
+  const attachPart = editable ? `<button class="btn btn-ghost" data-attach-invoice="${t.id}" style="padding:2px 7px;font-size:11px;white-space:nowrap">${safeLink?'Đổi':'+ Đính kèm'}</button>` : '';
+  return `<div style="display:flex;flex-direction:column;gap:4px;align-items:flex-start">${viewPart}${attachPart}</div>`;
+}
+// Gắn nút "+ Đính kèm"/"Đổi" ở cột Hoá đơn sau khi bảng đã render — subfolderFn(t) trả tên thư mục con
+// theo đúng dòng đang thao tác (VD tên NCC/NH/BH của chính dòng đó).
+function wireInvoiceAttachColumn(tbl, arr, entityLabel, subfolderFn){
+  const wrap = tbl.parentElement || document.body;
+  const old = wrap.querySelector('.invoice-attach-hidden-input');
+  if(old) old.remove(); // tránh tích luỹ input ẩn mỗi lần bảng vẽ lại (đổi bộ lọc, sửa 1 ô...)
+  const hiddenInput = document.createElement('input');
+  hiddenInput.type = 'file'; hiddenInput.accept = 'image/*,application/pdf'; hiddenInput.className = 'invoice-attach-hidden-input';
+  hiddenInput.style.display = 'none';
+  wrap.appendChild(hiddenInput);
+  let pendingId = null;
+  hiddenInput.addEventListener('change', async ()=>{
+    const file = hiddenInput.files && hiddenInput.files[0];
+    const targetId = pendingId;
+    hiddenInput.value = ''; pendingId = null;
+    if(!file || !targetId) return;
+    const item = arr.find(x=>x.id===targetId);
+    if(!item) return;
+    toast('Đang tải hoá đơn lên Google Drive...');
+    try{
+      const { url } = await uploadFileToDrive(file, subfolderFn(item));
+      item.invoiceLink = url;
+      logActivity('update', entityLabel, `Đính kèm hoá đơn cho 1 chứng từ ngày ${item.date}`);
+      saveState();
+      toast('Đã đính kèm hoá đơn');
+      renderAll();
+    }catch(err){
+      toast('Lỗi đính kèm: '+err.message);
+    }
+  });
+  tbl.querySelectorAll('[data-attach-invoice]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{ pendingId = btn.dataset.attachInvoice; hiddenInput.click(); });
+  });
+}
+
 /* ---------------------------- Đính kèm hợp đồng NCC/Ngân hàng/Bảo hiểm ----------------------------
    Dùng chung cho cả 3 khối (NCC dịch vụ ô tô, Ngân hàng, Bảo hiểm) — mỗi "đối tượng" (supplier/bank/insurer)
    có mảng obj.contracts = [{id, ten, soHopDong, ngayKy, ngayHieuLuc, ngayHetHan, link, ghiChu, units, supersededBy, createdAt, createdBy}].
@@ -1630,7 +1785,16 @@ function openContractsModal(obj, list, entityLabel, editable, unitFilter){
       <div class="field"><label>Ngày ký</label><input id="ct_ngayky" type="date"></div>
       <div class="field"><label>Ngày hiệu lực</label><input id="ct_hieuluc" type="date"></div>
       <div class="field"><label>Ngày hết hạn</label><input id="ct_hethan" type="date"></div>
-      <div class="field"><label>Link (Drive...)</label><input id="ct_link" placeholder="Dán link tài liệu"></div>
+      <div class="field" style="grid-column:1/-1">
+        <label>Link (Drive...)</label>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <input id="ct_link" placeholder="Dán link tài liệu, hoặc bấm nút bên cạnh để tự chụp/tải lên" style="flex:1;min-width:220px">
+          <label class="btn btn-ghost" style="cursor:pointer;white-space:nowrap;margin:0">📷 Chụp ảnh<input id="ct_upload_cam" type="file" accept="image/*" capture="environment" style="display:none"></label>
+          <label class="btn btn-ghost" style="cursor:pointer;white-space:nowrap;margin:0">📁 Chọn file<input id="ct_upload_file" type="file" accept="image/*,application/pdf" style="display:none"></label>
+        </div>
+        <div class="helper" style="margin-top:2px">"Chụp ảnh" mở thẳng camera trên điện thoại (chỉ nhận ảnh) · "Chọn file" để lấy ảnh có sẵn hoặc PDF từ máy. Trên máy tính, cả 2 đều mở hộp chọn file như nhau (máy tính không có camera để chụp trực tiếp).</div>
+        <div id="ct_upload_status" class="helper" style="margin-top:4px"></div>
+      </div>
       <div class="field" style="grid-column:1/-1;"><label>Ghi chú</label><input id="ct_note" placeholder="Không bắt buộc"></div>
       ${unitChecklistHtml}
       ${hasActive ? `
@@ -1669,6 +1833,16 @@ function openContractsModal(obj, list, entityLabel, editable, unitFilter){
           unitsBox.style.display = allUnitsChk.checked ? 'none' : 'flex';
           if(allUnitsChk.checked) unitsBox.querySelectorAll('.ct-unit-chk').forEach(c=>c.checked=false);
         });
+        wireDriveUploadButton(
+          body.querySelector('#ct_upload_cam'), body.querySelector('#ct_upload_status'),
+          entityLabel+' · '+obj.name,
+          (url)=>{ document.getElementById('ct_link').value = url; }
+        );
+        wireDriveUploadButton(
+          body.querySelector('#ct_upload_file'), body.querySelector('#ct_upload_status'),
+          entityLabel+' · '+obj.name,
+          (url)=>{ document.getElementById('ct_link').value = url; }
+        );
         const addBtn = body.querySelector('#ctAddBtn');
         if(addBtn) addBtn.addEventListener('click', ()=>{
           const ten = document.getElementById('ct_ten').value.trim();
@@ -1960,6 +2134,8 @@ function seedState(){
     insAllocAlertThreshold: 0.05, // ngưỡng cảnh báo chênh lệch (Thực tế − Đề xuất tỷ lệ bán), dạng phân số — chỉ Admin sửa được
     insRenewalAlertDays: 45, // hồ sơ còn ≤ số ngày này tới mốc tái tục -> tính là "Sắp đến hạn" — chỉ Admin sửa được
     nextInsNo: insurers.length+1,
+    driveUploadUrl: '', // URL Web App của Google Apps Script dùng để upload ảnh/PDF hợp đồng lên Drive — chỉ Admin sửa (Cài đặt)
+    driveUploadSecret: '', // mã bí mật gửi kèm mỗi lần upload để tránh người ngoài spam vào cổng upload này
   };
 }
 
@@ -3592,6 +3768,7 @@ function renderTransactions(c){
           <div class="field"><label>Nhóm hàng</label><input id="tf_cat" placeholder="Phụ tùng..."></div>
           <div class="field"><label>Doanh số trước VAT</label><input id="tf_gross" class="field-money" type="text" inputmode="numeric" placeholder="0"></div>
           <div class="field"><label>Trả hàng / Điều chỉnh</label><input id="tf_return" class="field-money" type="text" inputmode="numeric" placeholder="0"></div>
+          ${invoiceUploadFieldHTML('tf')}
           <button class="btn btn-primary" id="addTxBtn">+ Ghi nhận</button>
         </div>
         ${lockedUnit ? `<div class="helper">Tài khoản của bạn được gán phụ trách <b>${escHtml(lockedUnit)}</b> (đặt ở tab Quản trị tài khoản) nên đơn vị đã tự khoá để tránh nhập nhầm. Cần đổi đơn vị? Liên hệ Admin/Quản lý.</div>` : `<div class="helper">Gõ tên đơn vị mới nếu chưa có trong danh sách — hệ thống sẽ tự thêm vào.</div>`}
@@ -3620,6 +3797,7 @@ function renderTransactions(c){
   if(editable){
     attachMoneyFormatting(document.getElementById('tf_gross'));
     attachMoneyFormatting(document.getElementById('tf_return'));
+    wireInvoiceUploadField('tf', ()=> 'Doanh số NCC · '+(document.getElementById('tf_supplier').value||'').trim());
     document.getElementById('addTxBtn').addEventListener('click', ()=>{
     const supplierName = document.getElementById('tf_supplier').value;
     const matchedSupplier = findSupplierByName(supplierName);
@@ -3644,9 +3822,11 @@ function renderTransactions(c){
       doc: document.getElementById('tf_doc').value.trim(),
       category: document.getElementById('tf_cat').value.trim(),
       gross, returns,
+      invoiceLink: document.getElementById('tf_invoice').value.trim(),
       createdBy: currentUserId, createdAt: new Date().toISOString(),
     });
     document.getElementById('tf_gross').value=''; document.getElementById('tf_return').value=''; document.getElementById('tf_doc').value='';
+    resetInvoiceUploadField('tf');
     logActivity('create','Doanh số', `${unit} → ${s?s.name:''}: ${fmt(gross)}đ`);
     toast('Đã ghi nhận chứng từ');
     txUnitFilter = unit;
@@ -3720,13 +3900,13 @@ function renderTxTable(editable){
   }
   if(sorted.length===0){
     tbl.innerHTML = `<thead><tr><th>Ngày</th><th>Đơn vị</th><th class="wrap">NCC</th><th>Số CT</th><th>Nhóm hàng</th>
-      <th class="num">Trước VAT</th><th class="num">Trả hàng</th><th class="num">DS tính CK</th><th>Người nhập</th><th></th></tr></thead>`;
+      <th class="num">Trước VAT</th><th class="num">Trả hàng</th><th class="num">DS tính CK</th><th>Người nhập</th><th>Hoá đơn</th><th></th></tr></thead>`;
     tbl.insertAdjacentHTML('afterend', `<div class="empty"><div class="big">Không có chứng từ nào khớp bộ lọc hiện tại</div></div>`);
     return;
   }
   tbl.innerHTML = `
     <thead><tr><th>Ngày</th><th>Đơn vị</th><th class="wrap">NCC</th><th>Số CT</th><th>Nhóm hàng</th>
-      <th class="num">Trước VAT</th><th class="num">Trả hàng</th><th class="num">DS tính CK</th><th>Người nhập</th><th></th></tr></thead>
+      <th class="num">Trước VAT</th><th class="num">Trả hàng</th><th class="num">DS tính CK</th><th>Người nhập</th><th>Hoá đơn</th><th></th></tr></thead>
     <tbody>${sorted.map(t=>{
       const s = supplierById(t.supplierId);
       const net = (Number(t.gross)||0)-(Number(t.returns)||0);
@@ -3742,9 +3922,11 @@ function renderTxTable(editable){
         <td class="num">${fmt(t.returns)}</td>
         <td class="num" style="font-weight:600">${fmt(net)}</td>
         <td>${creator?escHtml(creator.name):'<em>—</em>'}</td>
+        <td>${invoiceCellHTML(t, editable && !(lockR && currentRole()!=='Admin'))}</td>
         <td>${lockIconHTML(lockR,'ncc')}${canDeleteTx(t)?`<button class="row-del" data-del="${t.id}">✕</button>`:''}</td>
       </tr>`;
     }).join('')}</tbody>`;
+  wireInvoiceAttachColumn(tbl, state.transactions, 'Doanh số', t=>{ const s=supplierById(t.supplierId); return 'Doanh số NCC · '+(s?s.name:''); });
   wireLockToggle(tbl);
   tbl.querySelectorAll('[data-del]').forEach(btn=>{
     btn.addEventListener('click', ()=>{
@@ -4608,6 +4790,7 @@ function renderBankTransactions(c){
           <div class="field"><label>Số tiền vay (VNĐ)</label><input id="btf_amount" class="field-money" type="text" inputmode="numeric" placeholder="0"></div>
           <div class="field"><label>Trạng thái</label><select id="btf_status">${BANK_TX_STATUSES.map(s=>`<option ${s==='Đang xử lý'?'selected':''}>${s}</option>`).join('')}</select></div>
           <div class="field" style="grid-column:1/-1"><label>Ghi chú</label><input id="btf_note" placeholder="Ghi chú khác..."></div>
+          ${invoiceUploadFieldHTML('btf')}
           <button class="btn btn-primary" id="addBankTxBtn">+ Ghi nhận hồ sơ</button>
         </div>
         <div class="helper">Chỉ hồ sơ trạng thái <b>"Đã giải ngân"</b> mới được tính Hoa hồng, theo đúng chính sách của ngân hàng đó + đúng <b>Gói vay</b> đã chọn, tại tháng giải ngân. Nếu ngân hàng chưa có chính sách của đúng gói + tháng đó (hoặc tháng trước gần nhất), hệ thống báo "Chưa có chính sách" và Hoa hồng ghi 0đ. Để trống Gói vay = tính theo "${DEFAULT_BANK_PRODUCT}".</div>
@@ -4639,6 +4822,7 @@ function renderBankTransactions(c){
     }
     btfBankInput.addEventListener('input', refreshBtfProductList);
     refreshBtfProductList();
+    wireInvoiceUploadField('btf', ()=> 'Doanh số NH · '+(document.getElementById('btf_bank').value||'').trim());
     document.getElementById('addBankTxBtn').addEventListener('click', ()=>{
       const bankName = document.getElementById('btf_bank').value;
       const bank = state.banks.find(b=>b.name.trim().toLowerCase()===bankName.trim().toLowerCase());
@@ -4661,11 +4845,13 @@ function renderBankTransactions(c){
         vehicle: formatVehicleField(document.getElementById('btf_vehicle').value),
         refCode: document.getElementById('btf_refcode').value.trim(),
         loanAmount: amount, status, note: document.getElementById('btf_note').value.trim(),
+        invoiceLink: document.getElementById('btf_invoice').value.trim(),
         createdBy: currentUserId, createdAt: new Date().toISOString(),
       });
       document.getElementById('btf_amount').value=''; document.getElementById('btf_customer').value='';
       document.getElementById('btf_phone').value=''; document.getElementById('btf_vehicle').value='';
       document.getElementById('btf_refcode').value=''; document.getElementById('btf_note').value='';
+      resetInvoiceUploadField('btf');
       logActivity('create','Doanh số (NH)', `${unit} → ${bank.name} (${document.getElementById('btf_product').value.trim()||DEFAULT_BANK_PRODUCT}): ${fmt(amount)}đ (${status})`);
       toast('Đã ghi nhận hồ sơ vay');
       bankTxUnitFilter = unit; bankTxBankFilter = bank.name;
@@ -4734,13 +4920,13 @@ function renderBankTxTable(editable){
     tbl.outerHTML = `<div class="empty"><div class="big">Chưa có hồ sơ vay nào</div>${editable?'Ghi nhận hồ sơ đầu tiên ở form phía trên.':''}</div>`; return;
   }
   if(sorted.length===0){
-    tbl.innerHTML = `<thead><tr><th>Hồ sơ</th><th>Khách hàng</th><th class="num">Số tiền vay</th><th>Trạng thái</th><th class="num">Hoa hồng</th><th>Người nhập</th><th></th></tr></thead>`;
+    tbl.innerHTML = `<thead><tr><th>Hồ sơ</th><th>Khách hàng</th><th class="num">Số tiền vay</th><th>Trạng thái</th><th class="num">Hoa hồng</th><th>Người nhập</th><th>Hoá đơn</th><th></th></tr></thead>`;
     tbl.insertAdjacentHTML('afterend', `<div class="empty"><div class="big">Không có hồ sơ nào khớp bộ lọc hiện tại</div></div>`);
     return;
   }
   const statusClass = s => s==='Đã giải ngân'?'st-disbursed':(s==='Đã duyệt'?'st-approved':(s==='Từ chối'?'st-rejected':'st-pending'));
   tbl.innerHTML = `
-    <thead><tr><th>Hồ sơ</th><th>Khách hàng</th><th class="num">Số tiền vay</th><th>Trạng thái</th><th class="num">Hoa hồng</th><th>Người nhập</th><th></th></tr></thead>
+    <thead><tr><th>Hồ sơ</th><th>Khách hàng</th><th class="num">Số tiền vay</th><th>Trạng thái</th><th class="num">Hoa hồng</th><th>Người nhập</th><th>Hoá đơn</th><th></th></tr></thead>
     <tbody>${sorted.map(t=>{
       const b = bankById(t.bankId);
       const creator = state.accounts.find(a=>a.id===t.createdBy);
@@ -4780,11 +4966,13 @@ function renderBankTxTable(editable){
           : `<span class="stamp ${t.status==='Đã giải ngân'?'ok':(t.status==='Từ chối'?'warn':'pending')}">${t.status}</span>`}</td>
         <td class="num">${commCell}</td>
         <td class="meta-line">${creator?escHtml(creator.name):'<em>—</em>'}</td>
+        <td>${invoiceCellHTML(t, editable && !lockedForMe)}</td>
         <td>${canDelRow?`<button class="row-del" data-del="${t.id}">✕</button>`:''}</td>
       </tr>`;
     }).join('')}</tbody>`;
   if(editable){
     wireCellEdits(tbl, state.bankTransactions, 'Doanh số (NH)', t=>{ const b=bankById(t.bankId); return `${t.unit} → ${b?b.name:''}`; });
+    wireInvoiceAttachColumn(tbl, state.bankTransactions, 'Doanh số (NH)', t=>{ const b=bankById(t.bankId); return 'Doanh số NH · '+(b?b.name:''); });
     tbl.querySelectorAll('[data-field="date"]').forEach(el=>{
       el.addEventListener('change', ()=>{ renderBankTxTable(editable); }); // đổi ngày có thể đổi chính sách áp dụng -> cần vẽ lại Hoa hồng
     });
@@ -5687,6 +5875,7 @@ function renderInsTransactions(c){
           <div class="field"><label>Phí bảo hiểm thu (VNĐ)</label><input id="itf_amount" class="field-money" type="text" inputmode="numeric" placeholder="0"></div>
           <div class="field"><label>Trạng thái</label><select id="itf_status">${INS_TX_STATUSES.map(s=>`<option ${s==='Đang xử lý'?'selected':''}>${s}</option>`).join('')}</select></div>
           <div class="field" style="grid-column:1/-1"><label>Ghi chú</label><input id="itf_note" placeholder="Ghi chú khác..."></div>
+          ${invoiceUploadFieldHTML('itf')}
           <button class="btn btn-primary" id="addInsTxBtn">+ Ghi nhận hợp đồng</button>
         </div>
         <div class="helper">Chỉ hợp đồng trạng thái <b>"Đã cấp đơn"</b> mới được tính Hoa hồng, theo đúng tỷ lệ BHVC/BHDS của NCC đó — xem/sửa tỷ lệ ở tab "Danh mục NCC".</div>
@@ -5710,6 +5899,7 @@ function renderInsTransactions(c){
   });
   if(editable){
     attachMoneyFormatting(document.getElementById('itf_amount'));
+    wireInvoiceUploadField('itf', ()=> 'Doanh số BH · '+(document.getElementById('itf_ins').value||'').trim());
     document.getElementById('addInsTxBtn').addEventListener('click', ()=>{
       const insName = document.getElementById('itf_ins').value;
       const ins = state.insurers.find(x=>x.name.trim().toLowerCase()===insName.trim().toLowerCase());
@@ -5732,11 +5922,13 @@ function renderInsTransactions(c){
         vehicle: formatVehicleField(document.getElementById('itf_vehicle').value),
         policyNo: document.getElementById('itf_policyno').value.trim(),
         premiumAmount: amount, status, note: document.getElementById('itf_note').value.trim(),
+        invoiceLink: document.getElementById('itf_invoice').value.trim(),
         createdBy: currentUserId, createdAt: new Date().toISOString(),
       });
       document.getElementById('itf_amount').value=''; document.getElementById('itf_customer').value='';
       document.getElementById('itf_phone').value=''; document.getElementById('itf_vehicle').value='';
       document.getElementById('itf_policyno').value=''; document.getElementById('itf_note').value='';
+      resetInvoiceUploadField('itf');
       logActivity('create','Doanh số (Bảo hiểm)', `${unit} → ${ins.name}: ${fmt(amount)}đ (${status})`);
       toast('Đã ghi nhận hợp đồng bảo hiểm');
       insTxUnitFilter = unit; insTxInsurerFilter = ins.name;
@@ -5805,13 +5997,13 @@ function renderInsTxTable(editable){
     tbl.outerHTML = `<div class="empty"><div class="big">Chưa có hợp đồng bảo hiểm nào</div>${editable?'Ghi nhận hợp đồng đầu tiên ở form phía trên.':''}</div>`; return;
   }
   if(sorted.length===0){
-    tbl.innerHTML = `<thead><tr><th>Hợp đồng</th><th>Khách hàng</th><th class="num">Phí bảo hiểm</th><th>Trạng thái</th><th class="num">Hoa hồng</th><th>Người nhập</th><th></th></tr></thead>`;
+    tbl.innerHTML = `<thead><tr><th>Hợp đồng</th><th>Khách hàng</th><th class="num">Phí bảo hiểm</th><th>Trạng thái</th><th class="num">Hoa hồng</th><th>Người nhập</th><th>Hoá đơn</th><th></th></tr></thead>`;
     tbl.insertAdjacentHTML('afterend', `<div class="empty"><div class="big">Không có hợp đồng nào khớp bộ lọc hiện tại</div></div>`);
     return;
   }
   const statusClass = s => s==='Đã cấp đơn'?'st-disbursed':(s==='Đã duyệt'?'st-approved':(s==='Huỷ'?'st-rejected':'st-pending'));
   tbl.innerHTML = `
-    <thead><tr><th>Hợp đồng</th><th>Khách hàng</th><th class="num">Phí bảo hiểm</th><th>Trạng thái</th><th class="num">Hoa hồng</th><th>Người nhập</th><th></th></tr></thead>
+    <thead><tr><th>Hợp đồng</th><th>Khách hàng</th><th class="num">Phí bảo hiểm</th><th>Trạng thái</th><th class="num">Hoa hồng</th><th>Người nhập</th><th>Hoá đơn</th><th></th></tr></thead>
     <tbody>${sorted.map(t=>{
       const ins = insurerById(t.insurerId);
       const creator = state.accounts.find(a=>a.id===t.createdBy);
@@ -5848,11 +6040,13 @@ function renderInsTxTable(editable){
           : `<span class="stamp ${t.status==='Đã cấp đơn'?'ok':(t.status==='Huỷ'?'warn':'pending')}">${t.status}</span>`}</td>
         <td class="num">${commCell}</td>
         <td class="meta-line">${creator?escHtml(creator.name):'<em>—</em>'}</td>
+        <td>${invoiceCellHTML(t, editable && !lockedForMe)}</td>
         <td>${canDelRow?`<button class="row-del" data-del="${t.id}">✕</button>`:''}</td>
       </tr>`;
     }).join('')}</tbody>`;
   if(editable){
     wireCellEdits(tbl, state.insTransactions, 'Doanh số (Bảo hiểm)', t=>{ const ins=insurerById(t.insurerId); return `${t.unit} → ${ins?ins.name:''}`; });
+    wireInvoiceAttachColumn(tbl, state.insTransactions, 'Doanh số (Bảo hiểm)', t=>{ const ins=insurerById(t.insurerId); return 'Doanh số BH · '+(ins?ins.name:''); });
     tbl.querySelectorAll('[data-field="date"]').forEach(el=>{
       el.addEventListener('change', ()=>{ renderInsTxTable(editable); });
     });
@@ -6619,6 +6813,20 @@ function renderSettings(c){
       </div>
     </div>
     <div class="panel">
+      <div class="panel-head"><div><h2>Đính kèm tài liệu (Google Drive)</h2>
+      <div class="desc">Cho phép nút "📷 Chụp/Chọn file" ở Hợp đồng tự động tải ảnh/PDF lên Google Drive và điền link — cần deploy 1 Google Apps Script Web App trước (xem hướng dẫn riêng đã gửi kèm).</div></div></div>
+      <div class="panel-body">
+        ${isAdmin ? `
+        <div class="form-grid">
+          <div class="field" style="grid-column:1/-1"><label>URL Web App (Google Apps Script)</label><input id="driveUrlInput" placeholder="https://script.google.com/macros/s/.../exec" value="${escAttr(state.driveUploadUrl||'')}"></div>
+          <div class="field" style="grid-column:1/-1"><label>Mã bí mật (phải trùng với mã đặt trong script)</label><input id="driveSecretInput" placeholder="Một chuỗi tự đặt, chỉ Admin biết" value="${escAttr(state.driveUploadSecret||'')}"></div>
+          <button class="btn btn-primary" id="driveSaveBtn">Lưu cấu hình</button>
+        </div>
+        <div class="helper">${driveUploadConfigured() ? '✓ Đã cấu hình — mọi người dùng nút "📷 Chụp/Chọn file" ở Hợp đồng sẽ tự tải lên đúng nơi này.' : 'Chưa cấu hình — nút "📷 Chụp/Chọn file" sẽ báo lỗi cho tới khi điền xong 2 ô trên.'}</div>
+        ` : lockedNote('Chỉ Admin mới cấu hình nơi lưu trữ Google Drive.')}
+      </div>
+    </div>
+    <div class="panel">
       <div class="panel-head"><div><h2>Dữ liệu</h2></div></div>
       <div class="panel-body">
         <div style="display:flex;gap:10px;flex-wrap:wrap">
@@ -6647,6 +6855,14 @@ function renderSettings(c){
     </div>` : ''}
   `;
   if(isAdmin){
+    document.getElementById('driveSaveBtn').addEventListener('click', ()=>{
+      state.driveUploadUrl = document.getElementById('driveUrlInput').value.trim();
+      state.driveUploadSecret = document.getElementById('driveSecretInput').value.trim();
+      logActivity('update','Cài đặt', 'Cập nhật cấu hình upload Google Drive');
+      saveState();
+      toast('Đã lưu cấu hình Google Drive');
+      renderAll();
+    });
     document.getElementById('fbConnectBtn').addEventListener('click', async ()=>{
       const raw = document.getElementById('fbConfigArea').value;
       let cfg;
