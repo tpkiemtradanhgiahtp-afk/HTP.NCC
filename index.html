@@ -843,7 +843,7 @@ const BRANCH_META_FIELDS = {
   ncc:    ['nextSupplierNo','monitoring','reportDate'],
   nh:     ['nextBankNo'],
   bh:     ['insAllocAlertThreshold','nextInsNo','insRenewalAlertDays'],
-  shared: ['units','driveUploadUrl','driveUploadSecret'],
+  shared: ['units','driveUploadUrl','driveUploadSecret','emailNotifyEnabled'],
 };
 // Toàn bộ field của 1 nhánh (gộp cả 2 loại trên) — dùng ở những chỗ chỉ cần biết "nhánh này có field gì"
 // mà không cần phân biệt loại (VD: reset dữ liệu khi unsubscribe, kiểm tra tên module hợp lệ, sao lưu).
@@ -1575,8 +1575,16 @@ function uploadFileToDrive(file, subfolder){
 // Gửi email thông báo qua đúng Apps Script đã cấu hình (dùng MailApp phía Google) — cố tình KHÔNG throw
 // lỗi ra ngoài ở nơi gọi (xem notifyAboutRequestMessage): gửi thông báo thất bại không được phép làm hỏng
 // thao tác chính (gửi yêu cầu/trả lời) — chỉ log ra console để debug khi cần.
+// Gửi kèm accountId (id tài khoản đang đăng nhập) để Code.gs giới hạn được tần suất THEO TỪNG TÀI KHOẢN —
+// không phải để xác thực (bảo mật vẫn dựa vào "secret"), chỉ để đếm số lần gọi cho đúng người.
 function sendEmailNotification(toEmails, subject, body){
-  return postToScript({ type:'notify', to: toEmails, subject, body });
+  return postToScript({ type:'notify', to: toEmails, subject, body, accountId: currentUserId||'' });
+}
+// Công tắc khẩn cấp — bật/tắt hẳn việc gửi email ở đúng phía Apps Script (không chỉ ẩn nút trong app), để
+// dù ai đó có mã bí mật và gọi thẳng script cũng không gửi được nữa khi đã khoá. Trả về Promise; nơi gọi
+// (UI Cài đặt) chỉ cập nhật state.emailNotifyEnabled SAU KHI xác nhận script đã đổi thành công.
+function setRemoteEmailEnabled(enabled){
+  return postToScript({ type:'setEmailEnabled', enabled: !!enabled });
 }
 // Gắn 1 input[type=file] + 1 span trạng thái vào cơ chế upload chung: chọn file -> tự upload -> gọi onDone(url).
 // Dùng chung cho mọi nơi cần nút "📷 Chụp ảnh / Chọn file" (Hợp đồng, Doanh số...).
@@ -2381,6 +2389,7 @@ function seedState(){
     nextInsNo: insurers.length+1,
     driveUploadUrl: '', // URL Web App của Google Apps Script dùng để upload ảnh/PDF hợp đồng lên Drive — chỉ Admin sửa (Cài đặt)
     driveUploadSecret: '', // mã bí mật gửi kèm mỗi lần upload để tránh người ngoài spam vào cổng upload này
+    emailNotifyEnabled: true, // chỉ để HIỂN THỊ trạng thái trong app — công tắc THẬT SỰ nằm ở Apps Script (PropertiesService), xem handleSetEmailEnabled
   };
 }
 
@@ -7091,6 +7100,16 @@ function renderSettings(c){
           <button class="btn btn-ghost" id="testMailBtn" style="align-self:flex-end">Gửi email thử</button>
         </div>
         <div class="helper">Dùng để kiểm tra riêng phần gửi email (mục "Yêu cầu / Trao đổi") — nếu báo lỗi ở đây, làm theo đúng thông báo hiện ra (thường là do quên deploy lại Apps Script sau khi thêm phần gửi mail, hoặc chưa cho phép quyền MailApp lần đầu).</div>
+        <div style="margin-top:14px;padding:14px;border:1px solid ${state.emailNotifyEnabled?'var(--line)':'var(--rust)'};border-radius:10px;${state.emailNotifyEnabled?'':'background:var(--rust-soft)'}">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+            <div>
+              <div style="font-weight:700">🔒 Công tắc khẩn cấp — Gửi email</div>
+              <div class="helper" style="margin-top:2px">Khoá lại NGAY LẬP TỨC nếu nghi ngờ có ai đang lợi dụng gửi email không đúng (VD nghi lộ mã bí mật) — chặn thật sự ở phía Google, không chỉ ẩn nút trong app này. Không ảnh hưởng tới tính năng Upload Drive.</div>
+            </div>
+            <button class="btn ${state.emailNotifyEnabled?'btn-danger-ghost':'btn-primary'}" id="emailKillSwitchBtn" style="white-space:nowrap">${state.emailNotifyEnabled?'🔒 Khoá gửi email':'🔓 Mở lại gửi email'}</button>
+          </div>
+          <div class="helper" style="margin-top:8px;font-weight:600;color:${state.emailNotifyEnabled?'var(--forest)':'var(--rust)'}">${state.emailNotifyEnabled?'✓ Đang cho phép gửi email bình thường.':'✕ ĐANG KHOÁ — mọi email (kể cả "Yêu cầu / Trao đổi") sẽ không gửi được cho tới khi mở lại.'}</div>
+        </div>
         ` : lockedNote('Chỉ Admin mới cấu hình nơi lưu trữ Google Drive.')}
       </div>
     </div>
@@ -7143,6 +7162,24 @@ function renderSettings(c){
         alert('Gửi email thử thất bại:\n\n'+err.message+'\n\nKiểm tra lại: đã deploy lại Apps Script sau khi thêm phần gửi mail chưa? Đã cho phép quyền MailApp lần đầu chưa?');
       }finally{
         btn.disabled = false; btn.textContent = 'Gửi email thử';
+      }
+    });
+    document.getElementById('emailKillSwitchBtn').addEventListener('click', async ()=>{
+      const turningOff = state.emailNotifyEnabled; // đang bật -> bấm để khoá lại
+      const label = turningOff ? 'KHOÁ' : 'MỞ LẠI';
+      if(!confirm(`Xác nhận ${label} việc gửi email của toàn hệ thống?`+(turningOff?' Mọi thông báo email (kể cả "Yêu cầu / Trao đổi") sẽ ngừng gửi cho tới khi bạn mở lại.':''))) return;
+      const btn = document.getElementById('emailKillSwitchBtn');
+      btn.disabled = true; btn.textContent = 'Đang xử lý...';
+      try{
+        await setRemoteEmailEnabled(!turningOff);
+        state.emailNotifyEnabled = !turningOff;
+        logActivity('update','Cài đặt', `${turningOff?'🔒 KHOÁ':'🔓 Mở lại'} công tắc khẩn cấp gửi email`);
+        saveState();
+        toast(turningOff ? 'Đã khoá gửi email' : 'Đã mở lại gửi email');
+        renderAll();
+      }catch(err){
+        alert('Không đổi được trạng thái:\n\n'+err.message+'\n\nTrạng thái gửi email hiện KHÔNG đổi — kiểm tra lại kết nối/cấu hình rồi thử lại.');
+        btn.disabled = false; btn.textContent = turningOff ? '🔒 Khoá gửi email' : '🔓 Mở lại gửi email';
       }
     });
     document.getElementById('fbConnectBtn').addEventListener('click', async ()=>{
