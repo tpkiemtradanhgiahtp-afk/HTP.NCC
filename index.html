@@ -104,13 +104,7 @@
     background:#57607E; flex:0 0 auto;
   }
   .nav-item.active .dot{ background:var(--gold); }
-  .nav-item.long{
-    font-size:11.5px; letter-spacing:-0.005em; padding-left:10px; padding-right:8px;
-  }
-  .nav-item .label-text{ min-width:0; }
-  .nav-item.long .label-text{
-    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
-  }
+  .nav-item .label-text{ min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .alert-dot{
     margin-left:auto; flex:0 0 auto;
     background:var(--rust); color:#fff; font-size:10px; font-weight:700;
@@ -1941,7 +1935,9 @@ function requestBadgeHTML(objs){
 // Gửi email báo "có tin nhắn mới" cho phía CÒN LẠI (Đối tác viết -> báo nội bộ phụ trách module đó; nội bộ
 // viết -> báo đúng tài khoản Đối tác của obj này, nếu có email). Cố tình không await/throw ở nơi gọi — lỗi
 // gửi email (chưa cấu hình script, mất mạng...) không được phép chặn việc gửi yêu cầu/trả lời chính.
-function notifyAboutRequestMessage(obj, cfg, authorIsPartner){
+// authorName/messageText: đính kèm luôn nội dung vừa gõ vào email — để người nhận đọc được ngay trong hộp
+// thư, không phải mở app mới biết nội dung là gì.
+function notifyAboutRequestMessage(obj, cfg, authorIsPartner, authorName, messageText){
   if(!driveUploadConfigured()) return;
   let toEmails = [];
   if(authorIsPartner){
@@ -1951,8 +1947,8 @@ function notifyAboutRequestMessage(obj, cfg, authorIsPartner){
     if(partnerAcc && partnerAcc.email && partnerAcc.email.trim()) toEmails = [partnerAcc.email.trim()];
   }
   if(toEmails.length===0) return;
-  const subject = `[QT NCC] Có tin nhắn mới — ${cfg.nameOf(obj)}`;
-  const body = `Có tin nhắn mới trong mục "Yêu cầu / Trao đổi" liên quan tới ${cfg.nameOf(obj)}.\n\nVui lòng đăng nhập vào hệ thống để xem chi tiết và phản hồi.`;
+  const subject = `[QT NCC] Tin nhắn mới từ ${authorName||'(không rõ)'} — ${cfg.nameOf(obj)}`;
+  const body = `${authorName||'(không rõ)'} vừa gửi 1 tin nhắn trong mục "Yêu cầu / Trao đổi" liên quan tới ${cfg.nameOf(obj)}:\n\n"${messageText||''}"\n\nVui lòng đăng nhập vào hệ thống để xem toàn bộ hội thoại và phản hồi.`;
   sendEmailNotification(toEmails, subject, body).catch(err=> console.warn('Gửi email thông báo thất bại (bỏ qua, không ảnh hưởng thao tác chính):', err));
 }
 // Modal xem/trả lời 1 thread — mở lại chính nó sau khi gửi trả lời để thấy tin nhắn mới ngay, giống cách
@@ -1995,7 +1991,7 @@ function openRequestThreadModal(req, obj, cfg){
           if(req.status==='moi' && !isPartnerAccount(u)) req.status = 'dang_xu_ly'; // nội bộ vừa trả lời -> tự chuyển khỏi "Mới"
           logActivity('update', cfg.entityLabel, `${cfg.nameOf(obj)}: có tin nhắn mới trong 1 yêu cầu`);
           saveState(); renderAll();
-          notifyAboutRequestMessage(obj, cfg, isPartnerAccount(u));
+          notifyAboutRequestMessage(obj, cfg, isPartnerAccount(u), u?u.name:'(không rõ)', text);
           openRequestThreadModal(req, obj, cfg); // mở lại để thấy ngay tin nhắn vừa gửi
         });
       }
@@ -2073,7 +2069,7 @@ function renderRequestsTab(c, cfg){
     logActivity('create', cfg.entityLabel, `${cfg.nameOf(obj)}: yêu cầu mới từ ${u?u.name:''}`);
     toast('Đã gửi yêu cầu');
     saveState(); renderAll();
-    notifyAboutRequestMessage(obj, cfg, partner);
+    notifyAboutRequestMessage(obj, cfg, partner, u?u.name:'(không rõ)', text);
   });
   if(!partner){
     document.getElementById('reqf_filter_obj').addEventListener('input', e=>{ filterObjText = e.target.value; drawReqList(); });
@@ -3058,14 +3054,13 @@ function renderNav(){
       html += `<div class="nav-group-items">`;
       while(i<tabs.length && tabs[i].section===section){
         const t = tabs[i];
-        const longCls = t.label.length>18 ? ' long' : '';
         const badge = t.id==='bh_transactions' ? insAlertBadgeHTML()
           : t.id==='bh_renewal' ? renewalAlertBadgeHTML()
           : t.id==='ncc_requests' ? requestBadgeHTML(scopedObjsFor('supplierId', state.suppliers))
           : t.id==='nh_requests' ? requestBadgeHTML(scopedObjsFor('bankId', state.banks))
           : t.id==='bh_requests' ? requestBadgeHTML(scopedObjsFor('insurerId', state.insurers))
           : '';
-        html += `<div class="nav-item${longCls} ${t.id===activeId?'active':''}" data-tab="${t.id}"><span class="dot"></span><span class="label-text">${t.label}</span>${t.comingSoon?'<span class="soon-tag">Sắp có</span>':''}${badge}</div>`;
+        html += `<div class="nav-item ${t.id===activeId?'active':''}" data-tab="${t.id}" title="${escAttr(t.label)}"><span class="dot"></span><span class="label-text">${t.label}</span>${t.comingSoon?'<span class="soon-tag">Sắp có</span>':''}${badge}</div>`;
         i++;
       }
       html += `</div>`;
