@@ -2686,11 +2686,21 @@ function renderAll(){
 function renderLoginScreen(){
   document.querySelector('.shell').style.display='none';
   let screen = document.getElementById('loginScreen');
+  if(screen && screen.dataset.built==='1'){
+    // Màn đăng nhập đã dựng xong rồi — KHÔNG dựng lại từ đầu nữa. Quan trọng: renderAll() giờ được gọi
+    // rất nhiều lần liên tiếp ngay lúc mở trang (mỗi bản ghi tải về qua child_added là 1 lần) — nếu dựng
+    // lại `screen.innerHTML` mỗi lần như vậy, sẽ XOÁ SẠCH chữ người dùng đang gõ dở (tên đăng nhập/mật
+    // khẩu), dẫn tới gõ thiếu/sai và báo "Không tìm thấy tài khoản". Không cần dựng lại để "thấy" dữ liệu
+    // mới — mảng state.accounts được cập nhật TẠI CHỖ (push trực tiếp vào đúng mảng đang có), nút Đăng
+    // nhập vẫn tự đọc đúng dữ liệu mới nhất tại thời điểm bấm, không cần vẽ lại màn hình mới thấy được.
+    return;
+  }
   if(!screen){
     screen = document.createElement('div');
     screen.id = 'loginScreen';
     document.body.appendChild(screen);
   }
+  screen.dataset.built = '1';
   screen.className = 'login-screen';
   const accounts = state.accounts;
   screen.innerHTML = `
