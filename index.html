@@ -2819,7 +2819,7 @@ function renderDashboard(c){
     state.banks.forEach(b=>{ nhRevenue += bankLoanSum(b.id, pfFrom, pfTo); nhComm += bankCommissionSum(b.id, pfFrom, pfTo); });
     state.bankTransactions.forEach(t=>{
       if(t.status!=='Đã giải ngân' || !periodFilterMatches(t.date)) return;
-      if(!activeBankPolicy(t.bankId, t.date)) nhMissingPolicy++;
+      if(!activeBankPolicy(t.bankId, t.date, t.product)) nhMissingPolicy++;
     });
     const nhReconList = state.bankReconciliations.filter(r=>periodFilterMatchesRange(r.fromDate, r.toDate));
     const nhReconTotals = nhReconList.reduce((acc,r)=>{
@@ -3202,7 +3202,7 @@ function wireCellEdits(tbl, arr, entityName, labelFn){
       if(el.classList.contains('pct')) el.value = round2(val*100);
       if(entityName) logActivity('update', entityName, `${labelFn?labelFn(item):item.id}: ${el.dataset.field} "${before}" → "${val}"`);
       saveState();
-      if(['name','supplierId','type','threshold','rate','startDate','endDate','confirmed'].includes(el.dataset.field)) renderAll();
+      if(['name','supplierId','type','threshold','rate','startDate','endDate','confirmed','product'].includes(el.dataset.field)) renderAll();
     });
   });
 }
@@ -3499,6 +3499,7 @@ function getFilteredTx(){
 }
 function renderTxTable(editable){
   const tbl = document.getElementById('txTable');
+  if(!tbl){ renderAll(); return; } // bảng đã bị thay bằng khối "trống" ở lần vẽ trước (0 chứng từ) -> vẽ lại cả trang để tạo lại bảng đúng cách, tránh lỗi khi lọc lúc bảng đang trống hoàn toàn
   const note = document.getElementById('txFilterNote');
   const unitFilter = (txUnitFilter||'').trim().toLowerCase();
   const supFilter = (txSupplierFilter||'').trim().toLowerCase();
@@ -3880,6 +3881,7 @@ function getFilteredRecon(){
 }
 function renderReconTable(editable){
   const tbl = document.getElementById('reconTable');
+  if(!tbl){ renderAll(); return; }
   const pf = partnerScopeFilter('supplierId');
   const allList = pf ? state.reconciliations.filter(pf) : state.reconciliations;
   const list = getFilteredRecon();
@@ -4064,14 +4066,25 @@ function monthLabel(mk){
 }
 /* Chính sách áp dụng cho 1 NH tại 1 ngày = dòng chính sách CÙNG THÁNG hoặc THÁNG GẦN NHẤT
    trước đó (chính sách tháng trước vẫn có hiệu lực cho tới khi có chính sách tháng mới hơn). */
-function activeBankPolicy(bankId, dateStr){
+// Tên gói vay mặc định — dùng cho mọi chính sách/hồ sơ ĐÃ CÓ TỪ TRƯỚC (chưa từng chọn gói vay), để không
+// mất/sai lệch dữ liệu cũ khi bổ sung tính năng "nhiều gói vay, mỗi gói 1 mức hoa hồng riêng".
+const DEFAULT_BANK_PRODUCT = 'Chưa phân loại';
+// Danh sách tên gói vay đã từng cấu hình cho đúng 1 ngân hàng — dùng cho ô chọn gói ở form Ghi nhận hồ sơ
+// vay và form Thêm chính sách (gợi ý, không giới hạn phải chọn đúng cái có sẵn — gõ tên mới là tự thêm gói).
+function bankProductsFor(bankId){
+  const set = new Set([DEFAULT_BANK_PRODUCT]);
+  state.bankPolicies.filter(p=>p.bankId===bankId).forEach(p=>{ set.add(p.product || DEFAULT_BANK_PRODUCT); });
+  return Array.from(set);
+}
+function activeBankPolicy(bankId, dateStr, product){
   const mk = monthKey(dateStr);
-  const rows = state.bankPolicies.filter(p=>p.bankId===bankId && p.month<=mk).sort((a,b)=> b.month.localeCompare(a.month));
+  const prod = product || DEFAULT_BANK_PRODUCT;
+  const rows = state.bankPolicies.filter(p=>p.bankId===bankId && (p.product||DEFAULT_BANK_PRODUCT)===prod && p.month<=mk).sort((a,b)=> b.month.localeCompare(a.month));
   return rows[0] || null;
 }
 function bankTxCommission(t){
   if(t.status!=='Đã giải ngân') return 0;
-  const pol = activeBankPolicy(t.bankId, t.date);
+  const pol = activeBankPolicy(t.bankId, t.date, t.product);
   if(!pol) return 0;
   return (Number(t.loanAmount)||0) * (Number(pol.commissionRate)||0);
 }
@@ -4224,6 +4237,9 @@ function renderBankPolicies(c){
       <div class="panel-body">
         <div class="form-grid">
           <div class="field"><label>Ngân hàng</label><select id="bpf_bank">${bankOptions}</select></div>
+          <div class="field"><label>Tên gói vay</label><input id="bpf_product" list="bpf_product_list" placeholder="VD: Gói mua xe mới" value="${escAttr(DEFAULT_BANK_PRODUCT)}">
+            <datalist id="bpf_product_list">${Array.from(new Set(state.bankPolicies.map(p=>p.product||DEFAULT_BANK_PRODUCT))).map(pr=>`<option value="${escAttr(pr)}">`).join('')}</datalist>
+          </div>
           <div class="field"><label>Tháng áp dụng</label><input id="bpf_month" type="month" value="${monthKey()}"></div>
           <div class="field"><label>Tỷ lệ vay tối đa (%)</label><input id="bpf_ratio" type="number" step="1" placeholder="85"></div>
           <div class="field"><label>Thời gian vay tối đa (năm)</label><input id="bpf_term" type="number" step="1" placeholder="7"></div>
@@ -4240,7 +4256,8 @@ function renderBankPolicies(c){
       </div>
     </div>` : lockedNote('Bạn đang xem ở chế độ chỉ đọc — chỉ Admin/Quản lý mới thêm/sửa chính sách.')}
     <div class="panel">
-      <div class="panel-head"><div><h2>Tất cả chính sách theo tháng</h2></div></div>
+      <div class="panel-head"><div><h2>Tất cả chính sách theo tháng</h2>
+      <div class="desc">1 ngân hàng có thể có nhiều gói vay song song trong cùng 1 tháng — mỗi gói 1 dòng, chỉ cần khác "Tên gói vay". Chính sách của 1 gói áp dụng từ tháng nhập cho tới khi có dòng chính sách tháng mới hơn của ĐÚNG gói đó.</div></div></div>
       <div class="panel-body flush"><div class="tbl-wrap"><table class="data" id="bankPolicyTable"></table></div></div>
     </div>
   `;
@@ -4251,6 +4268,7 @@ function renderBankPolicies(c){
       const month = document.getElementById('bpf_month').value || monthKey();
       const p = {
         id: uid('bp'), bankId, month,
+        product: (document.getElementById('bpf_product').value||'').trim() || DEFAULT_BANK_PRODUCT,
         maxLoanRatio: (Number(document.getElementById('bpf_ratio').value)||0)/100,
         maxLoanTerm: Number(document.getElementById('bpf_term').value)||0,
         promoRateY1: (Number(document.getElementById('bpf_promo').value)||0)/100,
@@ -4264,7 +4282,7 @@ function renderBankPolicies(c){
       };
       state.bankPolicies.push(p);
       const b = bankById(bankId);
-      logActivity('create','Chính sách CK (NH)', `Thêm chính sách ${monthLabel(month)} cho ${b?b.name:''}`);
+      logActivity('create','Chính sách CK (NH)', `Thêm chính sách "${p.product}" ${monthLabel(month)} cho ${b?b.name:''}`);
       toast('Đã thêm chính sách '+monthLabel(month));
       renderAll();
     });
@@ -4279,10 +4297,17 @@ function renderBankPolicies(c){
     tbl.outerHTML = `<div class="empty"><div class="big">Chưa có chính sách nào</div>${editable?'Thêm chính sách ở form phía trên.':''}</div>`; return;
   }
   const dis = editable?'':'disabled';
-  const sorted = scopedPolicies.slice().sort((a,b)=> b.month.localeCompare(a.month));
+  const sorted = scopedPolicies.slice().sort((a,b)=>{
+    const ba = bankById(a.bankId), bb = bankById(b.bankId);
+    const bankCmp = (ba?ba.name:'').localeCompare(bb?bb.name:'');
+    if(bankCmp!==0) return bankCmp;
+    const prodCmp = (a.product||DEFAULT_BANK_PRODUCT).localeCompare(b.product||DEFAULT_BANK_PRODUCT);
+    if(prodCmp!==0) return prodCmp;
+    return b.month.localeCompare(a.month);
+  });
   tbl.innerHTML = `
     <thead><tr>
-      <th class="wrap">Ngân hàng</th><th>Tháng</th><th class="num">Tỷ lệ vay tối đa</th><th class="num">TG vay tối đa</th>
+      <th class="wrap">Ngân hàng</th><th class="wrap">Gói vay</th><th>Tháng</th><th class="num">Tỷ lệ vay tối đa</th><th class="num">TG vay tối đa</th>
       <th class="num">LS ưu đãi năm đầu</th><th class="num">Biên độ sau ưu đãi</th><th class="num">Phí trả trước hạn</th>
       <th class="num">Hoa hồng (trước thuế)</th><th class="wrap">Phê duyệt</th><th>Giải ngân</th><th>Giấy tờ</th><th class="wrap">Đánh giá</th><th></th>
     </tr></thead>
@@ -4290,6 +4315,7 @@ function renderBankPolicies(c){
       const b = bankById(p.bankId);
       return `<tr>
         <td class="wrap">${b?escHtml(b.name):'<em>(đã xoá)</em>'}</td>
+        <td class="wrap"><input class="cell-edit" data-field="product" data-id="${p.id}" value="${escAttr(p.product||DEFAULT_BANK_PRODUCT)}" ${dis}></td>
         <td>${monthLabel(p.month)}</td>
         <td class="num"><input class="cell-edit num pct" data-field="maxLoanRatio" data-id="${p.id}" type="number" step="1" value="${round2(p.maxLoanRatio*100)}" ${dis} style="width:60px"></td>
         <td class="num"><input class="cell-edit num" data-field="maxLoanTerm" data-id="${p.id}" type="number" step="1" value="${p.maxLoanTerm}" ${dis} style="width:52px"> năm</td>
@@ -4305,7 +4331,7 @@ function renderBankPolicies(c){
       </tr>`;
     }).join('')}</tbody>`;
   if(editable){
-    wireCellEdits(tbl, state.bankPolicies, 'Chính sách CK (NH)', p=>{ const b=bankById(p.bankId); return `${b?b.name:''} ${monthLabel(p.month)}`; });
+    wireCellEdits(tbl, state.bankPolicies, 'Chính sách CK (NH)', p=>{ const b=bankById(p.bankId); return `${b?b.name:''} — ${p.product||DEFAULT_BANK_PRODUCT} — ${monthLabel(p.month)}`; });
     tbl.querySelectorAll('[data-del]').forEach(btn=>{
       btn.addEventListener('click', ()=>{
         const p = state.bankPolicies.find(x=>x.id===btn.dataset.del);
@@ -4360,6 +4386,9 @@ function renderBankTransactions(c){
           <div class="field"><label>Ngân hàng</label><input id="btf_bank" list="btf_bank_list" placeholder="Chọn ngân hàng">
             <datalist id="btf_bank_list">${state.banks.map(b=>`<option value="${escAttr(b.name)}">`).join('')}</datalist>
           </div>
+          <div class="field"><label>Gói vay</label><input id="btf_product" list="btf_product_list" placeholder="VD: Gói mua xe mới" value="${escAttr(DEFAULT_BANK_PRODUCT)}">
+            <datalist id="btf_product_list"></datalist>
+          </div>
           <div class="field"><label>Khách hàng</label><input id="btf_customer" placeholder="Tên khách hàng"></div>
           <div class="field"><label>SĐT khách hàng</label><input id="btf_phone" type="tel" placeholder="09xxxxxxxx"></div>
           <div class="field"><label>Xe (biển số / mẫu xe)</label><input id="btf_vehicle" placeholder="VD: 29A-123.45 · Honda SH"></div>
@@ -4369,7 +4398,7 @@ function renderBankTransactions(c){
           <div class="field" style="grid-column:1/-1"><label>Ghi chú</label><input id="btf_note" placeholder="Ghi chú khác..."></div>
           <button class="btn btn-primary" id="addBankTxBtn">+ Ghi nhận hồ sơ</button>
         </div>
-        <div class="helper">Chỉ hồ sơ trạng thái <b>"Đã giải ngân"</b> mới được tính Hoa hồng, theo đúng chính sách của ngân hàng đó tại tháng giải ngân. Nếu ngân hàng chưa có chính sách của tháng đó (hoặc tháng trước gần nhất), hệ thống báo "Chưa có chính sách" và Hoa hồng ghi 0đ.</div>
+        <div class="helper">Chỉ hồ sơ trạng thái <b>"Đã giải ngân"</b> mới được tính Hoa hồng, theo đúng chính sách của ngân hàng đó + đúng <b>Gói vay</b> đã chọn, tại tháng giải ngân. Nếu ngân hàng chưa có chính sách của đúng gói + tháng đó (hoặc tháng trước gần nhất), hệ thống báo "Chưa có chính sách" và Hoa hồng ghi 0đ. Để trống Gói vay = tính theo "${DEFAULT_BANK_PRODUCT}".</div>
       </div>
     </div>` : lockedNote('Bạn đang xem ở chế độ chỉ đọc — chỉ Admin/Quản lý/Nhân viên mới ghi nhận hồ sơ vay.')}
     <div class="panel">
@@ -4390,6 +4419,14 @@ function renderBankTransactions(c){
   });
   if(editable){
     attachMoneyFormatting(document.getElementById('btf_amount'));
+    const btfBankInput = document.getElementById('btf_bank');
+    const btfProductList = document.getElementById('btf_product_list');
+    function refreshBtfProductList(){
+      const bank = state.banks.find(b=>b.name.trim().toLowerCase()===btfBankInput.value.trim().toLowerCase());
+      btfProductList.innerHTML = (bank ? bankProductsFor(bank.id) : [DEFAULT_BANK_PRODUCT]).map(pr=>`<option value="${escAttr(pr)}">`).join('');
+    }
+    btfBankInput.addEventListener('input', refreshBtfProductList);
+    refreshBtfProductList();
     document.getElementById('addBankTxBtn').addEventListener('click', ()=>{
       const bankName = document.getElementById('btf_bank').value;
       const bank = state.banks.find(b=>b.name.trim().toLowerCase()===bankName.trim().toLowerCase());
@@ -4406,7 +4443,8 @@ function renderBankTransactions(c){
       }
       state.bankTransactions.push({
         id: uid('bt'), date: btxDate,
-        unit, bankId: bank.id, customer: document.getElementById('btf_customer').value.trim(),
+        unit, bankId: bank.id, product: (document.getElementById('btf_product').value||'').trim() || DEFAULT_BANK_PRODUCT,
+        customer: document.getElementById('btf_customer').value.trim(),
         phone: document.getElementById('btf_phone').value.trim(),
         vehicle: document.getElementById('btf_vehicle').value.trim(),
         refCode: document.getElementById('btf_refcode').value.trim(),
@@ -4416,7 +4454,7 @@ function renderBankTransactions(c){
       document.getElementById('btf_amount').value=''; document.getElementById('btf_customer').value='';
       document.getElementById('btf_phone').value=''; document.getElementById('btf_vehicle').value='';
       document.getElementById('btf_refcode').value=''; document.getElementById('btf_note').value='';
-      logActivity('create','Doanh số (NH)', `${unit} → ${bank.name}: ${fmt(amount)}đ (${status})`);
+      logActivity('create','Doanh số (NH)', `${unit} → ${bank.name} (${document.getElementById('btf_product').value.trim()||DEFAULT_BANK_PRODUCT}): ${fmt(amount)}đ (${status})`);
       toast('Đã ghi nhận hồ sơ vay');
       bankTxUnitFilter = unit; bankTxBankFilter = bank.name;
       renderAll();
@@ -4427,7 +4465,7 @@ function renderBankTransactions(c){
     const rows = list.map(t=>{
       const b = bankById(t.bankId);
       return {
-        'Ngày': t.date, 'Đơn vị': t.unit, 'Ngân hàng': b?b.name:'(đã xoá)', 'Mã hồ sơ NH': t.refCode||'',
+        'Ngày': t.date, 'Đơn vị': t.unit, 'Ngân hàng': b?b.name:'(đã xoá)', 'Gói vay': t.product||DEFAULT_BANK_PRODUCT, 'Mã hồ sơ NH': t.refCode||'',
         'Khách hàng': t.customer||'', 'SĐT': t.phone||'', 'Biển số/xe': t.vehicle||'',
         'Số tiền vay': Number(t.loanAmount)||0, 'Trạng thái': t.status||'',
       };
@@ -4458,7 +4496,7 @@ function getFilteredBankTx(){
 }
 function renderBankTxTable(editable){
   const tbl = document.getElementById('btxTable');
-  if(!tbl) return;
+  if(!tbl){ renderAll(); return; } // tương tự renderTxTable — bảng đã bị thay bằng khối "trống", vẽ lại cả trang để phục hồi đúng
   const note = document.getElementById('btxFilterNote');
   const unitFilter = (bankTxUnitFilter||'').trim().toLowerCase();
   const bankFilter = (bankTxBankFilter||'').trim().toLowerCase();
@@ -4494,11 +4532,11 @@ function renderBankTxTable(editable){
     <tbody>${sorted.map(t=>{
       const b = bankById(t.bankId);
       const creator = state.accounts.find(a=>a.id===t.createdBy);
-      const pol = t.status==='Đã giải ngân' ? activeBankPolicy(t.bankId, t.date) : null;
+      const pol = t.status==='Đã giải ngân' ? activeBankPolicy(t.bankId, t.date, t.product) : null;
       const comm = bankTxCommission(t);
       const commCell = t.status!=='Đã giải ngân'
         ? '<span class="comm-cell zero">—</span>'
-        : (pol ? `<span class="comm-cell has-value">${fmt(comm)}</span>` : `<span class="comm-cell warn-empty" title="Chưa có chính sách cho ${monthLabel(monthKey(t.date))}">0đ · chưa có CS</span>`);
+        : (pol ? `<span class="comm-cell has-value">${fmt(comm)}</span>` : `<span class="comm-cell warn-empty" title="Chưa có chính sách gói ${escAttr(t.product||DEFAULT_BANK_PRODUCT)} cho ${monthLabel(monthKey(t.date))}">0đ · chưa có CS</span>`);
       const lockR = lockingReconOf(t, state.bankReconciliations, 'bankId');
       const lockedForMe = !!lockR && currentRole()!=='Admin';
       const dis = (editable && !lockedForMe)?'':'disabled';
@@ -4510,6 +4548,8 @@ function renderBankTxTable(editable){
               ? `<input class="cell-edit mini-field" data-field="date" data-id="${t.id}" type="date" value="${t.date}" ${dis}>`
               : `<div class="mini-field">${new Date(t.date+'T00:00:00').toLocaleDateString('vi-VN')}</div>`}
             <div class="meta-line">${escHtml(t.unit)} → ${b?escHtml(b.name):'<em>(đã xoá)</em>'} ${lockIconHTML(lockR,'nh')}</div>
+            <input class="cell-edit mini-field muted" data-field="product" data-id="${t.id}" value="${escAttr(t.product||DEFAULT_BANK_PRODUCT)}" ${dis} placeholder="Gói vay" list="btxRowProductList_${t.id}">
+            <datalist id="btxRowProductList_${t.id}">${bankProductsFor(t.bankId).map(pr=>`<option value="${escAttr(pr)}">`).join('')}</datalist>
             ${editable
               ? `<input class="cell-edit mini-field muted" data-field="refCode" data-id="${t.id}" value="${escAttr(t.refCode||'')}" ${dis} placeholder="Mã hồ sơ NH">`
               : (t.refCode?`<div class="meta-line">Mã HS: ${escAttr(t.refCode)}</div>`:'')}
@@ -4672,6 +4712,7 @@ function getFilteredBankRecon(){
 }
 function renderBankReconTable(editable){
   const tbl = document.getElementById('bankReconTable');
+  if(!tbl){ renderAll(); return; }
   const note = document.getElementById('bankReconFilterNote');
   if(note){
     const pf = partnerScopeFilter('bankId');
@@ -5415,6 +5456,7 @@ function getFilteredInsTx(){
 }
 function renderInsTxTable(editable){
   const tbl = document.getElementById('itxTable');
+  if(!tbl){ renderAll(); return; } // tương tự renderTxTable — bảng đã bị thay bằng khối "trống", vẽ lại cả trang để phục hồi đúng
   const note = document.getElementById('itxFilterNote');
   const unitFilter = (insTxUnitFilter||'').trim().toLowerCase();
   const insFilter = (insTxInsurerFilter||'').trim().toLowerCase();
@@ -5795,6 +5837,7 @@ function getFilteredInsRecon(){
 }
 function renderInsReconTable(editable){
   const tbl = document.getElementById('insReconTable');
+  if(!tbl){ renderAll(); return; }
   const note = document.getElementById('insReconFilterNote');
   const list = getFilteredInsRecon();
   if(note){
