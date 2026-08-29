@@ -1981,9 +1981,12 @@ function openRequestThreadModal(req, obj, cfg){
         });
       }
       if(canWrite){
-        body.querySelector('#reqReplyBtn').addEventListener('click', ()=>{
+        const replyBtn = body.querySelector('#reqReplyBtn');
+        replyBtn.addEventListener('click', ()=>{
+          if(replyBtn.disabled) return; // chặn bấm nhiều lần liên tiếp tạo trùng tin nhắn
           const text = body.querySelector('#reqReplyText').value.trim();
           if(!text){ toast('Nhập nội dung trả lời trước'); return; }
+          replyBtn.disabled = true; replyBtn.textContent = 'Đang gửi...';
           const u = currentUser();
           const now = new Date().toISOString();
           req.messages.push({ id: uid('msg'), text, authorName: u?u.name:'(không rõ)', authorRole: role, at: now });
@@ -1992,7 +1995,7 @@ function openRequestThreadModal(req, obj, cfg){
           logActivity('update', cfg.entityLabel, `${cfg.nameOf(obj)}: có tin nhắn mới trong 1 yêu cầu`);
           saveState(); renderAll();
           notifyAboutRequestMessage(obj, cfg, isPartnerAccount(u), u?u.name:'(không rõ)', text);
-          openRequestThreadModal(req, obj, cfg); // mở lại để thấy ngay tin nhắn vừa gửi
+          openRequestThreadModal(req, obj, cfg); // mở lại để thấy ngay tin nhắn vừa gửi (nút ở modal mới đã tự về trạng thái bình thường)
         });
       }
     });
@@ -2055,11 +2058,14 @@ function renderRequestsTab(c, cfg){
       <div class="panel-body flush" id="reqListBox"></div>
     </div>
   `;
-  document.getElementById('reqSendBtn').addEventListener('click', ()=>{
+  const sendBtn = document.getElementById('reqSendBtn');
+  sendBtn.addEventListener('click', ()=>{
+    if(sendBtn.disabled) return; // chặn bấm nhiều lần liên tiếp tạo trùng yêu cầu
     const text = document.getElementById('reqf_text').value.trim();
     if(!text){ toast('Nhập nội dung trước'); return; }
     const obj = partner ? scopedObjs[0] : scopedObjs.find(o=>o.id===document.getElementById('reqf_obj').value);
     if(!obj){ toast('Chưa chọn được '+cfg.entityShort); return; }
+    sendBtn.disabled = true; sendBtn.textContent = 'Đang gửi...';
     if(!obj.requests) obj.requests = [];
     const now = new Date().toISOString();
     obj.requests.push({
@@ -2068,7 +2074,7 @@ function renderRequestsTab(c, cfg){
     });
     logActivity('create', cfg.entityLabel, `${cfg.nameOf(obj)}: yêu cầu mới từ ${u?u.name:''}`);
     toast('Đã gửi yêu cầu');
-    saveState(); renderAll();
+    saveState(); renderAll(); // renderAll() vẽ lại toàn trang -> nút mới tự về trạng thái bình thường, không cần tự bật lại disabled=false
     notifyAboutRequestMessage(obj, cfg, partner, u?u.name:'(không rõ)', text);
   });
   if(!partner){
