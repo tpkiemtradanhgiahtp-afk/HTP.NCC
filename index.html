@@ -1504,24 +1504,43 @@ function fileToBase64(file){
 // subfolder: tên thư mục con muốn gộp file vào bên trong thư mục gốc đã cấu hình ở script (VD tên NCC/NH/BH)
 // — script Apps Script mẫu sẽ tự tạo thư mục con này nếu chưa có, giúp hồ sơ không bị dồn hết vào 1 chỗ.
 //
-// LƯU Ý KỸ THUẬT: KHÔNG dùng fetch() thẳng tới URL Apps Script — trình duyệt sẽ báo lỗi CORS
-// "Failed to fetch" ở phần lớn trường hợp (giới hạn đã biết của Apps Script khi gọi từ 1 domain khác,
-// không phải lỗi cấu hình). Thay vào đó dùng 1 <form> ẩn POST vào 1 <iframe> ẩn (giống submit form bình
-// thường, không bị CORS chặn), script phía Google trả về 1 trang HTML nhỏ gọi postMessage() để gửi kết
-// quả ngược lại cho app đang lắng nghe — đây là cách né CORS chuẩn cho đúng tình huống Apps Script.
+// LƯU Ý KỸ THUẬT: Apps Script Web App đôi khi chặn được fetch() thẳng do CORS ("Failed to fetch"), đôi khi
+// lại chặn được cách né CORS bằng <form>+<iframe>+postMessage do chính Google tự lồng thêm iframe/áp chính
+// sách khung riêng ở hạ tầng của họ (nằm ngoài khả năng cấu hình từ phía script) — tuỳ theo cách deploy,
+// tài khoản Google, thời điểm... mà 1 trong 2 cách có thể không hoạt động dù cách kia vẫn ổn. Để không phải
+// đoán mò, app TỰ THỬ fetch() trước (nhanh, đơn giản); nếu lỗi/timeout mới thử tiếp bằng <iframe> ẩn.
 let driveUploadReqSeq = 0;
 // Hàm gửi dùng CHUNG cho mọi loại request tới Apps Script (upload file, gửi email...) — chỉ khác nhau ở
 // payload gửi lên. Luôn thêm sẵn "secret" — nơi gọi không cần tự thêm.
 function postToScript(payload){
+  if(!driveUploadConfigured()) return Promise.reject(new Error('Chưa cấu hình Google Apps Script — vào Cài đặt (Admin) để thiết lập trước.'));
+  const reqId = 'gsPost_'+(++driveUploadReqSeq)+'_'+Date.now();
+  const bodyStr = JSON.stringify({ secret: state.driveUploadSecret||'', reqId, ...payload });
+  return postViaFetch(bodyStr).catch(fetchErr=>{
+    console.warn('postToScript: fetch() thất bại, thử lại bằng form ẩn:', fetchErr);
+    return postViaHiddenForm(bodyStr, reqId);
+  });
+}
+// Cách 1 — fetch() thẳng, dùng Content-Type: text/plain để tránh bước "preflight" (OPTIONS) mà Apps
+// Script không xử lý tốt. Đây là cách đơn giản, nhanh nhất khi hoạt động được.
+function postViaFetch(bodyStr){
+  return fetch(state.driveUploadUrl, { method:'POST', headers:{'Content-Type':'text/plain;charset=utf-8'}, body: bodyStr })
+    .then(res=> res.json())
+    .then(data=>{
+      if(!data || typeof data.ok==='undefined') throw new Error('Phản hồi không hợp lệ từ Apps Script.');
+      if(!data.ok) throw new Error(data.error || 'Yêu cầu thất bại — kiểm tra lại URL Web App/Mã bí mật ở Cài đặt.');
+      return data;
+    });
+}
+// Cách 2 (dự phòng) — <form> ẩn POST vào 1 <iframe> ẩn, script phía Google trả về 1 trang HTML nhỏ gọi
+// postMessage() để gửi kết quả ngược lại. Chỉ dùng khi fetch() ở trên thất bại.
+function postViaHiddenForm(bodyStr, reqId){
   return new Promise((resolve, reject)=>{
-    if(!driveUploadConfigured()){ reject(new Error('Chưa cấu hình Google Apps Script — vào Cài đặt (Admin) để thiết lập trước.')); return; }
-    const reqId = 'gsPost_'+(++driveUploadReqSeq)+'_'+Date.now();
     const iframe = document.createElement('iframe');
     iframe.name = reqId; iframe.style.display = 'none';
     const form = document.createElement('form');
     form.method = 'POST'; form.action = state.driveUploadUrl; form.target = reqId; form.style.display = 'none';
-    const input = document.createElement('input'); input.type = 'hidden'; input.name = 'payload';
-    input.value = JSON.stringify({ secret: state.driveUploadSecret||'', reqId, ...payload });
+    const input = document.createElement('input'); input.type = 'hidden'; input.name = 'payload'; input.value = bodyStr;
     form.appendChild(input);
     document.body.appendChild(iframe);
     document.body.appendChild(form);
