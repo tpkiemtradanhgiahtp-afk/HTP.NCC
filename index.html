@@ -815,7 +815,14 @@ function recordFieldKey(branch, field){ return branch+'/'+field; }
 // mục trong Thùng rác dùng .trashId (không có field .id ở cấp ngoài cùng).
 function recordKeyOf(item){ return item && (item.id!==undefined ? item.id : item.trashId); }
 
-let fb = { status:'disconnected', db:null, refs:{}, unsubs:{}, error:null, config:null }; // 'disconnected'|'connecting'|'connected'|'error'
+let fb = { status:'disconnected', db:null, refs:{}, unsubs:{}, loaded:{}, error:null, config:null }; // 'disconnected'|'connecting'|'connected'|'error'
+// fb.refs[branch] = true NGAY khi bắt đầu subscribe (chặn gọi trùng) — nhưng dữ liệu THẬT của nhánh đó
+// (state[field] thay từ seed sang dữ liệu Firebase thật, cùng bộ nhớ "đã lưu lần trước" lastSavedRecords)
+// chỉ xong SAU một loạt await bên trong subscribeBranch(). fb.loaded[branch] chỉ được bật lên true ở CUỐI
+// subscribeBranch(), khi mọi field của nhánh đã tải xong hoàn toàn — dùng để saveState() biết nhánh nào
+// AN TOÀN để so sánh/ghi lên Firebase, tránh ghi nhầm dữ liệu mẫu (seed) đang tạm nằm trong state khi
+// renderAll()/saveState() lỡ chạy đúng vào khoảng đang tải dở (bug cũ: mỗi lần đăng nhập lại ghi thêm
+// đúng lô chính sách mẫu ban đầu vì lúc đó fb.refs[branch] đã true nhưng dữ liệu thật + known map chưa kịp có).
 // Field nào của mỗi nhánh là "tập hợp bản ghi" (khớp theo id) — được tách thành node con riêng trên
 // Firebase, lắng nghe bằng child_added/child_changed/child_removed để CHỈ tải đúng bản ghi vừa đổi, KHÔNG
 // tải lại nguyên khối mỗi khi có ai đó thao tác — quan trọng khi dữ liệu tích luỹ nhiều theo thời gian
@@ -831,7 +838,7 @@ const BRANCH_RECORD_FIELDS = {
 const BRANCH_META_FIELDS = {
   ncc:    ['nextSupplierNo','monitoring','reportDate'],
   nh:     ['nextBankNo'],
-  bh:     ['insAllocAlertThreshold','nextInsNo'],
+  bh:     ['insAllocAlertThreshold','nextInsNo','insRenewalAlertDays'],
   shared: ['units'],
 };
 // Toàn bộ field của 1 nhánh (gộp cả 2 loại trên) — dùng ở những chỗ chỉ cần biết "nhánh này có field gì"
@@ -1073,10 +1080,14 @@ async function subscribeBranch(branch){
       fieldRef.off('child_removed', onRemoved);
     });
   }));
+  // Chỉ đúng lúc này — SAU khi meta + MỌI field bản ghi của nhánh đã tải xong dữ liệu thật (state[field]
+  // đã thay từ seed sang dữ liệu Firebase, known map đã có đủ) — mới đánh dấu nhánh này an toàn để ghi.
+  fb.loaded[branch] = true;
 }
 function unsubscribeBranch(branch){
   if(fb.unsubs[branch]){ fb.unsubs[branch].forEach(fn=>fn()); delete fb.unsubs[branch]; }
   delete fb.refs[branch];
+  delete fb.loaded[branch];
   // Xoá luôn dữ liệu nhánh đó khỏi bộ nhớ (không chỉ ngừng lắng nghe) — quan trọng khi dùng chung 1 máy/
   // trình duyệt: nếu Admin đăng xuất rồi 1 tài khoản bị giới hạn module hơn đăng nhập vào (không tải lại
   // trang), mà không xoá thì dữ liệu module cũ (Admin từng tải) vẫn nằm sẵn trong bộ nhớ của người sau.
@@ -1171,7 +1182,7 @@ async function connectFirebase(config){
 }
 function disconnectFirebase(){
   Object.keys(fb.unsubs).forEach(unsubscribeBranch);
-  fb = {status:'disconnected', db:null, refs:{}, unsubs:{}, error:null, config:null};
+  fb = {status:'disconnected', db:null, refs:{}, unsubs:{}, loaded:{}, error:null, config:null};
 }
 
 /* Cấu hình Firebase mặc định đi kèm sẵn với app (dự án "htp-ncc" do bạn cung cấp).
@@ -1303,7 +1314,12 @@ function saveState(){
       // MẤT dữ liệu thật của module đó trên Firebase.
       const updates = {};
       let anyChange = false;
+      // CHỈ xử lý nhánh đã tải xong THẬT SỰ (fb.loaded[branch]===true) — fb.refs[branch] có thể đã là
+      // true từ sớm (đang tải dở) trong khi state[field] của nhánh đó vẫn còn là dữ liệu mẫu (seed); nếu
+      // không chặn ở đây, saveState() lỡ chạy đúng lúc đó sẽ tưởng toàn bộ dữ liệu mẫu là "bản ghi mới"
+      // và ghi đè/nhân bản lên Firebase (bug cũ: mỗi lần đăng nhập lại thêm đúng lô chính sách mẫu ban đầu).
       for(const branch of Object.keys(fb.refs)){
+        if(!fb.loaded[branch]) continue;
         // Phần "meta" (field nhỏ, ít đổi: nextSupplierNo, reportDate, units...) — vẫn so sánh + ghi gộp
         // như 1 khối nhỏ, không cần tối ưu theo bản ghi vì hiếm khi đổi và không phình to theo thời gian.
         const metaObj = {};
@@ -1835,7 +1851,7 @@ function seedState(){
   suppliers.forEach(s=> monitoring[s.id] = 'Cần xác nhận');
 
   const accounts = [
-    {id:'u_admin', name:'Quản trị viên', username:'admin', role:'Admin', unit:'', password: ADMIN_PASSWORD, createdAt: todayISO()},
+    {id:'u_admin', name:'Quản trị viên', username:'duongld', role:'Admin', unit:'', password: ADMIN_PASSWORD, createdAt: todayISO()},
   ];
 
   /* ---- Ngân hàng (đối tác cho vay) — khớp bảng chính sách Tháng 5/2026 ---- */
@@ -1932,6 +1948,7 @@ function seedState(){
     insurers, insRates, insTransactions: [], insReconciliations: [],
     insMonthlyRevenue: [], // {id, insurerId, month:'YYYY-MM', serviceAmount, note, updatedBy, updatedAt} — DT dịch vụ/sửa chữa nhập tay theo hãng theo tháng
     insAllocAlertThreshold: 0.05, // ngưỡng cảnh báo chênh lệch (Thực tế − Đề xuất tỷ lệ bán), dạng phân số — chỉ Admin sửa được
+    insRenewalAlertDays: 45, // hồ sơ còn ≤ số ngày này tới mốc tái tục -> tính là "Sắp đến hạn" — chỉ Admin sửa được
     nextInsNo: insurers.length+1,
   };
 }
@@ -2208,6 +2225,64 @@ function purgeTrashEntry(trashId){
     if(idx!==-1){ arr.splice(idx,1); recentlyDeletedIds.add(trashId); return; }
   }
 }
+
+/* ---------------------------- Dò & dọn dữ liệu trùng lặp ----------------------------
+   Do lỗi đồng bộ Firebase cũ (đã sửa), 1 số bản ghi có thể bị nhân bản thành nhiều dòng NỘI DUNG GIỐNG
+   HỆT NHAU, chỉ khác đúng field .id (mã nội bộ) — đây là dấu hiệu chắc chắn của lỗi kỹ thuật, không phải
+   2 bản ghi thật khác nhau tình cờ giống nhau (2 bản ghi thật, dù giống tên, hầu như không bao giờ giống
+   TUYỆT ĐỐI mọi field khác — ngày tháng, số tiền, ghi chú...). Công cụ này CHỈ QUÉT, không tự xoá gì —
+   Admin phải bấm xác nhận riêng, và bản ghi thừa được XOÁ MỀM (vào Thùng rác, khôi phục lại được). */
+const DEDUP_TARGETS = [
+  {field:'suppliers', label:'NCC', entity:'NCC'},
+  {field:'policies', label:'Chính sách CK (NCC)', entity:'Chính sách CK'},
+  {field:'transactions', label:'Doanh số (NCC)', entity:'Doanh số'},
+  {field:'reconciliations', label:'Đối soát CK (NCC)', entity:'Đối soát CK'},
+  {field:'banks', label:'Ngân hàng', entity:'NH'},
+  {field:'bankPolicies', label:'Chính sách CK (NH)', entity:'Chính sách CK (NH)'},
+  {field:'bankTransactions', label:'Doanh số (NH)', entity:'Doanh số (NH)'},
+  {field:'bankReconciliations', label:'Đối soát CK (NH)', entity:'Đối soát CK (NH)'},
+  {field:'insurers', label:'NCC bảo hiểm', entity:'NCC Bảo hiểm'},
+  {field:'insRates', label:'Biểu phí Bảo hiểm', entity:'Biểu phí Bảo hiểm'},
+  {field:'insTransactions', label:'Doanh số (Bảo hiểm)', entity:'Doanh số (Bảo hiểm)'},
+  {field:'insReconciliations', label:'Đối soát CK (Bảo hiểm)', entity:'Đối soát CK (Bảo hiểm)'},
+];
+// Nhóm các bản ghi có nội dung GIỐNG HỆT NHAU (bỏ qua field .id) trong 1 mảng — trả về danh sách nhóm có
+// từ 2 bản ghi trở lên, mỗi nhóm {keep, extra} — keep là bản ghi giữ lại (ưu tiên tạo sớm nhất nếu có
+// createdAt), extra là các bản ghi THỪA nên xoá.
+function findDuplicateGroups(arr){
+  const groups = new Map();
+  (arr||[]).forEach(item=>{
+    if(!item || typeof item!=='object') return;
+    // Bỏ qua .id (mã nội bộ, luôn khác nhau) VÀ .createdAt khi so khớp nội dung — bản ghi trùng do lỗi
+    // đồng bộ có thể bị tạo lại ở các thời điểm khác nhau (createdAt khác) dù mọi field nghiệp vụ khác
+    // giống hệt nhau; .createdAt vẫn được dùng riêng để chọn bản ghi GIỮ LẠI (ưu tiên bản tạo sớm nhất).
+    const {id, createdAt, ...rest} = item;
+    const key = JSON.stringify(rest);
+    if(!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(item);
+  });
+  const result = [];
+  groups.forEach(items=>{
+    if(items.length<2) return;
+    const sorted = items.slice().sort((a,b)=>{
+      if(a.createdAt && b.createdAt) return a.createdAt.localeCompare(b.createdAt);
+      return 0;
+    });
+    result.push({ keep: sorted[0], extra: sorted.slice(1) });
+  });
+  return result;
+}
+function scanAllDuplicates(){
+  return DEDUP_TARGETS.map(t=>{
+    const groups = findDuplicateGroups(state[t.field]);
+    const extraCount = groups.reduce((s,g)=>s+g.extra.length, 0);
+    return {...t, groups, extraCount};
+  }).filter(r=>r.extraCount>0);
+}
+function removeDuplicateGroup(field, entity, group){
+  group.extra.forEach(item=>{ softDelete(field, item, entity); });
+}
+
 // Gộp Thùng rác từ cả 4 nhánh để hiển thị — mới xoá gần đây nhất trước.
 function combinedTrash(){
   return [...(state.trashNcc||[]), ...(state.trashNh||[]), ...(state.trashBh||[]), ...(state.trashShared||[])]
@@ -2401,6 +2476,7 @@ const TABS = [
   {id:'bh_transactions', label:'Doanh số - Đối soát CK - Phân bổ', section:'Bảo hiểm', module:'bh', partnerVisible:true},
   {id:'bh_allocation', label:'Phân bổ đơn vị', section:'Bảo hiểm', hidden:true, parent:'bh_transactions', module:'bh', partnerVisible:true},
   {id:'bh_reconcile', label:'Đối soát CK', section:'Bảo hiểm', hidden:true, parent:'bh_transactions', module:'bh', partnerVisible:true},
+  {id:'bh_renewal', label:'Lịch tái tục', section:'Bảo hiểm', module:'bh'},
   {id:'accounts', label:'Quản trị tài khoản', section:'Hệ thống', roles:['Admin']},
   {id:'activityLog', label:'Nhật ký hoạt động', section:'Hệ thống', roles:['Admin']},
   {id:'settings', label:'Cài đặt', section:'Hệ thống', roles:['Admin']},
@@ -2543,7 +2619,7 @@ function renderNav(){
       while(i<tabs.length && tabs[i].section===section){
         const t = tabs[i];
         const longCls = t.label.length>18 ? ' long' : '';
-        const badge = t.id==='bh_transactions' ? insAlertBadgeHTML() : '';
+        const badge = t.id==='bh_transactions' ? insAlertBadgeHTML() : t.id==='bh_renewal' ? renewalAlertBadgeHTML() : '';
         html += `<div class="nav-item${longCls} ${t.id===activeId?'active':''}" data-tab="${t.id}"><span class="dot"></span><span class="label-text">${t.label}</span>${t.comingSoon?'<span class="soon-tag">Sắp có</span>':''}${badge}</div>`;
         i++;
       }
@@ -2693,6 +2769,7 @@ function renderAll(){
   else if(activeTab==='bh_transactions') renderInsTransactions(c);
   else if(activeTab==='bh_allocation') renderInsAllocation(c);
   else if(activeTab==='bh_reconcile') renderInsReconcile(c);
+  else if(activeTab==='bh_renewal') renderInsRenewal(c);
   else if(activeTab==='accounts') renderAccounts(c);
   else if(activeTab==='activityLog') renderActivityLog(c);
   else if(activeTab==='settings') renderSettings(c);
@@ -2713,8 +2790,9 @@ function renderLoginScreen(){
     // rất nhiều lần liên tiếp ngay lúc mở trang (mỗi bản ghi tải về qua child_added là 1 lần) — nếu dựng
     // lại `screen.innerHTML` mỗi lần như vậy, sẽ XOÁ SẠCH chữ người dùng đang gõ dở (tên đăng nhập/mật
     // khẩu), dẫn tới gõ thiếu/sai và báo "Không tìm thấy tài khoản". Không cần dựng lại để "thấy" dữ liệu
-    // mới — mảng state.accounts được cập nhật TẠI CHỖ (push trực tiếp vào đúng mảng đang có), nút Đăng
-    // nhập vẫn tự đọc đúng dữ liệu mới nhất tại thời điểm bấm, không cần vẽ lại màn hình mới thấy được.
+    // mới — nút Đăng nhập đọc TRỰC TIẾP state.accounts (không bắt biến riêng) ngay tại thời điểm bấm, nên
+    // luôn thấy đúng dữ liệu tài khoản mới nhất dù state.accounts có bị thay hẳn bằng mảng mới hay không,
+    // không cần vẽ lại màn hình mới thấy được.
     return;
   }
   if(!screen){
@@ -2724,7 +2802,6 @@ function renderLoginScreen(){
   }
   screen.dataset.built = '1';
   screen.className = 'login-screen';
-  const accounts = state.accounts;
   screen.innerHTML = `
     <div class="login-card">
       <div class="login-icon">
@@ -2768,7 +2845,11 @@ function renderLoginScreen(){
     if(!typed){ showErr('Nhập tên đăng nhập trước đã.'); userInput.focus(); return; }
     // So khớp theo "Tài khoản" (username) — tài khoản cũ chưa được gán username riêng thì tự dùng
     // Tên hiển thị làm tên đăng nhập, để tương thích ngược với dữ liệu tạo trước khi có trường này.
-    const acc = accounts.find(a=> (a.username ? a.username.trim().toLowerCase() : a.name.trim().toLowerCase()) === typed);
+    // LUÔN đọc state.accounts TẠI THỜI ĐIỂM bấm đăng nhập (không bắt biến 1 lần lúc dựng màn hình) —
+    // vì subscribeBranch() thay hẳn state.accounts bằng mảng MỚI (không sửa tại chỗ) ngay khi tải xong
+    // dữ liệu tài khoản thật từ Firebase; nếu bắt 1 lần từ sớm, mật khẩu/tài khoản vừa đổi trên máy khác
+    // sẽ không bao giờ được nhận ra ở màn đăng nhập này (báo sai "Sai mật khẩu"/"Không tìm thấy tài khoản").
+    const acc = state.accounts.find(a=> (a.username ? a.username.trim().toLowerCase() : a.name.trim().toLowerCase()) === typed);
     if(!acc){ showErr('Không tìm thấy tài khoản này. Kiểm tra lại tên hoặc liên hệ Admin.'); return; }
     const ok = await verifyAccountPassword(acc, pwInput.value);
     if(!ok){ showErr('Sai mật khẩu.'); pwInput.value=''; pwInput.focus(); return; }
@@ -4269,7 +4350,7 @@ function renderBankPolicies(c){
       <div class="panel-body">
         <div class="form-grid">
           <div class="field"><label>Ngân hàng</label><select id="bpf_bank">${bankOptions}</select></div>
-          <div class="field"><label>Tên gói vay</label><input id="bpf_product" list="bpf_product_list" placeholder="VD: Gói mua xe mới" value="${escAttr(DEFAULT_BANK_PRODUCT)}">
+          <div class="field"><label>Tên gói vay</label><input id="bpf_product" list="bpf_product_list" placeholder="VD: Gói mua xe mới (để trống = ${escAttr(DEFAULT_BANK_PRODUCT)})">
             <datalist id="bpf_product_list">${Array.from(new Set(state.bankPolicies.map(p=>p.product||DEFAULT_BANK_PRODUCT))).map(pr=>`<option value="${escAttr(pr)}">`).join('')}</datalist>
           </div>
           <div class="field"><label>Tháng áp dụng</label><input id="bpf_month" type="month" value="${monthKey()}"></div>
@@ -4279,6 +4360,11 @@ function renderBankPolicies(c){
           <div class="field"><label>Biên độ sau ưu đãi (%)</label><input id="bpf_margin" type="number" step="0.01" placeholder="3.5"></div>
           <div class="field"><label>Phí trả nợ trước hạn (%)</label><input id="bpf_prepay" type="number" step="0.01" placeholder="3"></div>
           <div class="field"><label>Hoa hồng (trước thuế) (%)</label><input id="bpf_comm" type="number" step="0.01" placeholder="1"></div>
+          <div class="field" style="display:flex;align-items:flex-end;gap:6px;padding-bottom:8px">
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-weight:normal">
+              <input id="bpf_renew" type="checkbox" style="width:auto"> Yêu cầu mua lại bảo hiểm hằng năm
+            </label>
+          </div>
           <div class="field" style="grid-column:1/-1"><label>Điều kiện phê duyệt cho vay</label><input id="bpf_approval" placeholder="VD: Không nợ xấu nhóm 2"></div>
           <div class="field"><label>Thời gian giải ngân</label><input id="bpf_time" placeholder="VD: Trong ngày làm việc"></div>
           <div class="field"><label>Giấy tờ giải ngân</label><input id="bpf_docs" placeholder="VD: Giấy hẹn"></div>
@@ -4307,6 +4393,7 @@ function renderBankPolicies(c){
         marginAfterPromo: (Number(document.getElementById('bpf_margin').value)||0)/100,
         prepaymentFee: (Number(document.getElementById('bpf_prepay').value)||0)/100,
         commissionRate: (Number(document.getElementById('bpf_comm').value)||0)/100,
+        annualRenewalRequired: document.getElementById('bpf_renew').checked,
         approvalCondition: document.getElementById('bpf_approval').value.trim(),
         disbursementTime: document.getElementById('bpf_time').value.trim(),
         disbursementDocs: document.getElementById('bpf_docs').value.trim(),
@@ -4341,7 +4428,7 @@ function renderBankPolicies(c){
     <thead><tr>
       <th class="wrap">Ngân hàng</th><th class="wrap">Gói vay</th><th>Tháng</th><th class="num">Tỷ lệ vay tối đa</th><th class="num">TG vay tối đa</th>
       <th class="num">LS ưu đãi năm đầu</th><th class="num">Biên độ sau ưu đãi</th><th class="num">Phí trả trước hạn</th>
-      <th class="num">Hoa hồng (trước thuế)</th><th class="wrap">Phê duyệt</th><th>Giải ngân</th><th>Giấy tờ</th><th class="wrap">Đánh giá</th><th></th>
+      <th class="num">Hoa hồng (trước thuế)</th><th>Tái tục hằng năm</th><th class="wrap">Phê duyệt</th><th>Giải ngân</th><th>Giấy tờ</th><th class="wrap">Đánh giá</th><th></th>
     </tr></thead>
     <tbody>${sorted.map(p=>{
       const b = bankById(p.bankId);
@@ -4355,6 +4442,7 @@ function renderBankPolicies(c){
         <td class="num"><input class="cell-edit num pct" data-field="marginAfterPromo" data-id="${p.id}" type="number" step="0.01" value="${round2(p.marginAfterPromo*100)}" ${dis} style="width:60px"></td>
         <td class="num"><input class="cell-edit num pct" data-field="prepaymentFee" data-id="${p.id}" type="number" step="0.01" value="${round2(p.prepaymentFee*100)}" ${dis} style="width:60px"></td>
         <td class="num" style="font-weight:700"><input class="cell-edit num pct" data-field="commissionRate" data-id="${p.id}" type="number" step="0.01" value="${round2(p.commissionRate*100)}" ${dis} style="width:60px"></td>
+        <td style="text-align:center"><input class="renew-toggle" data-id="${p.id}" type="checkbox" ${p.annualRenewalRequired?'checked':''} ${dis} title="Xe vay theo gói này phải mua lại bảo hiểm mỗi năm — dùng để tính Lịch tái tục ở module Bảo hiểm"></td>
         <td class="wrap"><input class="cell-edit" data-field="approvalCondition" data-id="${p.id}" value="${escAttr(p.approvalCondition||'')}" ${dis}></td>
         <td><input class="cell-edit" data-field="disbursementTime" data-id="${p.id}" value="${escAttr(p.disbursementTime||'')}" ${dis}></td>
         <td><input class="cell-edit" data-field="disbursementDocs" data-id="${p.id}" value="${escAttr(p.disbursementDocs||'')}" ${dis}></td>
@@ -4364,6 +4452,17 @@ function renderBankPolicies(c){
     }).join('')}</tbody>`;
   if(editable){
     wireCellEdits(tbl, state.bankPolicies, 'Chính sách CK (NH)', p=>{ const b=bankById(p.bankId); return `${b?b.name:''} — ${p.product||DEFAULT_BANK_PRODUCT} — ${monthLabel(p.month)}`; });
+    tbl.querySelectorAll('.renew-toggle').forEach(cb=>{
+      cb.addEventListener('change', ()=>{
+        const p = state.bankPolicies.find(x=>x.id===cb.dataset.id);
+        if(!p) return;
+        p.annualRenewalRequired = cb.checked;
+        const b = bankById(p.bankId);
+        logActivity('update','Chính sách CK (NH)', `${b?b.name:''} — ${p.product||DEFAULT_BANK_PRODUCT} — ${monthLabel(p.month)}: Yêu cầu tái tục hằng năm → ${cb.checked?'Có':'Không'}`);
+        saveState();
+        renderNav(); // có thể đổi số hồ sơ cần theo dõi -> cập nhật chấm cảnh báo trên menu Bảo hiểm
+      });
+    });
     tbl.querySelectorAll('[data-del]').forEach(btn=>{
       btn.addEventListener('click', ()=>{
         const p = state.bankPolicies.find(x=>x.id===btn.dataset.del);
@@ -4418,7 +4517,7 @@ function renderBankTransactions(c){
           <div class="field"><label>Ngân hàng</label><input id="btf_bank" list="btf_bank_list" placeholder="Chọn ngân hàng">
             <datalist id="btf_bank_list">${state.banks.map(b=>`<option value="${escAttr(b.name)}">`).join('')}</datalist>
           </div>
-          <div class="field"><label>Gói vay</label><input id="btf_product" list="btf_product_list" placeholder="VD: Gói mua xe mới" value="${escAttr(DEFAULT_BANK_PRODUCT)}">
+          <div class="field"><label>Gói vay</label><input id="btf_product" list="btf_product_list" placeholder="VD: Gói mua xe mới (để trống = ${escAttr(DEFAULT_BANK_PRODUCT)})">
             <datalist id="btf_product_list"></datalist>
           </div>
           <div class="field"><label>Khách hàng</label><input id="btf_customer" placeholder="Tên khách hàng"></div>
@@ -5197,6 +5296,9 @@ const INS_PRODUCTS = ['BHVC','BHDS'];
 let insTxUnitFilter = '';
 let insTxInsurerFilter = '';
 let insReconExpanded = new Set();
+let insRenewalUnitFilter = '';
+let insRenewalBankFilter = '';
+let insRenewalStatusFilter = ''; // '' = tất cả, 'overdue', 'due_soon', 'ok'
 
 // Hoa hồng chỉ tính khi hợp đồng đã "Đã cấp đơn", theo đúng tỷ lệ BHVC/BHDS của NCC đó
 // (khác Ngân hàng: hoa hồng bảo hiểm không đổi theo tháng, chỉ đổi theo loại sản phẩm).
@@ -5346,6 +5448,75 @@ function insReconCalc(r){
   const totalDue = insCommissionSum(r.insurerId, from, to);
   const received = reconReceivedTotal(r);
   return {premium, totalDue, received, diff:received-totalDue, stillOwed:Math.max(0,totalDue-received)};
+}
+
+/* ---------------------------- Bảo hiểm · Lịch tái tục hằng năm ----------------------------
+   Với các hồ sơ vay thuộc gói yêu cầu "tái tục hằng năm" (annualRenewalRequired trên Chính sách CK NH,
+   VD gói TFS): tự liên kết sang Doanh số Bảo hiểm theo BIỂN SỐ XE (đáng tin cậy nhất, không đổi theo thời
+   gian) — nếu xe chưa có biển số ghi nhận thì dự phòng bằng SĐT, rồi tới tên khách hàng. Mốc đến hạn tiếp
+   theo = ngày mua bảo hiểm gần nhất của đúng xe đó + 1 năm; nếu xe chưa từng mua bảo hiểm nào thì tính từ
+   ngày giải ngân + 1 năm (giả định năm đầu được mua kèm ngay lúc giải ngân/nằm ngoài sổ Doanh số BH). */
+function renewalAlertDays(){ return Number(state.insRenewalAlertDays ?? 45) || 45; }
+function normalizePlate(s){ return String(s||'').toLowerCase().replace(/[^a-z0-9]/g,''); }
+function normalizePhone(s){ return String(s||'').replace(/[^0-9]/g,''); }
+function normalizeName(s){ return String(s||'').trim().toLowerCase(); }
+// Trả về mọi hợp đồng bảo hiểm (chưa Huỷ) khớp với 1 hồ sơ vay — ưu tiên khớp biển số, chỉ dùng SĐT/tên
+// khi không có biển số nào khớp, để tránh 2 xe trùng tên chủ/SĐT người thân bị gộp nhầm vào nhau.
+function insMatchesForBankTx(t){
+  const plate = normalizePlate(t.vehicle);
+  const phone = normalizePhone(t.phone);
+  const name = normalizeName(t.customer);
+  const active = state.insTransactions.filter(it=>it.status!=='Huỷ');
+  if(plate){
+    const byPlate = active.filter(it=>normalizePlate(it.vehicle)===plate);
+    if(byPlate.length) return byPlate;
+  }
+  if(phone){
+    const byPhone = active.filter(it=>normalizePhone(it.phone)===phone);
+    if(byPhone.length) return byPhone;
+  }
+  if(name){
+    const byName = active.filter(it=>normalizeName(it.customer)===name);
+    if(byName.length) return byName;
+  }
+  return [];
+}
+function addYearsToDate(dateStr, n){
+  const d = toDate(dateStr);
+  if(!d) return null;
+  const r = new Date(d);
+  r.setFullYear(r.getFullYear()+n);
+  return r;
+}
+// Tính trạng thái tái tục cho 1 hồ sơ vay đã giải ngân — trả về null nếu gói vay đó không yêu cầu tái tục
+// hằng năm (chính sách hiện hành không bật cờ này -> không thuộc diện theo dõi).
+function renewalRowFor(t){
+  if(t.status!=='Đã giải ngân') return null;
+  const policy = activeBankPolicy(t.bankId, t.date, t.product);
+  if(!policy || !policy.annualRenewalRequired) return null;
+  const matches = insMatchesForBankTx(t).slice().sort((a,b)=> b.date.localeCompare(a.date));
+  const lastIns = matches[0] || null;
+  const anchorDate = lastIns ? lastIns.date : t.date;
+  const nextDue = addYearsToDate(anchorDate, 1);
+  if(!nextDue) return null;
+  const today = new Date(); today.setHours(0,0,0,0);
+  const daysLeft = Math.round((nextDue-today)/86400000);
+  const threshold = renewalAlertDays();
+  let status = 'ok';
+  if(daysLeft<0) status = 'overdue';
+  else if(daysLeft<=threshold) status = 'due_soon';
+  return {t, policy, lastIns, anchorDate, nextDue, daysLeft, status};
+}
+function allRenewalRows(){
+  return state.bankTransactions.map(renewalRowFor).filter(Boolean);
+}
+// Số hồ sơ Sắp đến hạn + Quá hạn — dùng để gắn chấm đỏ trên menu Bảo hiểm (giống cơ chế insAllocAlertCount).
+function renewalAlertCount(){
+  return allRenewalRows().filter(r=>r.status==='overdue'||r.status==='due_soon').length;
+}
+function renewalAlertBadgeHTML(){
+  const n = renewalAlertCount();
+  return n>0 ? `<span class="alert-dot" title="${n} hồ sơ sắp đến hạn hoặc quá hạn tái tục bảo hiểm">${n}</span>` : '';
 }
 
 function renderInsTransactions(c){
@@ -6030,6 +6201,140 @@ function renderInsReconTable(editable){
   }
 }
 
+/* ---------------------------- Bảo hiểm · Lịch tái tục hằng năm ---------------------------- */
+function renewalStatusLabel(status){
+  return status==='overdue' ? 'Quá hạn chưa khai thác' : status==='due_soon' ? 'Sắp đến hạn' : 'Đã khai thác đúng hạn';
+}
+function renewalStatusStampHTML(status){
+  const cls = status==='overdue' ? 'warn' : status==='due_soon' ? 'pending' : 'ok';
+  return `<span class="stamp ${cls}">${renewalStatusLabel(status)}</span>`;
+}
+function renderInsRenewal(c){
+  const u = currentUser();
+  const lockedUnit = (u && u.role==='Nhân viên' && u.unit) ? u.unit : '';
+  if(lockedUnit) insRenewalUnitFilter = lockedUnit;
+  const isAdmin = currentRole()==='Admin';
+  const alertDays = renewalAlertDays();
+  const allRows = allRenewalRows();
+  setTitle('Lịch tái tục', allRows.length+' hồ sơ vay thuộc gói yêu cầu mua lại bảo hiểm hằng năm — tự liên kết theo biển số xe với Doanh số Bảo hiểm');
+  const overdueCount = allRows.filter(r=>r.status==='overdue').length;
+  const dueSoonCount = allRows.filter(r=>r.status==='due_soon').length;
+  c.innerHTML = `
+    <div class="panel">
+      <div class="panel-head">
+        <div><h2>Bộ lọc</h2><div class="desc">Chỉ tính hồ sơ vay "Đã giải ngân" thuộc gói vay đã bật "Yêu cầu mua lại bảo hiểm hằng năm" ở Chính sách CK (Ngân hàng). Liên kết tự động theo biển số xe, dự phòng SĐT/tên khách hàng khi thiếu biển số.</div></div>
+        <div class="mini-stats-row">
+          <div class="mini-stat"><div class="mini-stat-label">Quá hạn</div><div class="mini-stat-value" style="color:var(--rust)">${overdueCount}</div></div>
+          <div class="mini-stat"><div class="mini-stat-label">Sắp đến hạn</div><div class="mini-stat-value" style="color:var(--amber)">${dueSoonCount}</div></div>
+          <div class="mini-stat"><div class="mini-stat-label">Tổng theo dõi</div><div class="mini-stat-value">${allRows.length}</div></div>
+        </div>
+      </div>
+      <div class="panel-body">
+        <div class="form-grid">
+          <div class="field">
+            <label>Đơn vị</label>
+            ${lockedUnit
+              ? `<input id="irwf_unit" value="${escAttr(lockedUnit)}" disabled>`
+              : `<input id="irwf_unit" list="irwf_unit_list" placeholder="Tất cả đơn vị..." value="${escAttr(insRenewalUnitFilter)}">${unitDatalistHTML('irwf_unit_list')}`}
+          </div>
+          <div class="field"><label>Ngân hàng</label><input id="irwf_bank" list="irwf_bank_list" placeholder="Tất cả ngân hàng..." value="${escAttr(insRenewalBankFilter)}">
+            <datalist id="irwf_bank_list">${state.banks.map(b=>`<option value="${escAttr(b.name)}">`).join('')}</datalist>
+          </div>
+          <div class="field"><label>Trạng thái</label>
+            <select id="irwf_status">
+              <option value="">Tất cả trạng thái</option>
+              <option value="overdue" ${insRenewalStatusFilter==='overdue'?'selected':''}>Quá hạn chưa khai thác</option>
+              <option value="due_soon" ${insRenewalStatusFilter==='due_soon'?'selected':''}>Sắp đến hạn</option>
+              <option value="ok" ${insRenewalStatusFilter==='ok'?'selected':''}>Đã khai thác đúng hạn</option>
+            </select>
+          </div>
+          ${isAdmin ? `<div class="field" style="max-width:170px"><label>Ngưỡng "Sắp đến hạn" (ngày)</label><input id="irwAlertDaysInput" type="number" min="0" step="1" value="${alertDays}"></div>` : ''}
+          <button class="btn btn-ghost" id="irwfClearBtn">Xem tất cả</button>
+          <button class="btn btn-ghost" id="irwExportBtn">⇩ Xuất Excel</button>
+        </div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><div><h2>Danh sách hồ sơ cần theo dõi</h2><div class="desc">Sắp xếp theo mức độ khẩn cấp — Quá hạn lâu nhất lên trước, rồi tới Sắp đến hạn sớm nhất.</div></div></div>
+      <div class="panel-body flush"><div class="tbl-wrap"><table class="data" id="renewalTable"></table></div></div>
+    </div>
+  `;
+  document.getElementById('irwf_unit').addEventListener('input', e=>{ insRenewalUnitFilter=e.target.value; drawRenewalTable(); });
+  document.getElementById('irwf_bank').addEventListener('input', e=>{ insRenewalBankFilter=e.target.value; drawRenewalTable(); });
+  document.getElementById('irwf_status').addEventListener('change', e=>{ insRenewalStatusFilter=e.target.value; drawRenewalTable(); });
+  document.getElementById('irwfClearBtn').addEventListener('click', ()=>{
+    if(!lockedUnit) insRenewalUnitFilter='';
+    insRenewalBankFilter=''; insRenewalStatusFilter='';
+    renderAll();
+  });
+  if(isAdmin){
+    document.getElementById('irwAlertDaysInput').addEventListener('change', (e)=>{
+      const days = Math.max(0, Number(e.target.value)||0);
+      state.insRenewalAlertDays = days;
+      e.target.value = days;
+      logActivity('update','Cài đặt (Bảo hiểm)', `Đổi ngưỡng "Sắp đến hạn" tái tục bảo hiểm → ${days} ngày`);
+      saveState();
+      renderAll();
+    });
+  }
+  document.getElementById('irwExportBtn').addEventListener('click', ()=>{
+    const rows = currentRenewalRows().map(r=>{
+      const b = bankById(r.t.bankId);
+      return {
+        'Đơn vị': r.t.unit, 'Khách hàng': r.t.customer||'', 'SĐT': r.t.phone||'', 'Biển số': r.t.vehicle||'',
+        'Ngân hàng': b?b.name:'', 'Gói vay': r.t.product||DEFAULT_BANK_PRODUCT, 'Ngày giải ngân': r.t.date,
+        'Lần mua BH gần nhất': r.lastIns ? r.lastIns.date : '', 'Mốc đến hạn tiếp theo': r.nextDue.toISOString().slice(0,10),
+        'Số ngày còn lại (âm = quá hạn)': r.daysLeft, 'Trạng thái': renewalStatusLabel(r.status),
+      };
+    });
+    exportToExcel('lich_tai_tuc_bao_hiem.xlsx', {'Lịch tái tục': rows});
+  });
+  drawRenewalTable();
+
+  function currentRenewalRows(){
+    return allRows.filter(r=>{
+      if(insRenewalUnitFilter && r.t.unit.toLowerCase()!==insRenewalUnitFilter.trim().toLowerCase()) return false;
+      if(insRenewalBankFilter){
+        const b = bankById(r.t.bankId);
+        if(!b || b.name.toLowerCase()!==insRenewalBankFilter.trim().toLowerCase()) return false;
+      }
+      if(insRenewalStatusFilter && r.status!==insRenewalStatusFilter) return false;
+      return true;
+    }).sort((a,b)=> a.daysLeft-b.daysLeft);
+  }
+  function drawRenewalTable(){
+    const tbl = document.getElementById('renewalTable');
+    const rows = currentRenewalRows();
+    if(allRows.length===0){
+      tbl.outerHTML = `<div class="empty"><div class="big">Chưa có hồ sơ nào cần theo dõi</div>Bật "Yêu cầu mua lại bảo hiểm hằng năm" ở Chính sách CK của gói vay tương ứng (VD: TFS) trong module Ngân hàng.</div>`;
+      return;
+    }
+    if(rows.length===0){
+      tbl.outerHTML = `<div class="empty"><div class="big">Không có hồ sơ khớp bộ lọc</div></div>`;
+      return;
+    }
+    tbl.innerHTML = `
+      <thead><tr>
+        <th class="wrap">Khách hàng</th><th>Biển số</th><th class="wrap">Ngân hàng / Gói vay</th><th>Ngày giải ngân</th>
+        <th>Lần mua BH gần nhất</th><th>Mốc đến hạn tiếp theo</th><th class="num">Số ngày</th><th>Trạng thái</th>
+      </tr></thead>
+      <tbody>${rows.map(r=>{
+        const b = bankById(r.t.bankId);
+        const daysTxt = r.daysLeft<0 ? `Quá ${-r.daysLeft} ngày` : `Còn ${r.daysLeft} ngày`;
+        return `<tr>
+          <td class="wrap"><b>${escHtml(r.t.customer||'(chưa có tên KH)')}</b><div class="meta-line">${escHtml(r.t.phone||'')} · ${escHtml(r.t.unit)}</div></td>
+          <td>${escHtml(r.t.vehicle||'—')}</td>
+          <td class="wrap">${b?escHtml(b.name):'<em>(đã xoá)</em>'}<div class="meta-line">${escHtml(r.t.product||DEFAULT_BANK_PRODUCT)}</div></td>
+          <td>${r.t.date}</td>
+          <td>${r.lastIns ? r.lastIns.date : '<em>Chưa có</em>'}</td>
+          <td>${r.nextDue.toISOString().slice(0,10)}</td>
+          <td class="num" style="font-weight:600;${r.status==='overdue'?'color:var(--rust)':r.status==='due_soon'?'color:var(--amber)':''}">${daysTxt}</td>
+          <td>${renewalStatusStampHTML(r.status)}</td>
+        </tr>`;
+      }).join('')}</tbody>`;
+  }
+}
+
 function renderComingSoon(c, t){
   setTitle(t.label, t.section+' — module đang được xây dựng');
   c.innerHTML = `
@@ -6125,6 +6430,13 @@ function renderSettings(c){
       <div class="panel-head"><div><h2>Sao lưu tự động</h2>
       <div class="desc">Mỗi ngày tự tạo 1 bản sao lưu đầy đủ (cả 3 module) ngay khi Admin đầu tiên mở app trong ngày đó — không cần thao tác gì. Giữ tối đa 30 ngày gần nhất.</div></div></div>
       <div class="panel-body" id="backupListBox"><div class="helper">Đang tải danh sách...</div></div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><div><h2>Kiểm tra dữ liệu trùng lặp</h2>
+      <div class="desc">Quét toàn bộ dữ liệu (mọi module), tìm các bản ghi có nội dung GIỐNG HỆT NHAU (chỉ khác mã nội bộ) — dấu hiệu lỗi đồng bộ cũ, không phải 2 bản ghi thật khác nhau. Không xoá gì cho tới khi bạn xác nhận; bản ghi thừa được chuyển vào Thùng rác (khôi phục lại được), không mất vĩnh viễn ngay.</div></div>
+      <button class="btn btn-ghost" id="dedupScanBtn">Quét trùng lặp</button>
+      </div>
+      <div class="panel-body" id="dedupResultBox"></div>
     </div>` : ''}
   `;
   if(isAdmin){
@@ -6265,6 +6577,52 @@ function renderSettings(c){
         });
       });
     });
+    // ===== Kiểm tra dữ liệu trùng lặp =====
+    function renderDedupBox(){
+      const dbox = document.getElementById('dedupResultBox');
+      if(!dbox) return;
+      const dups = scanAllDuplicates();
+      if(dups.length===0){
+        dbox.innerHTML = `<div class="helper">Chưa quét, hoặc không tìm thấy bản ghi trùng lặp nào.</div>`;
+        return;
+      }
+      const totalExtra = dups.reduce((s,d)=>s+d.extraCount,0);
+      dbox.innerHTML = `
+        <div class="helper" style="color:var(--rust);font-weight:600;margin-bottom:10px">⚠ Tìm thấy ${totalExtra} bản ghi thừa (trùng nội dung hoàn toàn) trong ${dups.length} loại dữ liệu.</div>
+        <table class="data"><thead><tr><th>Loại dữ liệu</th><th class="num">Số nhóm trùng</th><th class="num">Bản ghi thừa</th><th></th></tr></thead>
+        <tbody>${dups.map(d=>`<tr>
+          <td>${escHtml(d.label)}</td>
+          <td class="num">${d.groups.length}</td>
+          <td class="num" style="color:var(--rust);font-weight:600">${d.extraCount}</td>
+          <td><button class="btn btn-ghost" data-dedup-field="${d.field}" style="padding:4px 10px;font-size:12px;border-color:var(--rust);color:var(--rust)">Xoá ${d.extraCount} bản ghi thừa</button></td>
+        </tr>`).join('')}</tbody></table>
+        <div style="margin-top:10px"><button class="btn btn-primary" id="dedupAllBtn">Xoá tất cả ${totalExtra} bản ghi thừa (mọi loại)</button></div>
+        <div class="helper" style="margin-top:8px">Bản ghi thừa được chuyển vào Thùng rác — nếu xoá nhầm, vào tab "Thùng rác" để khôi phục lại.</div>
+      `;
+      dbox.querySelectorAll('[data-dedup-field]').forEach(btn=>{
+        btn.addEventListener('click', ()=>{
+          const d = dups.find(x=>x.field===btn.dataset.dedupField);
+          if(!d) return;
+          if(!confirm(`Xoá ${d.extraCount} bản ghi thừa của "${d.label}"? Sẽ chuyển vào Thùng rác, khôi phục lại được.`)) return;
+          d.groups.forEach(g=>removeDuplicateGroup(d.field, d.entity, g));
+          logActivity('delete','Cài đặt', `Dọn ${d.extraCount} bản ghi trùng lặp — ${d.label}`);
+          toast(`Đã dọn ${d.extraCount} bản ghi thừa của "${d.label}"`);
+          saveState();
+          renderDedupBox();
+        });
+      });
+      const allBtn = document.getElementById('dedupAllBtn');
+      if(allBtn) allBtn.addEventListener('click', ()=>{
+        if(!confirm(`Xoá TẤT CẢ ${totalExtra} bản ghi thừa (mọi loại dữ liệu)? Sẽ chuyển vào Thùng rác, khôi phục lại được.`)) return;
+        dups.forEach(d=>{ d.groups.forEach(g=>removeDuplicateGroup(d.field, d.entity, g)); });
+        logActivity('delete','Cài đặt', `Dọn tổng cộng ${totalExtra} bản ghi trùng lặp (mọi loại dữ liệu)`);
+        toast(`Đã dọn ${totalExtra} bản ghi thừa`);
+        saveState();
+        renderDedupBox();
+      });
+    }
+    const dedupBtn = document.getElementById('dedupScanBtn');
+    if(dedupBtn) dedupBtn.addEventListener('click', renderDedupBox);
   }
 }
 
