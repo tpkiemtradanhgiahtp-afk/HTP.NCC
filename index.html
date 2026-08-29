@@ -1510,26 +1510,23 @@ function fileToBase64(file){
 // thường, không bị CORS chặn), script phía Google trả về 1 trang HTML nhỏ gọi postMessage() để gửi kết
 // quả ngược lại cho app đang lắng nghe — đây là cách né CORS chuẩn cho đúng tình huống Apps Script.
 let driveUploadReqSeq = 0;
-function uploadFileToDrive(file, subfolder){
-  return new Promise(async (resolve, reject)=>{
-    if(!driveUploadConfigured()){ reject(new Error('Chưa cấu hình nơi lưu trữ Google Drive — vào Cài đặt (Admin) để thiết lập trước.')); return; }
-    if(file.size > 15*1024*1024){ reject(new Error('File quá lớn (>15MB) — vui lòng chụp ảnh nhẹ hơn hoặc nén PDF trước khi tải lên.')); return; }
-    let dataBase64;
-    try{ dataBase64 = await fileToBase64(file); }catch(err){ reject(err); return; }
-
-    const payload = JSON.stringify({ secret: state.driveUploadSecret||'', filename: file.name, mimeType: file.type||'application/octet-stream', subfolder: subfolder||'', dataBase64 });
-    const reqId = 'driveUp_'+(++driveUploadReqSeq)+'_'+Date.now();
-
+// Hàm gửi dùng CHUNG cho mọi loại request tới Apps Script (upload file, gửi email...) — chỉ khác nhau ở
+// payload gửi lên. Luôn thêm sẵn "secret" — nơi gọi không cần tự thêm.
+function postToScript(payload){
+  return new Promise((resolve, reject)=>{
+    if(!driveUploadConfigured()){ reject(new Error('Chưa cấu hình Google Apps Script — vào Cài đặt (Admin) để thiết lập trước.')); return; }
+    const reqId = 'gsPost_'+(++driveUploadReqSeq)+'_'+Date.now();
     const iframe = document.createElement('iframe');
     iframe.name = reqId; iframe.style.display = 'none';
     const form = document.createElement('form');
     form.method = 'POST'; form.action = state.driveUploadUrl; form.target = reqId; form.style.display = 'none';
-    const input = document.createElement('input'); input.type = 'hidden'; input.name = 'payload'; input.value = payload;
+    const input = document.createElement('input'); input.type = 'hidden'; input.name = 'payload';
+    input.value = JSON.stringify({ secret: state.driveUploadSecret||'', ...payload });
     form.appendChild(input);
     document.body.appendChild(iframe);
     document.body.appendChild(form);
 
-    const timeoutId = setTimeout(()=>{ cleanup(); reject(new Error('Hết thời gian chờ phản hồi từ Google Drive (30s) — kiểm tra lại mạng hoặc cấu hình URL ở Cài đặt.')); }, 30000);
+    const timeoutId = setTimeout(()=>{ cleanup(); reject(new Error('Hết thời gian chờ phản hồi từ Google Apps Script (30s) — kiểm tra lại mạng hoặc cấu hình URL ở Cài đặt.')); }, 30000);
     function cleanup(){
       clearTimeout(timeoutId);
       window.removeEventListener('message', onMessage);
@@ -1542,12 +1539,29 @@ function uploadFileToDrive(file, subfolder){
       try{ data = JSON.parse(ev.data); }catch(err){ return; }
       if(!data || typeof data.ok==='undefined') return;
       cleanup();
-      if(data.ok) resolve({ url: data.url, name: data.name });
-      else reject(new Error(data.error || 'Upload thất bại — kiểm tra lại URL Web App ở Cài đặt.'));
+      if(data.ok) resolve(data);
+      else reject(new Error(data.error || 'Yêu cầu thất bại — kiểm tra lại URL Web App ở Cài đặt.'));
     }
     window.addEventListener('message', onMessage);
     form.submit();
   });
+}
+function uploadFileToDrive(file, subfolder){
+  return new Promise(async (resolve, reject)=>{
+    if(!driveUploadConfigured()){ reject(new Error('Chưa cấu hình nơi lưu trữ Google Drive — vào Cài đặt (Admin) để thiết lập trước.')); return; }
+    if(file.size > 15*1024*1024){ reject(new Error('File quá lớn (>15MB) — vui lòng chụp ảnh nhẹ hơn hoặc nén PDF trước khi tải lên.')); return; }
+    let dataBase64;
+    try{ dataBase64 = await fileToBase64(file); }catch(err){ reject(err); return; }
+    postToScript({ type:'upload', filename: file.name, mimeType: file.type||'application/octet-stream', subfolder: subfolder||'', dataBase64 })
+      .then(data=> resolve({ url: data.url, name: data.name }))
+      .catch(reject);
+  });
+}
+// Gửi email thông báo qua đúng Apps Script đã cấu hình (dùng MailApp phía Google) — cố tình KHÔNG throw
+// lỗi ra ngoài ở nơi gọi (xem notifyAboutRequestMessage): gửi thông báo thất bại không được phép làm hỏng
+// thao tác chính (gửi yêu cầu/trả lời) — chỉ log ra console để debug khi cần.
+function sendEmailNotification(toEmails, subject, body){
+  return postToScript({ type:'notify', to: toEmails, subject, body });
 }
 // Gắn 1 input[type=file] + 1 span trạng thái vào cơ chế upload chung: chọn file -> tự upload -> gọi onDone(url).
 // Dùng chung cho mọi nơi cần nút "📷 Chụp ảnh / Chọn file" (Hợp đồng, Doanh số...).
@@ -1883,6 +1897,173 @@ function markContractSuperseded(obj, ctId, entityLabel, unitFilter){
   ct.supersededBy = 'manual';
   logActivity('update', entityLabel+' · Hợp đồng', `${obj.name}: đánh dấu 1 bản hợp đồng đã thay thế`);
   saveState(); renderAll(); openContractsModal(obj, contractList(obj), entityLabel, true, unitFilter);
+}
+
+/* ---------------------------- Yêu cầu / Trao đổi với Đối tác ----------------------------
+   Dùng chung cho cả 3 khối (NCC/Ngân hàng/Bảo hiểm) — mỗi "đối tượng" (supplier/bank/insurer) có mảng
+   obj.requests = [{id, status, createdAt, updatedAt, messages:[{id,text,authorName,authorRole,at}]}].
+   Đối tác chỉ thấy/viết được vào đúng "obj" của mình (qua scopedObjsFor/partnerScopeFilter đã có sẵn cho
+   Hợp đồng/Doanh số). Nội bộ (Admin/Quản lý/Nhân viên có quyền module) thấy & trả lời được mọi yêu cầu
+   trong module đó; chỉ Admin/Quản lý đổi được trạng thái. */
+const REQUEST_STATUSES = [
+  {id:'moi', label:'Mới', cls:'pending'},
+  {id:'dang_xu_ly', label:'Đang xử lý', cls:'muted'},
+  {id:'da_xu_ly', label:'Đã xử lý', cls:'ok'},
+];
+function requestStatusMeta(id){ return REQUEST_STATUSES.find(s=>s.id===id) || REQUEST_STATUSES[0]; }
+function requestList(obj){ return obj.requests || []; }
+function requestOpenCount(objs){ return objs.reduce((sum,o)=> sum + requestList(o).filter(r=>r.status!=='da_xu_ly').length, 0); }
+function requestBadgeHTML(objs){
+  const n = requestOpenCount(objs);
+  return n>0 ? `<span class="alert-dot" title="${n} yêu cầu chưa xử lý xong">${n}</span>` : '';
+}
+// Gửi email báo "có tin nhắn mới" cho phía CÒN LẠI (Đối tác viết -> báo nội bộ phụ trách module đó; nội bộ
+// viết -> báo đúng tài khoản Đối tác của obj này, nếu có email). Cố tình không await/throw ở nơi gọi — lỗi
+// gửi email (chưa cấu hình script, mất mạng...) không được phép chặn việc gửi yêu cầu/trả lời chính.
+function notifyAboutRequestMessage(obj, cfg, authorIsPartner){
+  if(!driveUploadConfigured()) return;
+  let toEmails = [];
+  if(authorIsPartner){
+    toEmails = state.accounts.filter(a=> ['Admin','Quản lý'].includes(a.role) && hasModuleAccess(cfg.moduleId, a) && a.email && a.email.trim()).map(a=>a.email.trim());
+  } else {
+    const partnerAcc = state.accounts.find(a=> a.role==='Đối tác' && a.partnerType===cfg.moduleId && a.partnerId===obj.id);
+    if(partnerAcc && partnerAcc.email && partnerAcc.email.trim()) toEmails = [partnerAcc.email.trim()];
+  }
+  if(toEmails.length===0) return;
+  const subject = `[QT NCC] Có tin nhắn mới — ${cfg.nameOf(obj)}`;
+  const body = `Có tin nhắn mới trong mục "Yêu cầu / Trao đổi" liên quan tới ${cfg.nameOf(obj)}.\n\nVui lòng đăng nhập vào hệ thống để xem chi tiết và phản hồi.`;
+  sendEmailNotification(toEmails, subject, body).catch(err=> console.warn('Gửi email thông báo thất bại (bỏ qua, không ảnh hưởng thao tác chính):', err));
+}
+// Modal xem/trả lời 1 thread — mở lại chính nó sau khi gửi trả lời để thấy tin nhắn mới ngay, giống cách
+// modal Hợp đồng tự mở lại sau khi thêm bản mới.
+function openRequestThreadModal(req, obj, cfg){
+  const role = currentRole();
+  const canManage = ['Admin','Quản lý'].includes(role);
+  const canWrite = isPartnerAccount(currentUser()) || ['Admin','Quản lý','Nhân viên'].includes(role);
+  const msgsHTML = req.messages.map(m=>{
+    const mine = m.authorRole==='Đối tác';
+    return `<div style="padding:10px 12px;border:1px solid var(--line);border-radius:8px;margin-bottom:8px;${mine?'background:var(--gold-soft)':''}">
+      <div style="font-size:11.5px;color:var(--slate);margin-bottom:4px"><b>${escHtml(m.authorName||'(không rõ)')}</b> · ${escHtml(m.authorRole||'')} · ${new Date(m.at).toLocaleString('vi-VN')}</div>
+      <div style="white-space:pre-wrap;font-size:13px">${escHtml(m.text)}</div>
+    </div>`;
+  }).join('');
+  openModal(`Yêu cầu · ${escHtml(cfg.nameOf(obj))}`,
+    `Trạng thái hiện tại: <b>${requestStatusMeta(req.status).label}</b> · ${req.messages.length} tin nhắn`,
+    `<div style="max-height:340px;overflow:auto;margin-bottom:12px">${msgsHTML}</div>
+     ${canManage ? `<div class="field" style="margin-bottom:10px"><label>Trạng thái</label>
+       <select id="reqStatusSel">${REQUEST_STATUSES.map(s=>`<option value="${s.id}" ${req.status===s.id?'selected':''}>${s.label}</option>`).join('')}</select>
+     </div>` : ''}
+     ${canWrite ? `<div class="field"><label>Trả lời</label><textarea id="reqReplyText" style="width:100%;min-height:70px;font-family:inherit;font-size:13px;padding:10px;border:1px solid var(--line);border-radius:8px"></textarea></div>
+       <button class="btn btn-primary" id="reqReplyBtn" style="margin-top:10px">Gửi trả lời</button>` : ''}`,
+    (body)=>{
+      if(canManage){
+        body.querySelector('#reqStatusSel').addEventListener('change', e=>{
+          req.status = e.target.value; req.updatedAt = new Date().toISOString();
+          logActivity('update', cfg.entityLabel, `${cfg.nameOf(obj)}: đổi trạng thái yêu cầu → ${requestStatusMeta(req.status).label}`);
+          saveState(); renderAll();
+        });
+      }
+      if(canWrite){
+        body.querySelector('#reqReplyBtn').addEventListener('click', ()=>{
+          const text = body.querySelector('#reqReplyText').value.trim();
+          if(!text){ toast('Nhập nội dung trả lời trước'); return; }
+          const u = currentUser();
+          const now = new Date().toISOString();
+          req.messages.push({ id: uid('msg'), text, authorName: u?u.name:'(không rõ)', authorRole: role, at: now });
+          req.updatedAt = now;
+          if(req.status==='moi' && !isPartnerAccount(u)) req.status = 'dang_xu_ly'; // nội bộ vừa trả lời -> tự chuyển khỏi "Mới"
+          logActivity('update', cfg.entityLabel, `${cfg.nameOf(obj)}: có tin nhắn mới trong 1 yêu cầu`);
+          saveState(); renderAll();
+          notifyAboutRequestMessage(obj, cfg, isPartnerAccount(u));
+          openRequestThreadModal(req, obj, cfg); // mở lại để thấy ngay tin nhắn vừa gửi
+        });
+      }
+    });
+}
+// Trang "Yêu cầu / Trao đổi" dùng chung cho cả 3 module — cfg: {objs, idKey, nameOf, entityLabel, entityShort}.
+function renderRequestsTab(c, cfg){
+  const u = currentUser();
+  const role = currentRole();
+  const partner = isPartnerAccount(u);
+  const scopedObjs = scopedObjsFor(cfg.idKey, cfg.objs);
+  let allThreads = [];
+  scopedObjs.forEach(o=> requestList(o).forEach(r=> allThreads.push({req:r, obj:o})));
+  allThreads.sort((a,b)=> (b.req.updatedAt||'').localeCompare(a.req.updatedAt||''));
+  const openCount = allThreads.filter(t=>t.req.status!=='da_xu_ly').length;
+  setTitle('Yêu cầu / Trao đổi', allThreads.length+' yêu cầu — '+openCount+' chưa xử lý xong');
+
+  if(partner && scopedObjs.length===0){
+    c.innerHTML = lockedNote('Tài khoản của bạn chưa được gán đúng '+cfg.entityShort+' — liên hệ Admin để cấu hình lại.');
+    return;
+  }
+
+  c.innerHTML = `
+    <div class="panel">
+      <div class="panel-head"><div><h2>Gửi yêu cầu mới</h2>
+      <div class="desc">${partner ? 'Viết nội dung bạn cần đề nghị/thắc mắc — nội bộ sẽ nhận được và phản hồi ngay tại đây.' : 'Chọn đúng '+cfg.entityShort+' liên quan — nội dung sẽ hiện cho Đối tác đó xem và trả lời.'}</div></div></div>
+      <div class="panel-body">
+        <div class="form-grid">
+          ${partner ? '' : `<div class="field" style="grid-column:1/-1"><label>${cfg.entityLabel}</label><select id="reqf_obj">${scopedObjs.map(o=>`<option value="${o.id}">${escHtml(cfg.nameOf(o))}</option>`).join('')}</select></div>`}
+          <div class="field" style="grid-column:1/-1"><label>Nội dung</label><textarea id="reqf_text" placeholder="Nội dung đề nghị/thắc mắc..." style="width:100%;min-height:80px;font-family:inherit;font-size:13px;padding:10px;border:1px solid var(--line);border-radius:8px"></textarea></div>
+          <button class="btn btn-primary" id="reqSendBtn">Gửi yêu cầu</button>
+        </div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><div><h2>Danh sách yêu cầu</h2></div></div>
+      <div class="panel-body flush" id="reqListBox"></div>
+    </div>
+  `;
+  document.getElementById('reqSendBtn').addEventListener('click', ()=>{
+    const text = document.getElementById('reqf_text').value.trim();
+    if(!text){ toast('Nhập nội dung trước'); return; }
+    const obj = partner ? scopedObjs[0] : scopedObjs.find(o=>o.id===document.getElementById('reqf_obj').value);
+    if(!obj){ toast('Chưa chọn được '+cfg.entityShort); return; }
+    if(!obj.requests) obj.requests = [];
+    const now = new Date().toISOString();
+    obj.requests.push({
+      id: uid('req'), status: 'moi', createdAt: now, updatedAt: now,
+      messages: [{ id: uid('msg'), text, authorName: u?u.name:'(không rõ)', authorRole: role, at: now }],
+    });
+    logActivity('create', cfg.entityLabel, `${cfg.nameOf(obj)}: yêu cầu mới từ ${u?u.name:''}`);
+    toast('Đã gửi yêu cầu');
+    saveState(); renderAll();
+    notifyAboutRequestMessage(obj, cfg, partner);
+  });
+  const listBox = document.getElementById('reqListBox');
+  if(allThreads.length===0){
+    listBox.innerHTML = `<div class="empty"><div class="big">Chưa có yêu cầu nào</div></div>`;
+  } else {
+    listBox.innerHTML = allThreads.map(({req,obj})=>{
+      const last = req.messages[req.messages.length-1];
+      const meta = requestStatusMeta(req.status);
+      const snippet = last ? (last.text.length>140 ? last.text.slice(0,140)+'...' : last.text) : '';
+      return `<div data-open-req="${req.id}" data-obj="${obj.id}" style="padding:14px 20px;border-bottom:1px solid var(--line);cursor:pointer;display:flex;justify-content:space-between;gap:14px;align-items:center">
+        <div style="min-width:0">
+          <div style="font-weight:600">${escHtml(cfg.nameOf(obj))}</div>
+          <div class="meta-line" style="white-space:pre-wrap">${escHtml(snippet)}</div>
+          <div class="meta-line">${req.messages.length} tin nhắn · Cập nhật ${new Date(req.updatedAt).toLocaleString('vi-VN')}</div>
+        </div>
+        <span class="stamp ${meta.cls}" style="flex:0 0 auto">${meta.label}</span>
+      </div>`;
+    }).join('');
+    listBox.querySelectorAll('[data-open-req]').forEach(el=>{
+      el.addEventListener('click', ()=>{
+        const obj = scopedObjs.find(o=>o.id===el.dataset.obj);
+        const req = obj && requestList(obj).find(r=>r.id===el.dataset.openReq);
+        if(obj && req) openRequestThreadModal(req, obj, cfg);
+      });
+    });
+  }
+}
+function renderNccRequests(c){
+  renderRequestsTab(c, { objs: state.suppliers, idKey:'supplierId', nameOf: s=>s.name, entityLabel:'Yêu cầu (NCC)', entityShort:'NCC', moduleId:'ncc' });
+}
+function renderNhRequests(c){
+  renderRequestsTab(c, { objs: state.banks, idKey:'bankId', nameOf: b=>b.name, entityLabel:'Yêu cầu (NH)', entityShort:'ngân hàng', moduleId:'nh' });
+}
+function renderBhRequests(c){
+  renderRequestsTab(c, { objs: state.insurers, idKey:'insurerId', nameOf: i=>i.name, entityLabel:'Yêu cầu (Bảo hiểm)', entityShort:'NCC bảo hiểm', moduleId:'bh' });
 }
 
 /* ---------------------------- Phân bổ chỉ tiêu theo đơn vị (áp dụng cho MỌI loại mốc: CK theo doanh số / CK cố định / Thưởng thêm) ----------------------------
@@ -2221,6 +2402,14 @@ function partnerScopeFilter(idField){
   if(!isPartnerAccount(u) || !u.partnerId) return null;
   return (row)=> row[idField]===u.partnerId;
 }
+// Lọc 1 mảng object (suppliers/banks/insurers) theo đúng phạm vi Đối tác đang đăng nhập — trả nguyên mảng
+// nếu là tài khoản nội bộ (không giới hạn gì). idKey: 'supplierId'|'bankId'|'insurerId' khớp với field id
+// tương ứng NẰM TRÊN CHÍNH object đó (supplier.id, bank.id, insurer.id) nên truyền {[idKey]: o.id} để tái
+// dùng đúng partnerScopeFilter (vốn được thiết kế lọc theo dòng dữ liệu có field idKey, không phải chính object).
+function scopedObjsFor(idKey, objs){
+  const pf = partnerScopeFilter(idKey);
+  return pf ? objs.filter(o=>pf({[idKey]:o.id})) : objs;
+}
 function currentUser(){ return state.accounts.find(a=>a.id===currentUserId) || null; }
 
 /* ---------------------------- Tìm kiếm toàn hệ thống ----------------------------
@@ -2324,10 +2513,10 @@ function roleBadgeClass(role){
 // Xác định module ('ncc'|'nh'|'bh'|'shared') của 1 dòng Nhật ký hoạt động, dựa theo nhãn "entity" đã gán
 // sẵn ở từng nơi gọi logActivity() — tra theo bảng cố định thay vì đoán, để không lệ thuộc cách đặt tên.
 const LOG_ENTITY_MODULE = {
-  'NCC':'ncc', 'Chính sách CK':'ncc', 'Doanh số':'ncc', 'Đối soát CK':'ncc', 'Theo dõi mốc CK':'ncc',
-  'NH':'nh', 'Chính sách CK (NH)':'nh', 'Doanh số (NH)':'nh', 'Đối soát CK (NH)':'nh',
+  'NCC':'ncc', 'Chính sách CK':'ncc', 'Doanh số':'ncc', 'Đối soát CK':'ncc', 'Theo dõi mốc CK':'ncc', 'Yêu cầu (NCC)':'ncc',
+  'NH':'nh', 'Chính sách CK (NH)':'nh', 'Doanh số (NH)':'nh', 'Đối soát CK (NH)':'nh', 'Yêu cầu (NH)':'nh',
   'NCC Bảo hiểm':'bh', 'Biểu phí Bảo hiểm':'bh', 'Doanh số (Bảo hiểm)':'bh', 'Đối soát CK (Bảo hiểm)':'bh',
-  'DT dịch vụ (Bảo hiểm)':'bh', 'Tỷ lệ phân bổ (Bảo hiểm)':'bh', 'Cài đặt (Bảo hiểm)':'bh',
+  'DT dịch vụ (Bảo hiểm)':'bh', 'Tỷ lệ phân bổ (Bảo hiểm)':'bh', 'Cài đặt (Bảo hiểm)':'bh', 'Yêu cầu (Bảo hiểm)':'bh',
   'Tài khoản':'shared', 'Cài đặt':'shared', 'Lỗi hệ thống':'shared',
 };
 function moduleOfLogEntity(entity){ return LOG_ENTITY_MODULE[entity] || 'shared'; }
@@ -2652,17 +2841,20 @@ const TABS = [
   {id:'transactions', label:'Doanh số - Đối soát CK - Phân bổ', section:'NCC Dịch vụ Ô tô - Xe máy', module:'ncc', partnerVisible:true},
   {id:'allocation', label:'Phân bổ đơn vị', section:'NCC Dịch vụ Ô tô - Xe máy', hidden:true, parent:'transactions', module:'ncc', partnerVisible:true},
   {id:'reconcile', label:'Đối soát CK', section:'NCC Dịch vụ Ô tô - Xe máy', hidden:true, parent:'transactions', module:'ncc', partnerVisible:true},
+  {id:'ncc_requests', label:'Yêu cầu / Trao đổi', section:'NCC Dịch vụ Ô tô - Xe máy', module:'ncc', partnerVisible:true},
   {id:'nh_suppliers', label:'Danh mục - Chính sách NH', section:'Ngân hàng', module:'nh'},
   {id:'nh_policies', label:'Chính sách CK', section:'Ngân hàng', hidden:true, parent:'nh_suppliers', module:'nh', partnerVisible:true, partnerTopLevel:true},
   {id:'nh_transactions', label:'Doanh số - Đối soát CK - Phân bổ', section:'Ngân hàng', module:'nh', partnerVisible:true},
   {id:'nh_allocation', label:'Phân bổ đơn vị', section:'Ngân hàng', hidden:true, parent:'nh_transactions', module:'nh', partnerVisible:true},
   {id:'nh_reconcile', label:'Đối soát CK', section:'Ngân hàng', hidden:true, parent:'nh_transactions', module:'nh', partnerVisible:true},
+  {id:'nh_requests', label:'Yêu cầu / Trao đổi', section:'Ngân hàng', module:'nh', partnerVisible:true},
   {id:'bh_suppliers', label:'Danh mục - Biểu phí bảo hiểm', section:'Bảo hiểm', module:'bh'},
   {id:'bh_policies', label:'Biểu phí bảo hiểm', section:'Bảo hiểm', hidden:true, parent:'bh_suppliers', module:'bh', partnerVisible:true, partnerTopLevel:true},
   {id:'bh_transactions', label:'Doanh số - Đối soát CK - Phân bổ', section:'Bảo hiểm', module:'bh', partnerVisible:true},
   {id:'bh_allocation', label:'Phân bổ đơn vị', section:'Bảo hiểm', hidden:true, parent:'bh_transactions', module:'bh', partnerVisible:true},
   {id:'bh_reconcile', label:'Đối soát CK', section:'Bảo hiểm', hidden:true, parent:'bh_transactions', module:'bh', partnerVisible:true},
   {id:'bh_renewal', label:'Lịch tái tục', section:'Bảo hiểm', module:'bh'},
+  {id:'bh_requests', label:'Yêu cầu / Trao đổi', section:'Bảo hiểm', module:'bh', partnerVisible:true},
   {id:'accounts', label:'Quản trị tài khoản', section:'Hệ thống', roles:['Admin']},
   {id:'activityLog', label:'Nhật ký hoạt động', section:'Hệ thống', roles:['Admin']},
   {id:'settings', label:'Cài đặt', section:'Hệ thống', roles:['Admin']},
@@ -2805,7 +2997,12 @@ function renderNav(){
       while(i<tabs.length && tabs[i].section===section){
         const t = tabs[i];
         const longCls = t.label.length>18 ? ' long' : '';
-        const badge = t.id==='bh_transactions' ? insAlertBadgeHTML() : t.id==='bh_renewal' ? renewalAlertBadgeHTML() : '';
+        const badge = t.id==='bh_transactions' ? insAlertBadgeHTML()
+          : t.id==='bh_renewal' ? renewalAlertBadgeHTML()
+          : t.id==='ncc_requests' ? requestBadgeHTML(scopedObjsFor('supplierId', state.suppliers))
+          : t.id==='nh_requests' ? requestBadgeHTML(scopedObjsFor('bankId', state.banks))
+          : t.id==='bh_requests' ? requestBadgeHTML(scopedObjsFor('insurerId', state.insurers))
+          : '';
         html += `<div class="nav-item${longCls} ${t.id===activeId?'active':''}" data-tab="${t.id}"><span class="dot"></span><span class="label-text">${t.label}</span>${t.comingSoon?'<span class="soon-tag">Sắp có</span>':''}${badge}</div>`;
         i++;
       }
@@ -2956,6 +3153,9 @@ function renderAll(){
   else if(activeTab==='bh_allocation') renderInsAllocation(c);
   else if(activeTab==='bh_reconcile') renderInsReconcile(c);
   else if(activeTab==='bh_renewal') renderInsRenewal(c);
+  else if(activeTab==='ncc_requests') renderNccRequests(c);
+  else if(activeTab==='nh_requests') renderNhRequests(c);
+  else if(activeTab==='bh_requests') renderBhRequests(c);
   else if(activeTab==='accounts') renderAccounts(c);
   else if(activeTab==='activityLog') renderActivityLog(c);
   else if(activeTab==='settings') renderSettings(c);
@@ -7200,6 +7400,7 @@ function renderAccounts(c){
           </div>
           <div class="field"><label>Tên hiển thị</label><input id="af_name" placeholder="VD: Trần Thị B"></div>
           <div class="field"><label>Tài khoản (đăng nhập)</label><input id="af_username" placeholder="VD: tranthib — để trống sẽ tự gợi ý theo Tên"></div>
+          <div class="field"><label>Email (không bắt buộc)</label><input id="af_email" type="email" placeholder="Để trống nếu chưa có — dùng để gửi thông báo"></div>
           <div class="field" id="af_role_field"><label>Vai trò</label>
             <select id="af_role">${ROLES.filter(r=>r!=='Đối tác').map(r=>`<option>${r}</option>`).join('')}</select>
           </div>
@@ -7230,7 +7431,7 @@ function renderAccounts(c){
           </div>
           <button class="btn btn-primary" id="addAccountBtn">+ Thêm tài khoản</button>
         </div>
-        <div class="helper">Mỗi tài khoản có <b>Tên hiển thị</b> (hiện trên giao diện, Nhật ký hoạt động...) và <b>Tài khoản</b> riêng (dùng để gõ vào ô "Tên đăng nhập" ở màn đăng nhập) — hai thứ có thể khác nhau, ví dụ Tên hiển thị "Thủ kho TTB" nhưng Tài khoản đăng nhập là "thukhottb". Đặt mật khẩu cho tài khoản nào thì tài khoản đó sẽ phải nhập đúng mật khẩu ở màn đăng nhập. Để trống ô mật khẩu = đăng nhập không cần mật khẩu (như trước đây). "Module được phép dùng" quyết định tài khoản đó thấy được những tab nào (Admin luôn thấy đủ mọi module bất kể chọn gì ở đây).<br>
+        <div class="helper">Mỗi tài khoản có <b>Tên hiển thị</b> (hiện trên giao diện, Nhật ký hoạt động...) và <b>Tài khoản</b> riêng (dùng để gõ vào ô "Tên đăng nhập" ở màn đăng nhập) — hai thứ có thể khác nhau, ví dụ Tên hiển thị "Thủ kho TTB" nhưng Tài khoản đăng nhập là "thukhottb". Đặt mật khẩu cho tài khoản nào thì tài khoản đó sẽ phải nhập đúng mật khẩu ở màn đăng nhập. Để trống ô mật khẩu = đăng nhập không cần mật khẩu (như trước đây). "Module được phép dùng" quyết định tài khoản đó thấy được những tab nào (Admin luôn thấy đủ mọi module bất kể chọn gì ở đây). <b>Email</b> không bắt buộc — nhân sự nào không có email cứ để trống, hệ thống bỏ qua khi gửi thông báo, không ảnh hưởng gì tới việc dùng app.<br>
         <b>Tài khoản Đối tác</b>: dùng cho chính NCC/Ngân hàng/hãng Bảo hiểm tự đăng nhập xem dữ liệu của họ — chỉ thấy đúng module đã chọn, chỉ thấy Chính sách + Doanh số/Đối soát CK của ĐÚNG đối tác được gán (không thấy Dashboard, Danh mục toàn bộ đối tác, hay Phân bổ đơn vị vì các mục đó liệt kê nhiều đối tác cùng lúc), và được tự sửa ô "xác nhận" hoa hồng của chính mình ở Đối soát CK — mọi thứ khác chỉ xem, không sửa được gì khác. Đây vẫn là "hàng rào mềm" — không phải bảo mật thật sự vì app chạy tĩnh trên trình duyệt.</div>
       </div>
     </div>
@@ -7300,11 +7501,12 @@ function renderAccounts(c){
       toast(`Tài khoản "${username}" đã tồn tại — đổi tên tài khoản khác`); return;
     }
     const password = document.getElementById('af_password').value;
+    const email = document.getElementById('af_email').value.trim();
     if(kindSel.value==='partner'){
       const partnerType = partnerModuleSel.value;
       const partnerId = partnerEntitySel.value;
       if(!partnerId){ toast('Chưa có đối tác nào trong module này để gán — thêm NCC/Ngân hàng/Bảo hiểm trước'); return; }
-      const acc = {id:uid('u'), name, username, role:'Đối tác', unit:'', modules:[partnerType], partnerType, partnerId, createdAt: todayISO()};
+      const acc = {id:uid('u'), name, username, role:'Đối tác', unit:'', modules:[partnerType], partnerType, partnerId, email, createdAt: todayISO()};
       await setAccountPassword(acc, password);
       state.accounts.push(acc);
       const modInfo = MODULES.find(m=>m.id===partnerType);
@@ -7317,7 +7519,7 @@ function renderAccounts(c){
     const role = document.getElementById('af_role').value;
     const unit = ensureUnit(document.getElementById('af_unit').value);
     const modules = Array.from(document.querySelectorAll('.af_module:checked')).map(el=>el.value);
-    const acc = {id:uid('u'), name, username, role, unit, modules, createdAt: todayISO()};
+    const acc = {id:uid('u'), name, username, role, unit, modules, email, createdAt: todayISO()};
     await setAccountPassword(acc, password);
     state.accounts.push(acc);
     const modLabel = MODULES.filter(m=>modules.includes(m.id)).map(m=>m.label).join(', ') || '(không module nào)';
@@ -7328,11 +7530,12 @@ function renderAccounts(c){
 
   const tbl = document.getElementById('accountsTable');
   tbl.innerHTML = `
-    <thead><tr><th>Tên hiển thị</th><th>Tài khoản (đăng nhập)</th><th>Vai trò</th><th>Đơn vị phụ trách</th><th>Module</th><th>Mật khẩu</th><th>Ngày tạo</th><th></th></tr></thead>
+    <thead><tr><th>Tên hiển thị</th><th>Tài khoản (đăng nhập)</th><th>Email</th><th>Vai trò</th><th>Đơn vị phụ trách</th><th>Module</th><th>Mật khẩu</th><th>Ngày tạo</th><th></th></tr></thead>
     <tbody>${state.accounts.map(a=>`
       <tr>
         <td><input class="cell-edit" data-field="name" data-id="${a.id}" value="${escAttr(a.name)}"></td>
         <td><input class="cell-edit" data-field="username" data-id="${a.id}" value="${escAttr(a.username||'')}" placeholder="— Chưa đặt (dùng Tên) —" style="min-width:130px"></td>
+        <td><input class="cell-edit" type="email" data-field="email" data-id="${a.id}" value="${escAttr(a.email||'')}" placeholder="— Không có —" style="min-width:150px"></td>
         <td><select class="cell-edit" data-field="role" data-id="${a.id}">${ROLES.filter(r=>r!=='Đối tác'||a.role==='Đối tác').map(r=>`<option ${a.role===r?'selected':''}>${r}</option>`).join('')}</select></td>
         <td>
           <input class="cell-edit" data-field="unit" data-id="${a.id}" list="rowunit_${a.id}" value="${escAttr(a.unit||'')}" placeholder="— Không gán —">
