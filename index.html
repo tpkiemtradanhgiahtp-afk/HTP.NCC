@@ -1007,11 +1007,27 @@ async function subscribeBranch(branch){
   }, err=>{ console.error('Lỗi lắng nghe meta nhánh "'+branch+'"', err); fb.status='error'; fb.error = err.message||String(err); });
   fb.unsubs[branch].push(()=>metaRef.off('value', metaListener));
 
-  for(const field of (BRANCH_RECORD_FIELDS[branch]||[])){
+  await Promise.all((BRANCH_RECORD_FIELDS[branch]||[]).map(async field=>{
     if(!Array.isArray(state[field])) state[field] = [];
     const fieldRef = fb.db.ref(branchPath+'/'+field);
     const fkey = recordFieldKey(branch, field);
     const known = lastSavedRecords[fkey] || (lastSavedRecords[fkey] = new Map());
+
+    // Lấy 1 lần snapshot đầy đủ hiện có -> THAY THẾ HẲN dữ liệu mẫu mặc định (seedState()) đang có sẵn
+    // trong bộ nhớ bằng đúng dữ liệu thật trên Firebase. Bắt buộc phải làm bước này: nếu chỉ dựa vào
+    // child_added, những bản ghi MẪU không hề tồn tại thật trên Firebase (VD tên NCC trùng tên mẫu do
+    // người dùng tự nhập) sẽ không bao giờ được dọn đi, nằm mãi song song với dữ liệu thật, gây hiện trùng
+    // lặp. Việc này chỉ tốn thêm 1 lượt tải "đầy đủ" duy nhất mỗi lần đăng nhập/mở nhánh (đúng như đã nói
+    // trước — lần tải đầu vẫn cần tải đủ dữ liệu), không ảnh hưởng gì tới lợi ích tiết kiệm băng thông
+    // trong lúc đang dùng (các thay đổi SAU đó vẫn chỉ nhận đúng bản ghi thay đổi qua child_added/changed).
+    // Chạy song song cho mọi field (Promise.all) thay vì tuần tự, tránh làm chậm lần tải đầu.
+    try{
+      const snap = await fieldRef.once('value');
+      const obj = snap.exists() ? snap.val() : {};
+      const list = [];
+      Object.keys(obj).forEach(id=>{ known.set(id, JSON.stringify(obj[id])); list.push(obj[id]); });
+      state[field] = list;
+    }catch(e){ console.error('Lỗi tải nhánh bản ghi "'+fkey+'"', e); }
 
     const onAdded = fieldRef.on('child_added', snap=>{
       const id = snap.key;
@@ -1020,7 +1036,13 @@ async function subscribeBranch(branch){
       const json = JSON.stringify(data);
       if(known.get(id)===json) return; // đã biết đúng bản ghi này rồi (echo của chính mình, hoặc trùng)
       known.set(id, json);
-      if(!state[field].some(x=>recordKeyOf(x)===id)) state[field].push(data);
+      // GHI ĐÈ nếu id đã có sẵn (VD trùng với dữ liệu mẫu seedState() dùng id cố định như 'u_admin'), chứ
+      // KHÔNG bỏ qua — nếu chỉ kiểm tra "đã có chưa" rồi bỏ qua, dữ liệu THẬT từ Firebase sẽ không bao giờ
+      // thay được dữ liệu MẪU đang có sẵn (VD tài khoản Admin đổi tên đăng nhập thật sẽ không áp dụng được,
+      // hoặc NCC trùng tên với dữ liệu mẫu bị hiện lặp) — phải cùng logic "thay thế nếu có, thêm nếu chưa"
+      // giống hệt child_changed bên dưới.
+      const idx = state[field].findIndex(x=>recordKeyOf(x)===id);
+      if(idx!==-1) state[field][idx] = data; else state[field].push(data);
       renderAll();
     }, err=>{ console.error('Lỗi lắng nghe (added) '+fkey, err); });
 
@@ -1050,7 +1072,7 @@ async function subscribeBranch(branch){
       fieldRef.off('child_changed', onChanged);
       fieldRef.off('child_removed', onRemoved);
     });
-  }
+  }));
 }
 function unsubscribeBranch(branch){
   if(fb.unsubs[branch]){ fb.unsubs[branch].forEach(fn=>fn()); delete fb.unsubs[branch]; }
