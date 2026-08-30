@@ -297,6 +297,37 @@
   table.data tbody tr:hover{ background:#FBFAF3; }
   table.data td.num, table.data th.num{ font-family:var(--font-tabular); font-variant-numeric:tabular-nums; text-align:right; }
   table.data td.wrap, table.data th.wrap{ white-space:normal; min-width:180px; }
+  /* Cố định 2 cột đầu (Ngân hàng, Gói vay) khi cuộn ngang bảng Chính sách CK NH — ÉP CỨNG chiều rộng
+     (không dùng min-width/wrap co giãn) để mốc "left" của cột 2 luôn khớp chính xác với chiều rộng thật
+     của cột 1, tránh lặp lại lỗi từng gặp khi ước lượng pixel không chính xác (dán cứng dòng tiêu đề). */
+  .sticky-cols-2 th:nth-child(1), .sticky-cols-2 td:nth-child(1){
+    position:sticky; left:0; z-index:2; width:150px; max-width:150px; min-width:150px;
+    white-space:normal; background:var(--panel); border-right:1px solid var(--line);
+  }
+  .sticky-cols-2 th:nth-child(2), .sticky-cols-2 td:nth-child(2){
+    position:sticky; left:150px; z-index:2; width:150px; max-width:150px; min-width:150px;
+    white-space:normal; background:var(--panel); border-right:1px solid var(--line);
+  }
+  .sticky-cols-2 th:nth-child(1), .sticky-cols-2 th:nth-child(2){ background:#FBFAF6; z-index:3; }
+  /* Cố định 4 cột đầu (NCC, Mã CS, Loại, Chu kỳ) khi cuộn ngang bảng Chính sách CK NCC — cùng nguyên tắc
+     ép cứng chiều rộng như .sticky-cols-2 ở trên, để mốc "left" từng cột luôn khớp chính xác tuyệt đối. */
+  .sticky-cols-4 th:nth-child(1), .sticky-cols-4 td:nth-child(1){
+    position:sticky; left:0; z-index:2; width:170px; max-width:170px; min-width:170px;
+    white-space:normal; background:var(--panel);
+  }
+  .sticky-cols-4 th:nth-child(2), .sticky-cols-4 td:nth-child(2){
+    position:sticky; left:170px; z-index:2; width:90px; max-width:90px; min-width:90px;
+    white-space:normal; background:var(--panel);
+  }
+  .sticky-cols-4 th:nth-child(3), .sticky-cols-4 td:nth-child(3){
+    position:sticky; left:260px; z-index:2; width:150px; max-width:150px; min-width:150px;
+    white-space:normal; background:var(--panel);
+  }
+  .sticky-cols-4 th:nth-child(4), .sticky-cols-4 td:nth-child(4){
+    position:sticky; left:410px; z-index:2; width:120px; max-width:120px; min-width:120px;
+    white-space:normal; background:var(--panel); border-right:1px solid var(--line);
+  }
+  .sticky-cols-4 th:nth-child(1), .sticky-cols-4 th:nth-child(2), .sticky-cols-4 th:nth-child(3), .sticky-cols-4 th:nth-child(4){ background:#FBFAF6; z-index:3; }
   .row-del{
     border:none; background:none; color:var(--rust); cursor:pointer; font-size:15px;
     padding:2px 6px; border-radius:5px; line-height:1;
@@ -2500,6 +2531,57 @@ function openPolicyTargetsModal(p, editable){
     });
 }
 
+/* ---------------------------- Nhóm áp dụng mốc CK theo đơn vị (unitScope trên từng mốc) ----------------------------
+   Badge + modal để gắn/gỡ "Nhóm áp dụng" cho 1 dòng mốc CK cơ bản — CHỈ có ý nghĩa với loại "CK theo doanh
+   số"/"CK cố định" (không áp dụng cho "Thưởng thêm"). Để trống (mặc định) = mốc này áp dụng CHUNG, tính
+   trên tổng doanh số toàn NCC như trước giờ — chỉ khi thật sự cần 1 nhóm đơn vị có mốc riêng mới cần gán. */
+function unitScopeBadgeHTML(p){
+  if(!(p.type==='CK theo doanh số'||p.type==='CK cố định')) return '<span style="color:var(--slate)">—</span>';
+  const scope = p.unitScope||[];
+  if(scope.length===0) return `<button class="contract-badge" data-open-scope="1">🏷 Chung</button>`;
+  return `<button class="contract-badge st-active" data-open-scope="1" title="${escAttr(scope.join(', '))}">🏷 ${scope.length===1?escHtml(scope[0]):scope.length+' đơn vị'}</button>`;
+}
+function wireUnitScopeBadges(tbl, editable){
+  tbl.querySelectorAll('[data-open-scope]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      const id = btn.closest('tr').dataset.rowid;
+      const p = state.policies.find(x=>x.id===id);
+      if(p) openUnitScopeModal(p, editable);
+    });
+  });
+}
+function openUnitScopeModal(p, editable){
+  const units = state.units||[];
+  const s = supplierById(p.supplierId);
+  const scope = p.unitScope||[];
+  const bodyHtml = units.length===0 ? `
+    <div class="empty" style="padding:20px 0;"><div class="big">Chưa có đơn vị nào</div>Thêm đơn vị ở tab Cài đặt trước khi gán nhóm.</div>
+  ` : `
+    <div class="helper" style="margin-bottom:12px">Để trống (không tick gì) = mốc này áp dụng CHUNG, tính trên TỔNG doanh số toàn NCC (mặc định, giữ nguyên cách tính cũ). Chỉ tick đúng các đơn vị cần tách riêng mốc — các mốc khác của cùng NCC chưa gán nhóm nào sẽ tự gộp thành 1 nhóm "còn lại", tính trên đúng phần đơn vị chưa bị nhóm nào khác nhận (không cộng trùng doanh số).</div>
+    <div style="display:flex; flex-wrap:wrap; gap:8px 14px; padding:10px; border:1px solid var(--line); border-radius:7px;">
+      ${units.map(u=>`
+        <label style="display:flex; align-items:center; gap:6px; font-size:12.5px; font-weight:400; cursor:pointer;">
+          <input type="checkbox" class="scope-unit-chk" value="${escAttr(u)}" style="width:auto;" ${scope.includes(u)?'checked':''}>${escAttr(u)}
+        </label>`).join('')}
+    </div>
+  `;
+  openModal(`Nhóm áp dụng mốc CK · ${escHtml(p.code||p.id)}`,
+    `${s?escHtml(s.name):''} — Mốc ${fmt(p.threshold)}đ, CK ${fmtPct(p.rate)}`,
+    bodyHtml + (editable&&units.length>0 ? `<button class="btn btn-primary btn-sm" id="scopeSaveBtn" style="margin-top:14px">Lưu nhóm áp dụng</button>` : ''),
+    (body)=>{
+      if(!editable) return;
+      const saveBtn = body.querySelector('#scopeSaveBtn');
+      if(saveBtn) saveBtn.addEventListener('click', ()=>{
+        const chosen = Array.from(body.querySelectorAll('.scope-unit-chk:checked')).map(el=>el.value);
+        p.unitScope = chosen;
+        logActivity('update','Chính sách CK', `${s?s.name:''} · ${p.code||p.id}: đổi nhóm áp dụng → ${chosen.length?chosen.join(', '):'Chung'}`);
+        const warns = tierConflicts(p.supplierId);
+        toast(warns.length>0 ? `Đã lưu — phát hiện ${warns.length} xung đột mốc, xem cảnh báo ở đầu trang` : 'Đã lưu nhóm áp dụng');
+        saveState(); renderAll(); closeModal();
+      });
+    });
+}
+
 /* ---------------------------- Seed data (khớp với file Excel gốc) ---------------------------- */
 function seedState(){
   const suppliers = [
@@ -3078,11 +3160,15 @@ function findSupplierByName(rawName){
   return state.suppliers.find(s=>s.name.trim().toLowerCase()===name) || null;
 }
 
-function sumRevenue(supplierId, from, to, unit){
+function sumRevenue(supplierId, from, to, unitFilter, excludeUnits){
   let total=0;
+  const allowSet = Array.isArray(unitFilter) ? new Set(unitFilter) : null;
+  const excludeSet = Array.isArray(excludeUnits) ? new Set(excludeUnits) : null;
   for(const t of state.transactions){
     if(t.supplierId!==supplierId) continue;
-    if(unit && t.unit!==unit) continue;
+    if(typeof unitFilter==='string' && unitFilter && t.unit!==unitFilter) continue;
+    if(allowSet && !allowSet.has(t.unit)) continue;
+    if(excludeSet && excludeSet.has(t.unit)) continue;
     const d = toDate(t.date);
     if(from && d<from) continue;
     if(to && d>to) continue;
@@ -3092,12 +3178,65 @@ function sumRevenue(supplierId, from, to, unit){
 }
 function allTimeRevenue(supplierId, unit){ return sumRevenue(supplierId, null, null, unit); }
 
-function baseTierPolicies(supplierId, asOfDate){
+/* ---------------------------- Nhóm áp dụng mốc CK theo đơn vị (tuỳ chọn, mặc định KHÔNG dùng) ----------------------------
+   Bình thường 1 NCC chỉ có 1 đường mốc CK duy nhất, tính trên TỔNG doanh số mọi đơn vị — hành vi này giữ
+   NGUYÊN VẸN cho mọi NCC không dùng tính năng này (p.unitScope để trống = mặc định).
+   Nếu 1 NCC cần áp mốc CK RIÊNG cho 1 nhóm đơn vị cụ thể (VD "Khối Xe máy" có mốc khác "Toyota HTP"), gắn
+   p.unitScope = ['Khối Xe máy', ...] vào ĐÚNG các dòng mốc dành cho nhóm đó — các dòng còn lại (không gắn gì)
+   sẽ tự động gộp thành 1 nhóm "còn lại" tính trên đúng phần đơn vị chưa bị nhóm nào khác nhận, để không bao
+   giờ cộng trùng doanh số của 1 đơn vị vào 2 nhóm cùng lúc. */
+function policyGroupKey(p){
+  return (p.unitScope && p.unitScope.length) ? JSON.stringify(p.unitScope.slice().sort()) : '';
+}
+// Trả về danh sách nhóm của 1 NCC: [{groupKey, label, units}]. units=null nghĩa là "không chia nhóm, dùng
+// đúng tổng doanh số như trước giờ" — CHỈ xảy ra khi NCC đó có <=1 nhóm (tức chưa ai gắn unitScope nào).
+function supplierPolicyGroups(supplierId, asOfDate){
+  const allBase = baseTierPolicies(supplierId, asOfDate); // không truyền groupKey -> lấy đủ mọi nhóm
+  const keys = Array.from(new Set(allBase.map(policyGroupKey)));
+  if(keys.length<=1){
+    return [{groupKey:'', label:'', units:null}];
+  }
+  const namedKeys = keys.filter(k=>k!=='');
+  const namedUnitsAll = new Set();
+  const groups = namedKeys.map(k=>{
+    const units = JSON.parse(k);
+    units.forEach(u=>namedUnitsAll.add(u));
+    return {groupKey:k, label: units.join(', '), units};
+  });
+  if(keys.includes('')){
+    const remaining = (state.units||[]).filter(u=>!namedUnitsAll.has(u));
+    groups.push({groupKey:'', label:'Còn lại (chưa gán nhóm)', units:remaining});
+  }
+  return groups;
+}
+function revenueForGroupPeriod(supplierId, group, from, to){
+  if(!group || group.units===null) return sumRevenue(supplierId, from, to); // không chia nhóm -> y hệt hành vi cũ, không lọc gì
+  return sumRevenue(supplierId, from, to, group.units);
+}
+// Tổng "CK phải hưởng" của 1 NCC trong 1 khoảng thời gian, CỘNG DỒN ĐÚNG theo từng nhóm (nếu có chia nhóm)
+// — dùng cho Đối soát CK, nơi cần ra đúng 1 con số tổng cho cả kỳ, không cần hiện chi tiết từng nhóm.
+function groupedDiscountForPeriod(supplierId, from, to, asOfDate){
+  const groups = supplierPolicyGroups(supplierId, asOfDate);
+  let totalRevenue=0, totalDiscount=0;
+  groups.forEach(g=>{
+    const rev = revenueForGroupPeriod(supplierId, g, from, to);
+    totalRevenue += rev;
+    const method = calcMethodOf(supplierId, asOfDate, g.groupKey);
+    const tier = currentTier(supplierId, rev, asOfDate, g.groupKey);
+    const disc = method==='Chỉ phần vượt mốc' ? incrementalDiscount(supplierId, rev, asOfDate, g.groupKey) : (tier ? rev*tier.rate : 0);
+    totalDiscount += disc;
+  });
+  return {revenue: totalRevenue, discount: totalDiscount, rate: totalRevenue>0 ? totalDiscount/totalRevenue : 0, groupCount: groups.length};
+}
+
+function baseTierPolicies(supplierId, asOfDate, groupKey){
   const ref = asOfDate || toDate(state.reportDate) || new Date();
-  return state.policies.filter(p=>p.supplierId===supplierId
+  let list = state.policies.filter(p=>p.supplierId===supplierId
     && (p.type==='CK theo doanh số'||p.type==='CK cố định')
     && (!p.startDate || toDate(p.startDate) <= ref)
     && (!p.endDate || toDate(p.endDate) >= ref));
+  if(groupKey!==undefined) list = list.filter(p=>policyGroupKey(p)===groupKey);
+  return list;
 }
 function bonusPolicies(supplierId, asOfDate){
   const ref = asOfDate || toDate(state.reportDate) || new Date();
@@ -3109,20 +3248,20 @@ function bonusPolicies(supplierId, asOfDate){
 // số gõ ở cột "Mốc" là bao nhiêu — vì bản chất "cố định" là hưởng đúng tỷ lệ đó dù doanh thu bao nhiêu, không
 // phải một bậc thang cần đạt tới. "CK theo doanh số" vẫn dùng đúng số đã cấu hình như bình thường.
 function tierThreshold(p){ return p.type==='CK cố định' ? 0 : (Number(p.threshold)||0); }
-function currentTier(supplierId, revenue, asOfDate){
-  const t = baseTierPolicies(supplierId, asOfDate).filter(p=>tierThreshold(p)<=revenue).sort((a,b)=>tierThreshold(b)-tierThreshold(a));
+function currentTier(supplierId, revenue, asOfDate, groupKey){
+  const t = baseTierPolicies(supplierId, asOfDate, groupKey).filter(p=>tierThreshold(p)<=revenue).sort((a,b)=>tierThreshold(b)-tierThreshold(a));
   return t[0]||null;
 }
-function nextTier(supplierId, revenue, asOfDate){
-  const t = baseTierPolicies(supplierId, asOfDate).filter(p=>tierThreshold(p)>revenue).sort((a,b)=>tierThreshold(a)-tierThreshold(b));
+function nextTier(supplierId, revenue, asOfDate, groupKey){
+  const t = baseTierPolicies(supplierId, asOfDate, groupKey).filter(p=>tierThreshold(p)>revenue).sort((a,b)=>tierThreshold(a)-tierThreshold(b));
   return t[0]||null;
 }
-function calcMethodOf(supplierId, asOfDate){
-  const found = baseTierPolicies(supplierId, asOfDate).find(p=>p.method);
+function calcMethodOf(supplierId, asOfDate, groupKey){
+  const found = baseTierPolicies(supplierId, asOfDate, groupKey).find(p=>p.method);
   return (found && found.method) || 'Hồi tố toàn bộ';
 }
-function incrementalDiscount(supplierId, revenue, asOfDate){
-  const tiers = baseTierPolicies(supplierId, asOfDate).slice().sort((a,b)=>tierThreshold(a)-tierThreshold(b));
+function incrementalDiscount(supplierId, revenue, asOfDate, groupKey){
+  const tiers = baseTierPolicies(supplierId, asOfDate, groupKey).slice().sort((a,b)=>tierThreshold(a)-tierThreshold(b));
   let total=0;
   for(let i=0;i<tiers.length;i++){
     const t = tiers[i];
@@ -3135,25 +3274,35 @@ function incrementalDiscount(supplierId, revenue, asOfDate){
   return total;
 }
 
-/* Phát hiện xung đột cấu hình mốc CK cơ bản của 1 NCC:
+/* Phát hiện xung đột cấu hình mốc CK cơ bản của 1 NCC (tính RIÊNG trong từng nhóm áp dụng nếu có chia nhóm
+   — 2 nhóm khác nhau có đường mốc độc lập, không so sánh chéo với nhau):
    - Trùng mốc doanh số giữa 2 dòng đang hiệu lực (hệ thống sẽ chọn ngẫu nhiên theo thứ tự nhập)
    - Đường cong tỷ lệ CK đi ngược: mốc thấp hơn nhưng % CK cao hơn mốc cao hơn nó
    Trả về mảng chuỗi mô tả xung đột (rỗng nếu không có gì bất thường). */
 function tierConflicts(supplierId, asOfDate){
-  const tiers = baseTierPolicies(supplierId, asOfDate).slice().sort((a,b)=>tierThreshold(a)-tierThreshold(b));
+  const groups = supplierPolicyGroups(supplierId, asOfDate);
   const warnings = [];
-  const seenThreshold = new Map();
-  for(const t of tiers){
-    const th = tierThreshold(t);
-    if(seenThreshold.has(th)){
-      warnings.push(`Trùng mốc hiệu lực ${fmt(th)}đ giữa "${seenThreshold.get(th)}" và "${t.code||t.id}" — hệ thống sẽ chỉ áp dụng 1 dòng theo thứ tự nhập, dòng còn lại vô nghĩa.`);
-    } else seenThreshold.set(th, t.code||t.id);
-  }
-  for(let i=1;i<tiers.length;i++){
-    if(tiers[i].rate < tiers[i-1].rate){
-      warnings.push(`Mốc "${tiers[i-1].code||tiers[i-1].id}" (${fmt(tierThreshold(tiers[i-1]))}đ) đang có tỷ lệ CK ${fmtPct(tiers[i-1].rate)} cao hơn mốc "${tiers[i].code||tiers[i].id}" (${fmt(tierThreshold(tiers[i]))}đ, ${fmtPct(tiers[i].rate)}) — đường cong CK bị đi ngược, kiểm tra lại số liệu đàm phán.`);
+  groups.forEach(g=>{
+    const prefix = g.label ? `[Nhóm ${g.label}] ` : '';
+    const tiers = baseTierPolicies(supplierId, asOfDate, g.groupKey).slice().sort((a,b)=>tierThreshold(a)-tierThreshold(b));
+    const seenThreshold = new Map();
+    for(const t of tiers){
+      const th = tierThreshold(t);
+      if(seenThreshold.has(th)){
+        warnings.push(`${prefix}Trùng mốc hiệu lực ${fmt(th)}đ giữa "${seenThreshold.get(th)}" và "${t.code||t.id}" — hệ thống sẽ chỉ áp dụng 1 dòng theo thứ tự nhập, dòng còn lại vô nghĩa.`);
+      } else seenThreshold.set(th, t.code||t.id);
     }
-  }
+    for(let i=1;i<tiers.length;i++){
+      if(tiers[i].rate < tiers[i-1].rate){
+        warnings.push(`${prefix}Mốc "${tiers[i-1].code||tiers[i-1].id}" (${fmt(tierThreshold(tiers[i-1]))}đ) đang có tỷ lệ CK ${fmtPct(tiers[i-1].rate)} cao hơn mốc "${tiers[i].code||tiers[i].id}" (${fmt(tierThreshold(tiers[i]))}đ, ${fmtPct(tiers[i].rate)}) — đường cong CK bị đi ngược, kiểm tra lại số liệu đàm phán.`);
+      } else if(tiers[i-1].rate>0 && tiers[i].rate >= tiers[i-1].rate*3){
+        // Bước nhảy % quá lớn giữa 2 mốc liền kề (gấp ≥3 lần) — không sai quy tắc (mốc cao hơn, % cao hơn,
+        // đúng chiều tăng dần) nhưng RẤT hiếm khi 1 bước đàm phán thật lại nhảy vọt như vậy — nhiều khả năng
+        // là lỗi gõ nhầm số (VD gõ 70 thay vì 7), nên cảnh báo để người nhập tự kiểm tra lại, không chặn lưu.
+        warnings.push(`${prefix}Mốc "${tiers[i].code||tiers[i].id}" có tỷ lệ CK ${fmtPct(tiers[i].rate)} — cao gấp ${Math.round(tiers[i].rate/tiers[i-1].rate)} lần mốc liền trước "${tiers[i-1].code||tiers[i-1].id}" (${fmtPct(tiers[i-1].rate)}). Bước nhảy lớn bất thường — kiểm tra lại có phải gõ nhầm số không (VD nhập 70 thay vì 7).`);
+      }
+    }
+  });
   return warnings;
 }
 
@@ -3171,29 +3320,49 @@ function bonusAmount(supplierId, ref){
   }
   return total;
 }
-function supplierPeriodRevenue(supplierId, ref){
+function supplierPeriodRevenue(supplierId, ref, group){
   const cycle = state.monitoring[supplierId] || 'Cần xác nhận';
   const period = cyclePeriod(cycle, ref);
   if(!period) return {revenue:null, cycle};
-  return {revenue: sumRevenue(supplierId, period[0], period[1]), cycle, period};
+  const revenue = group ? revenueForGroupPeriod(supplierId, group, period[0], period[1]) : sumRevenue(supplierId, period[0], period[1]);
+  return {revenue, cycle, period};
 }
-function fullSupplierCalc(supplierId){
+function fullSupplierCalc(supplierId, group){
   const ref = toDate(state.reportDate) || new Date();
-  const {revenue, cycle, period} = supplierPeriodRevenue(supplierId, ref);
-  const tiers = baseTierPolicies(supplierId, ref);
-  const conflicts = tierConflicts(supplierId, ref);
+  const {revenue, cycle, period} = supplierPeriodRevenue(supplierId, ref, group);
+  const groupKey = group ? group.groupKey : undefined;
+  const tiers = baseTierPolicies(supplierId, ref, groupKey);
+  const conflicts = tierConflicts(supplierId, ref); // đã tự tách theo từng nhóm bên trong, không cần truyền group ở đây
+  const includeBonus = !group || group.includeBonus!==false;
   if(revenue===null){
-    return {revenue:null, cycle, tiers, cur:null, next:null, base:null, bonus: bonusAmount(supplierId,ref), total:null, method:calcMethodOf(supplierId, ref), conflicts};
+    return {revenue:null, cycle, tiers, cur:null, next:null, base:null, bonus: includeBonus?bonusAmount(supplierId,ref):0, total:null, method:calcMethodOf(supplierId, ref, groupKey), conflicts, group};
   }
-  const cur = currentTier(supplierId, revenue, ref);
-  const nxt = nextTier(supplierId, revenue, ref);
-  const method = calcMethodOf(supplierId, ref);
-  const base = method==='Chỉ phần vượt mốc' ? incrementalDiscount(supplierId, revenue, ref) : (cur ? revenue*cur.rate : 0);
+  const cur = currentTier(supplierId, revenue, ref, groupKey);
+  const nxt = nextTier(supplierId, revenue, ref, groupKey);
+  const method = calcMethodOf(supplierId, ref, groupKey);
+  const incremental = incrementalDiscount(supplierId, revenue, ref, groupKey); // luôn tính song song để so sánh, dù method là gì
+  const base = method==='Chỉ phần vượt mốc' ? incremental : (cur ? revenue*cur.rate : 0);
   const baseRetro = cur ? revenue*cur.rate : 0;
-  const bonus = bonusAmount(supplierId, ref);
+  // "Hồi tố toàn bộ" tính lại TOÀN BỘ doanh số theo tỷ lệ mốc mới nhất — retroDelta là phần tiền CHÊNH LỆCH
+  // THÊM so với nếu chỉ tính % trên đúng phần doanh số vượt qua từng mốc (incremental) — giúp người xem hiểu
+  // vì sao số CK tăng vọt khi vừa qua 1 mốc mới, không phải bị tính sai.
+  const retroDelta = method==='Hồi tố toàn bộ' ? Math.max(0, base - incremental) : 0;
+  const bonus = includeBonus ? bonusAmount(supplierId, ref) : 0;
   const targetVND = nxt ? nxt.threshold*nxt.rate : baseRetro;
   const opportunity = Math.max(0, targetVND - baseRetro);
-  return {revenue, period, cycle, tiers, cur, next:nxt, base, baseRetro, bonus, total: base+bonus, method, opportunity, missing: nxt? Math.max(0,nxt.threshold-revenue):0, conflicts};
+  return {revenue, period, cycle, tiers, cur, next:nxt, base, baseRetro, retroDelta, bonus, total: base+bonus, method, opportunity, missing: nxt? Math.max(0,nxt.threshold-revenue):0, conflicts, group};
+}
+// Tách 1 NCC thành danh sách CÁC NHÓM để tính riêng (nếu có chia nhóm) — NCC bình thường (chưa dùng tính
+// năng này) trả về đúng 1 phần tử duy nhất, gọi y hệt fullSupplierCalc(supplierId) như trước giờ, KHÔNG
+// đổi hành vi gì cả. Chỉ khi NCC có ≥2 nhóm mới trả về nhiều phần tử — mỗi phần tử là 1 dòng riêng khi hiển
+// thị ở "Theo dõi mốc CK"/Dashboard. Thưởng thêm chỉ cộng vào ĐÚNG 1 nhóm đầu tiên để không bị cộng trùng.
+function supplierCalcGroups(supplierId){
+  const ref = toDate(state.reportDate) || new Date();
+  const groups = supplierPolicyGroups(supplierId, ref);
+  if(groups.length<=1){
+    return [{ groupKey:'', label:'', calc: fullSupplierCalc(supplierId) }];
+  }
+  return groups.map((g,i)=>({ groupKey:g.groupKey, label:g.label, calc: fullSupplierCalc(supplierId, {...g, includeBonus: i===0}) }));
 }
 
 /* ---------------------------- Router / Nav ---------------------------- */
@@ -3674,11 +3843,17 @@ function renderDashboard(c){
   let nccTop = [];
   if(showNcc){
     let totalRevenue=0, totalDiscount=0, totalOpportunity=0, needConfirm=0;
-    const rows = state.suppliers.map(s=>{
-      const calc = fullSupplierCalc(s.id);
-      if(calc.revenue===null) needConfirm++;
-      else { totalRevenue += calc.revenue; totalDiscount += calc.total; totalOpportunity += (calc.opportunity||0); }
-      return {s, calc};
+    const rows = [];
+    state.suppliers.forEach(s=>{
+      const groups = supplierCalcGroups(s.id);
+      let supplierNeedsConfirm = false;
+      groups.forEach(g=>{
+        const calc = g.calc;
+        if(calc.revenue===null) supplierNeedsConfirm = true;
+        else { totalRevenue += calc.revenue; totalDiscount += calc.total; totalOpportunity += (calc.opportunity||0); }
+        rows.push({s, calc, groupLabel: groups.length>1 ? g.label : ''});
+      });
+      if(supplierNeedsConfirm) needConfirm++;
     });
     // "Còn phải thu" tôn trọng đúng bộ lọc Tháng/Năm (khác với Doanh số/CK dự kiến ở trên — 2 khái niệm
     // khác nhau: 1 bên theo Chu kỳ theo dõi riêng từng NCC, 1 bên theo từng Kỳ đối soát đã lập).
@@ -3847,7 +4022,7 @@ function renderDashboard(c){
         </tr></thead>
         <tbody>${nccTop.map(r=>`
           <tr>
-            <td class="wrap">${escHtml(r.s.name)}</td>
+            <td class="wrap">${escHtml(r.s.name)}${r.groupLabel?`<div class="meta-line">🏷 ${escHtml(r.groupLabel)}</div>`:''}</td>
             <td class="num">${fmt(r.calc.revenue)}</td>
             <td class="num">${r.calc.next?fmt(r.calc.next.threshold):'—'}</td>
             <td class="num">${fmt(r.calc.missing)}</td>
@@ -3911,7 +4086,7 @@ function renderMonitor(c){
       </div>
     </div>
     ${editable ? '' : lockedNote('Chỉ Admin/Quản lý mới đổi Ngày báo cáo và Chu kỳ theo dõi. Bạn đang xem ở chế độ chỉ đọc.')}
-    ${conflictCount>0 ? `<div class="locked-note" style="border-color:var(--rust);color:var(--rust);background:var(--rust-soft)">⚠ Có ${conflictCount} xung đột cấu hình mốc CK (trùng mốc / đường cong đi ngược) — xem chi tiết ở tab "Chính sách CK".</div>` : ''}
+    ${conflictCount>0 ? `<div class="locked-note" id="conflictBanner" style="border-color:var(--rust);color:var(--rust);background:var(--rust-soft);cursor:pointer" title="Bấm để xem chi tiết">⚠ Có ${conflictCount} xung đột cấu hình mốc CK (trùng mốc / đường cong đi ngược) — bấm để xem chi tiết ở tab "Chính sách CK".</div>` : ''}
     <div class="panel">
       <div class="panel-head">
         <div><h2>Bảng theo dõi mốc CK theo NCC</h2>
@@ -3925,6 +4100,8 @@ function renderMonitor(c){
     logActivity('update','Theo dõi mốc CK', `Đổi Ngày báo cáo → ${e.target.value}`);
     renderAll();
   });
+  const conflictBanner = document.getElementById('conflictBanner');
+  if(conflictBanner) conflictBanner.addEventListener('click', ()=>{ activeTab = 'policies'; renderAll(); });
 
   const tbl = document.getElementById('monitorTable');
   tbl.innerHTML = `
@@ -3934,11 +4111,16 @@ function renderMonitor(c){
       <th class="num">CK mục tiêu</th><th class="num">Còn thiếu</th><th>Phương pháp áp dụng</th>
       <th class="num">CK (mốc, VNĐ)</th><th class="num">Thưởng thêm (VNĐ)</th><th class="num">TỔNG (VNĐ)</th><th>Trạng thái</th>
     </tr></thead>
-    <tbody>${state.suppliers.map(s=>{
-      const calc = fullSupplierCalc(s.id);
-      const hasConflict = calc.conflicts && calc.conflicts.length>0;
-      return `<tr ${hasConflict?'style="background:var(--rust-soft)"':''}>
-        <td class="wrap">${escHtml(s.name)}${hasConflict?` <span title="${escAttr(calc.conflicts.join(' | '))}">⚠</span>`:''}</td>
+    <tbody>${state.suppliers.flatMap(s=>{
+      const groups = supplierCalcGroups(s.id);
+      return groups.map(g=>{
+        const calc = g.calc;
+        const hasConflict = calc.conflicts && calc.conflicts.length>0;
+        const nameCell = groups.length>1
+          ? `${escHtml(s.name)}<div class="meta-line">🏷 ${escHtml(g.label||'Còn lại')}</div>`
+          : escHtml(s.name);
+        return `<tr ${hasConflict?'style="background:var(--rust-soft)"':''}>
+        <td class="wrap">${nameCell}${hasConflict?` <span title="${escAttr(calc.conflicts.join(' | '))}">⚠</span>`:''}</td>
         <td>
           <select class="cell-edit" data-monitor="${s.id}" ${editable?'':'disabled'}>
             ${['Cần xác nhận','THANG','QUY','YTD'].map(v=>`<option value="${v}" ${state.monitoring[s.id]===v?'selected':''}>${v}</option>`).join('')}
@@ -3951,11 +4133,12 @@ function renderMonitor(c){
         <td class="num">${calc.next?fmtPct(calc.next.rate):'—'}</td>
         <td class="num">${calc.revenue===null?'—':fmt(calc.missing)}</td>
         <td><span class="tag ${calc.method==='Chỉ phần vượt mốc'?'gold':''}">${calc.method}</span></td>
-        <td class="num">${calc.base===null?'—':fmt(calc.base)}</td>
+        <td class="num">${calc.base===null?'—':fmt(calc.base)}${calc.retroDelta>0?`<div class="meta-line" style="color:var(--amber)" title="Phần chênh lệch thêm do 'Hồi tố toàn bộ' tính lại trên TOÀN BỘ doanh số theo tỷ lệ mốc mới nhất, so với chỉ tính % trên đúng phần doanh số vượt từng mốc">+${fmt(calc.retroDelta)} nhờ hồi tố</div>`:''}</td>
         <td class="num">${fmt(calc.bonus)}</td>
         <td class="num" style="font-weight:700">${calc.total===null?fmt(calc.bonus):fmt(calc.total)}</td>
         <td>${statusStamp(calc)}</td>
       </tr>`;
+      });
     }).join('')}</tbody>`;
   if(editable) tbl.querySelectorAll('[data-monitor]').forEach(sel=>{
     sel.addEventListener('change', e=>{
@@ -4193,7 +4376,7 @@ function renderPolicies(c){
     </div>` : lockedNote('Bạn đang xem ở chế độ chỉ đọc — chỉ Admin/Quản lý mới thêm/sửa chính sách CK.')}
     <div class="panel">
       <div class="panel-head"><div><h2>Tất cả chính sách</h2></div></div>
-      <div class="panel-body flush"><div class="tbl-wrap"><table class="data" id="policyTable"></table></div></div>
+      <div class="panel-body flush"><div class="tbl-wrap"><table class="data sticky-cols-4" id="policyTable"></table></div></div>
     </div>
   `;
   if(editable){
@@ -4237,7 +4420,7 @@ function renderPolicies(c){
   tbl.innerHTML = `
     <thead><tr>
       <th class="wrap">NCC</th><th>Mã CS</th><th>Loại</th><th>Chu kỳ</th><th class="num money-col">Mốc (VNĐ)</th>
-      <th class="num">Tỷ lệ CK</th><th class="num">Thưởng thêm</th><th>Bắt đầu</th><th>Kết thúc</th><th>Phương pháp</th><th class="wrap">Điều kiện</th><th>Phân bổ đơn vị</th><th></th>
+      <th class="num">Tỷ lệ CK</th><th class="num">Thưởng thêm</th><th>Bắt đầu</th><th>Kết thúc</th><th>Phương pháp</th><th class="wrap">Điều kiện</th><th>Nhóm áp dụng</th><th>Phân bổ đơn vị</th><th></th>
     </tr></thead>
     <tbody>${policyList.map(p=>{
       const s = supplierById(p.supplierId);
@@ -4257,10 +4440,12 @@ function renderPolicies(c){
         <td><input class="cell-edit" data-field="endDate" data-id="${p.id}" type="date" value="${p.endDate||''}" ${dis} title="Quá ngày này, dòng chính sách này tự ngừng được tính"></td>
         <td><select class="cell-edit" data-field="method" data-id="${p.id}" ${dis}>${['Hồi tố toàn bộ','Chỉ phần vượt mốc'].map(v=>`<option ${p.method===v?'selected':''}>${v}</option>`).join('')}</select></td>
         <td class="wrap"><input class="cell-edit" data-field="condition" data-id="${p.id}" value="${escAttr(p.condition||'')}" ${dis}></td>
+        <td>${unitScopeBadgeHTML(p)}</td>
         <td>${policyTargetBadgeHTML(p)}</td>
         <td>${editable?`<button class="row-del" data-del="${p.id}">✕</button>`:''}</td>
       </tr>`;
     }).join('')}</tbody>`;
+  wireUnitScopeBadges(tbl, editable);
   wirePolicyTargetBadges(tbl, editable);
   if(editable){
     wireCellEdits(tbl, state.policies, 'Chính sách CK', p=>p.code||p.id);
@@ -4736,20 +4921,19 @@ function wireLockToggle(tbl){
 function reconCalc(r){
   const from = toDate(r.fromDate), to = toDate(r.toDate);
   if(!r.supplierId || !from || !to) return {revenue:0, rate:0, discount:0, bonus:0, totalDue:0, diff:0, stillOwed:0};
-  const revenue = sumRevenue(r.supplierId, from, to);
   // Dùng đúng "Phương pháp áp dụng" (hồi tố toàn bộ / chỉ phần vượt mốc) và tôn trọng "Ngày kết thúc"
   // của từng mốc — đánh giá hiệu lực mốc TẠI THỜI ĐIỂM CUỐI KỲ đối soát (to), không phải hôm nay,
   // để đối soát 1 kỳ trong quá khứ vẫn đúng ngay cả khi mốc đó đã hết hạn ở hiện tại.
-  const method = calcMethodOf(r.supplierId, to);
-  const tier = currentTier(r.supplierId, revenue, to);
-  const rate = tier ? tier.rate : 0;
-  const discount = method==='Chỉ phần vượt mốc' ? incrementalDiscount(r.supplierId, revenue, to) : revenue*rate;
+  // groupedDiscountForPeriod() tự cộng dồn đúng theo từng NHÓM áp dụng nếu NCC có chia nhóm (xem
+  // supplierPolicyGroups) — NCC không chia nhóm thì kết quả y hệt cách tính cũ (1 nhóm duy nhất = cả NCC).
+  const g = groupedDiscountForPeriod(r.supplierId, from, to, to);
+  const method = calcMethodOf(r.supplierId, to); // chỉ để hiển thị tham khảo — khi có nhiều nhóm, mỗi nhóm có thể dùng phương pháp khác nhau, số này chỉ đại diện nhóm đầu tiên
   const ref = toDate(state.reportDate) || new Date();
   const bonus = bonusAmount(r.supplierId, ref);
-  const totalDue = discount + bonus;
+  const totalDue = g.discount + bonus;
   const confirmed = Number(r.confirmed)||0;
   const received = reconReceivedTotal(r);
-  return {revenue, rate, discount, bonus, totalDue, diff: received-totalDue, stillOwed: Math.max(0, totalDue-received), received, method};
+  return {revenue: g.revenue, rate: g.rate, discount: g.discount, bonus, totalDue, diff: received-totalDue, stillOwed: Math.max(0, totalDue-received), received, method, groupCount: g.groupCount};
 }
 
 function renderReconcile(c){
@@ -4869,7 +5053,7 @@ function renderReconTable(editable){
         <td class="wrap">${s?escHtml(s.name):'<em>(đã xoá)</em>'}</td>
         <td>${r.fromDate}</td><td>${r.toDate}</td>
         <td class="num">${fmt(rc.revenue)}</td>
-        <td><span class="tag ${rc.method==='Chỉ phần vượt mốc'?'gold':''}" title="Mốc %CK: ${fmtPct(rc.rate)}">${rc.method||'—'}</span></td>
+        <td><span class="tag ${rc.method==='Chỉ phần vượt mốc'?'gold':''}" title="Mốc %CK: ${fmtPct(rc.rate)}${rc.groupCount>1?' (bình quân gia quyền theo '+rc.groupCount+' nhóm áp dụng)':''}">${rc.method||'—'}</span>${rc.groupCount>1?`<div class="meta-line">🏷 ${rc.groupCount} nhóm</div>`:''}</td>
         <td class="num">${fmt(rc.discount)}${lockMismatchNote(r, rc.totalDue)}</td>
         <td class="num" title="Tính theo Ngày báo cáo ở tab Theo dõi mốc CK, không theo Đến ngày của kỳ này">${fmt(rc.bonus)}</td>
         <td class="num money-col"><input class="cell-edit money" data-field="confirmed" data-id="${r.id}" type="text" inputmode="numeric" value="${formatMoneyValue(r.confirmed)}" ${confirmedDis} title="${isPartnerSelf?'Bạn có thể tự xác nhận số hoa hồng của mình tại đây':''}"></td>
@@ -5181,6 +5365,7 @@ function renderBankSuppliers(c){
 }
 
 /* ---------------------------- Ngân hàng · Chính sách CK (điều kiện vay theo tháng) ---------------------------- */
+let bankPolicyRenewalFilter = ''; // '' | 'yes' | 'no' — lọc theo cờ "Yêu cầu tái tục hằng năm", giữ nguyên qua lại giữa các lần vẽ trang
 function renderBankPolicies(c){
   const pf = partnerScopeFilter('bankId');
   const policyCount = pf ? state.bankPolicies.filter(pf).length : state.bankPolicies.length;
@@ -5219,11 +5404,21 @@ function renderBankPolicies(c){
       </div>
     </div>` : lockedNote('Bạn đang xem ở chế độ chỉ đọc — chỉ Admin/Quản lý mới thêm/sửa chính sách.')}
     <div class="panel">
-      <div class="panel-head"><div><h2>Tất cả chính sách theo tháng</h2>
-      <div class="desc">1 ngân hàng có thể có nhiều gói vay song song trong cùng 1 tháng — mỗi gói 1 dòng, chỉ cần khác "Tên gói vay". Chính sách của 1 gói áp dụng từ tháng nhập cho tới khi có dòng chính sách tháng mới hơn của ĐÚNG gói đó.</div></div></div>
-      <div class="panel-body flush"><div class="tbl-wrap"><table class="data" id="bankPolicyTable"></table></div></div>
+      <div class="panel-head">
+        <div><h2>Tất cả chính sách theo tháng</h2>
+        <div class="desc">1 ngân hàng có thể có nhiều gói vay song song trong cùng 1 tháng — mỗi gói 1 dòng, chỉ cần khác "Tên gói vay". Chính sách của 1 gói áp dụng từ tháng nhập cho tới khi có dòng chính sách tháng mới hơn của ĐÚNG gói đó.</div></div>
+        <div class="field" style="max-width:220px"><label>Lọc theo tái tục hằng năm</label>
+          <select id="bankPolicyRenewalFilterSel">
+            <option value="">Tất cả gói vay</option>
+            <option value="yes" ${bankPolicyRenewalFilter==='yes'?'selected':''}>Chỉ gói YÊU CẦU tái tục</option>
+            <option value="no" ${bankPolicyRenewalFilter==='no'?'selected':''}>Chỉ gói KHÔNG yêu cầu</option>
+          </select>
+        </div>
+      </div>
+      <div class="panel-body flush"><div class="tbl-wrap"><table class="data sticky-cols-2" id="bankPolicyTable"></table></div></div>
     </div>
   `;
+  document.getElementById('bankPolicyRenewalFilterSel').addEventListener('change', e=>{ bankPolicyRenewalFilter = e.target.value; renderAll(); });
   if(editable){
     document.getElementById('addBankPolicyBtn').addEventListener('click', ()=>{
       const bankId = document.getElementById('bpf_bank').value;
@@ -5256,9 +5451,14 @@ function renderBankPolicies(c){
   if(state.banks.length===0){
     tbl.outerHTML = `<div class="empty"><div class="big">Chưa có ngân hàng</div>Thêm ngân hàng ở tab "Danh mục NCC" trước.</div>`; return;
   }
-  const scopedPolicies = pf ? state.bankPolicies.filter(pf) : state.bankPolicies;
-  if(scopedPolicies.length===0){
+  const allScopedPolicies = pf ? state.bankPolicies.filter(pf) : state.bankPolicies;
+  if(allScopedPolicies.length===0){
     tbl.outerHTML = `<div class="empty"><div class="big">Chưa có chính sách nào</div>${editable?'Thêm chính sách ở form phía trên.':''}</div>`; return;
+  }
+  const scopedPolicies = allScopedPolicies
+    .filter(p=> !bankPolicyRenewalFilter || (bankPolicyRenewalFilter==='yes' ? !!p.annualRenewalRequired : !p.annualRenewalRequired));
+  if(scopedPolicies.length===0){
+    tbl.outerHTML = `<div class="empty"><div class="big">Không có chính sách nào khớp bộ lọc</div></div>`; return;
   }
   const dis = editable?'':'disabled';
   const sorted = scopedPolicies.slice().sort((a,b)=>{
@@ -7993,7 +8193,9 @@ function renderTrash(c){
   });
 }
 
+let accountsSelected = new Set(); // chọn tạm để xoá hàng loạt — reset mỗi lần mở lại trang Quản trị tài khoản
 function renderAccounts(c){
+  accountsSelected = new Set();
   setTitle('Quản trị tài khoản', state.accounts.length+' tài khoản — phân quyền theo vai trò, module & đơn vị phụ trách');
   c.innerHTML = `
     <div class="panel">
@@ -8045,7 +8247,10 @@ function renderAccounts(c){
       </div>
     </div>
     <div class="panel">
-      <div class="panel-head"><div><h2>Danh sách tài khoản</h2></div></div>
+      <div class="panel-head">
+        <div><h2>Danh sách tài khoản</h2></div>
+        <div id="acctsBulkBar" style="display:flex;gap:8px;align-items:center"></div>
+      </div>
       <div class="panel-body flush"><div class="tbl-wrap"><table class="data" id="accountsTable"></table></div></div>
     </div>
     <div class="panel">
@@ -8140,9 +8345,10 @@ function renderAccounts(c){
 
   const tbl = document.getElementById('accountsTable');
   tbl.innerHTML = `
-    <thead><tr><th>Tên hiển thị</th><th>Tài khoản (đăng nhập)</th><th>Email</th><th>Vai trò</th><th>Đơn vị phụ trách</th><th>Module</th><th>Mật khẩu</th><th>Ngày tạo</th><th></th></tr></thead>
+    <thead><tr><th style="width:32px"><input type="checkbox" id="acctsSelectAll" title="Chọn tất cả"></th><th>Tên hiển thị</th><th>Tài khoản (đăng nhập)</th><th>Email</th><th>Vai trò</th><th>Đơn vị phụ trách</th><th>Module</th><th>Mật khẩu</th><th>Ngày tạo</th><th></th></tr></thead>
     <tbody>${state.accounts.map(a=>`
       <tr>
+        <td><input type="checkbox" class="acct-check" data-id="${a.id}" ${a.id===currentUserId?'disabled title="Không tự chọn xoá chính mình"':''}></td>
         <td><input class="cell-edit" data-field="name" data-id="${a.id}" value="${escAttr(a.name)}"></td>
         <td><input class="cell-edit" data-field="username" data-id="${a.id}" value="${escAttr(a.username||'')}" placeholder="— Chưa đặt (dùng Tên) —" style="min-width:130px"></td>
         <td><input class="cell-edit" type="email" data-field="email" data-id="${a.id}" value="${escAttr(a.email||'')}" placeholder="— Không có —" style="min-width:150px"></td>
@@ -8176,6 +8382,54 @@ function renderAccounts(c){
         <td>${a.createdAt||''}</td>
         <td>${a.id===currentUserId?'<span class="tag gold">Bạn</span>':`<button class="row-del" data-del="${a.id}">✕</button>`}</td>
       </tr>`).join('')}</tbody>`;
+  function refreshAcctsSelectAllState(){
+    const cb = document.getElementById('acctsSelectAll');
+    if(!cb) return;
+    const selectableIds = state.accounts.filter(a=>a.id!==currentUserId).map(a=>a.id);
+    const allSelected = selectableIds.length>0 && selectableIds.every(id=>accountsSelected.has(id));
+    cb.checked = allSelected;
+    cb.indeterminate = accountsSelected.size>0 && !allSelected;
+  }
+  function updateAcctsBulkBar(){
+    const bar = document.getElementById('acctsBulkBar');
+    const n = accountsSelected.size;
+    bar.innerHTML = n>0 ? `<span style="font-size:12.5px;color:var(--slate)">${n} đã chọn</span><button class="btn btn-danger-ghost" id="acctsBulkDelBtn">🗑 Xoá ${n} tài khoản đã chọn</button>` : '';
+    if(n>0){
+      document.getElementById('acctsBulkDelBtn').addEventListener('click', ()=>{
+        const ids = Array.from(accountsSelected);
+        const adminCountAfter = state.accounts.filter(a=>a.role==='Admin' && !ids.includes(a.id)).length;
+        if(adminCountAfter<1){ toast('Cần giữ lại ít nhất 1 tài khoản Admin — bỏ bớt lựa chọn'); return; }
+        confirmModal(`Chuyển ${ids.length} tài khoản đã chọn vào Thùng rác?`, ()=>{
+          let count = 0;
+          ids.forEach(id=>{
+            const acc = state.accounts.find(a=>a.id===id);
+            if(!acc || acc.id===currentUserId) return;
+            softDelete('accounts', acc, 'Tài khoản');
+            logActivity('delete','Tài khoản', `Xoá tài khoản "${acc.name}" (xoá hàng loạt)`);
+            count++;
+          });
+          toast(`Đã xoá ${count} tài khoản — khôi phục lại được ở Thùng rác`);
+          renderAll();
+        });
+      });
+    }
+  }
+  tbl.querySelectorAll('.acct-check').forEach(cb=>{
+    cb.addEventListener('change', ()=>{
+      if(cb.checked) accountsSelected.add(cb.dataset.id); else accountsSelected.delete(cb.dataset.id);
+      refreshAcctsSelectAllState();
+      updateAcctsBulkBar();
+    });
+  });
+  const acctsSelectAllCb = document.getElementById('acctsSelectAll');
+  if(acctsSelectAllCb) acctsSelectAllCb.addEventListener('change', e=>{
+    const selectableIds = state.accounts.filter(a=>a.id!==currentUserId).map(a=>a.id);
+    if(e.target.checked) selectableIds.forEach(id=>accountsSelected.add(id));
+    else accountsSelected.clear();
+    tbl.querySelectorAll('.acct-check').forEach(cb=>{ cb.checked = accountsSelected.has(cb.dataset.id); });
+    updateAcctsBulkBar();
+  });
+  updateAcctsBulkBar();
   tbl.querySelectorAll('.module-toggle').forEach(cb=>{
     cb.addEventListener('change', ()=>{
       const acc = state.accounts.find(a=>a.id===cb.dataset.acc);
@@ -8294,19 +8548,49 @@ function renderActivityLog(c){
   const log = combinedActivityLog();
   setTitle('Nhật ký hoạt động', log.length+' thao tác gần nhất trên toàn hệ thống');
   const users = ['Tất cả', ...new Set(log.map(l=>l.userName))];
+  let visibleCount = 300;
+  let keyword = '';
+  let filterUser = 'Tất cả';
   c.innerHTML = `
     <div class="panel">
       <div class="panel-head">
         <div><h2>Lịch sử thao tác</h2><div class="desc">Ghi lại mọi thêm/sửa/xoá trên toàn hệ thống, mới nhất trước</div></div>
-        <div class="field" style="width:200px"><select id="logUserFilter">${users.map(u=>`<option>${escHtml(u)}</option>`).join('')}</select></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <input id="logKeyword" placeholder="Tìm theo từ khoá (khu vực, chi tiết, người...)" style="min-width:230px">
+          <select id="logUserFilter">${users.map(u=>`<option>${escHtml(u)}</option>`).join('')}</select>
+        </div>
       </div>
       <div class="panel-body flush"><div class="tbl-wrap"><table class="data" id="logTable"></table></div></div>
+      <div class="panel-body" id="logMoreBox" style="display:none;text-align:center">
+        <button class="btn btn-ghost" id="logMoreBtn">Xem thêm</button>
+      </div>
     </div>
   `;
-  function draw(filterUser){
-    const rows = log.filter(l=> !filterUser || filterUser==='Tất cả' || l.userName===filterUser).slice(0,300);
+  function filteredLog(){
+    const kw = keyword.trim().toLowerCase();
+    return log.filter(l=>{
+      if(filterUser!=='Tất cả' && l.userName!==filterUser) return false;
+      if(kw){
+        const hay = [l.userName, l.role, l.entity, l.action, l.detail].join(' ').toLowerCase();
+        if(!hay.includes(kw)) return false;
+      }
+      return true;
+    });
+  }
+  function draw(){
+    const all = filteredLog();
+    const rows = all.slice(0, visibleCount);
     const tbl = document.getElementById('logTable');
-    if(rows.length===0){ tbl.outerHTML = `<div class="empty"><div class="big">Chưa có hoạt động nào</div></div>`; return; }
+    const moreBox = document.getElementById('logMoreBox');
+    if(rows.length===0){
+      tbl.innerHTML = '';
+      tbl.style.display = 'none';
+      moreBox.style.display = 'none';
+      tbl.insertAdjacentHTML('afterend', `<div class="empty" id="logEmptyMsg"><div class="big">Không có hoạt động nào khớp bộ lọc</div></div>`);
+      return;
+    }
+    const oldEmpty = document.getElementById('logEmptyMsg'); if(oldEmpty) oldEmpty.remove();
+    tbl.style.display = '';
     tbl.innerHTML = `
       <thead><tr><th>Thời gian</th><th>Người thực hiện</th><th>Khu vực</th><th>Hành động</th><th class="wrap">Chi tiết</th></tr></thead>
       <tbody>${rows.map(l=>{
@@ -8314,15 +8598,23 @@ function renderActivityLog(c){
         const actionLabel = l.action==='create'?'Thêm':l.action==='update'?'Sửa':'Xoá';
         return `<tr class="log-row">
           <td>${t.toLocaleString('vi-VN')}</td>
-          <td class="who">${l.userName} <span class="role-badge ${roleBadgeClass(l.role)}">${l.role}</span></td>
-          <td>${l.entity}</td>
+          <td class="who">${escHtml(l.userName)} <span class="role-badge ${roleBadgeClass(l.role)}">${escHtml(l.role)}</span></td>
+          <td>${escHtml(l.entity)}</td>
           <td><span class="action-badge ${l.action}">${actionLabel}</span></td>
           <td class="wrap">${escHtml(l.detail||'')}</td>
         </tr>`;
       }).join('')}</tbody>`;
+    if(all.length > rows.length){
+      moreBox.style.display = '';
+      document.getElementById('logMoreBtn').textContent = `Xem thêm 300 dòng (còn ${all.length-rows.length} dòng khớp bộ lọc)`;
+    } else {
+      moreBox.style.display = 'none';
+    }
   }
-  draw('Tất cả');
-  document.getElementById('logUserFilter').addEventListener('change', e=> draw(e.target.value));
+  draw();
+  document.getElementById('logUserFilter').addEventListener('change', e=>{ filterUser=e.target.value; visibleCount=300; draw(); });
+  document.getElementById('logKeyword').addEventListener('input', e=>{ keyword=e.target.value; visibleCount=300; draw(); });
+  document.getElementById('logMoreBtn').addEventListener('click', ()=>{ visibleCount+=300; draw(); });
 }
 
 /* ---------------------------- Init ---------------------------- */
