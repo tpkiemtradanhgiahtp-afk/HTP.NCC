@@ -541,6 +541,10 @@
     width:38px; height:38px; border-radius:9px; border:1px solid var(--line);
     background:var(--panel); cursor:pointer; font-size:18px; flex:0 0 auto; margin-right:10px;
   }
+  /* Ẩn hẳn ở MỌI kích thước màn hình theo mặc định — chỉ khối @media bên dưới mới cho hiện lại đúng lúc cần
+     (trên di động, khi bấm ☰). Thiếu dòng này thì trên máy tính, div rỗng này vô tình thành 1 flex-item lạc
+     trong .shell (vì .shell là display:flex) — vô hại về mặt hiển thị nhưng sai về cấu trúc, nên vá cho đúng. */
+  .sidebar-backdrop{ display:none; }
 
   /* ---------- Login gate (dark theme) ---------- */
   .login-screen{
@@ -882,9 +886,9 @@ let fb = { status:'disconnected', db:null, refs:{}, unsubs:{}, loaded:{}, error:
 // tải lại nguyên khối mỗi khi có ai đó thao tác — quan trọng khi dữ liệu tích luỹ nhiều theo thời gian
 // (VD: 5.000 chứng từ mà chỉ 1 người vừa thêm 1 dòng, mọi người khác chỉ tải đúng 1 dòng đó, không phải cả 5.000).
 const BRANCH_RECORD_FIELDS = {
-  ncc:    ['suppliers','policies','transactions','reconciliations','activityLogNcc','trashNcc'],
-  nh:     ['banks','bankPolicies','bankTransactions','bankReconciliations','activityLogNh','trashNh'],
-  bh:     ['insurers','insRates','insTransactions','insReconciliations','insMonthlyRevenue','activityLogBh','trashBh'],
+  ncc:    ['suppliers','policies','transactions','reconciliations','contracts','requests','activityLogNcc','trashNcc'],
+  nh:     ['banks','bankPolicies','bankTransactions','bankReconciliations','bankContracts','bankRequests','activityLogNh','trashNh'],
+  bh:     ['insurers','insRates','insTransactions','insReconciliations','insMonthlyRevenue','insContracts','insRequests','activityLogBh','trashBh'],
   shared: ['accounts','activityLogShared','trashShared'],
 };
 // Field còn lại: nhỏ, ít đổi, không phình to theo lượng chứng từ/thời gian — vẫn đọc/ghi gộp chung 1 khối
@@ -1806,12 +1810,23 @@ function wireInvoiceAttachColumn(tbl, arr, entityLabel, subfolderFn){
 }
 
 /* ---------------------------- Đính kèm hợp đồng NCC/Ngân hàng/Bảo hiểm ----------------------------
-   Dùng chung cho cả 3 khối (NCC dịch vụ ô tô, Ngân hàng, Bảo hiểm) — mỗi "đối tượng" (supplier/bank/insurer)
-   có mảng obj.contracts = [{id, ten, soHopDong, ngayKy, ngayHieuLuc, ngayHetHan, link, ghiChu, units, supersededBy, createdAt, createdBy}].
+   Dùng chung cho cả 3 khối (NCC dịch vụ ô tô, Ngân hàng, Bảo hiểm) — MỖI HỢP ĐỒNG LÀ 1 BẢN GHI ĐỘC LẬP
+   trong state.contracts/bankContracts/insContracts (không lồng trong object NCC/NH/BH — xem
+   migrateContractsRequestsToRecordsV1 phía dưới để hiểu lý do đổi cách lưu), tự mang supplierId/bankId/
+   insurerId để biết thuộc về ai: {id, supplierId|bankId|insurerId, ten, soHopDong, ngayKy, ngayHieuLuc,
+   ngayHetHan, link, ghiChu, units, supersededBy, createdAt, createdBy}.
    units: mảng tên đơn vị (lấy từ state.units) mà hợp đồng NÀY áp dụng riêng — mảng RỖNG nghĩa là
    "áp dụng chung, không phân theo đơn vị" (mặc định, hợp lý với NCC chỉ ký 1 hợp đồng cho tất cả).
    Trạng thái KHÔNG lưu tay mà luôn tự suy ra từ contractStatus() để tránh sai lệch khi quên cập nhật. */
-function contractList(obj){ return obj.contracts || []; }
+const CONTRACT_STORE_BY_LABEL = {
+  'NCC': {arr:'contracts', idField:'supplierId'},
+  'NH': {arr:'bankContracts', idField:'bankId'},
+  'NCC Bảo hiểm': {arr:'insContracts', idField:'insurerId'},
+};
+function contractList(obj, entityLabel){
+  const store = CONTRACT_STORE_BY_LABEL[entityLabel];
+  return (store && obj) ? state[store.arr].filter(c=>c[store.idField]===obj.id) : [];
+}
 function contractStatus(ct){
   if(ct.supersededBy) return 'superseded';
   if(!ct.ngayHieuLuc) return 'draft';
@@ -1845,8 +1860,8 @@ function contractUnitsOverlap(a, b){
 /* Hợp đồng "đại diện" hiển thị trên badge của bảng danh sách: ưu tiên hiển thị bản có trạng thái ĐÁNG CHÚ Ý
    nhất trong số các bản chưa bị thay thế (hết hạn > sắp hết hạn > nháp > hiệu lực bình thường) — để nếu
    1 trong nhiều đơn vị bị hết hạn hợp đồng, người quản trị nhìn bảng tổng là thấy ngay, không phải mở modal mới biết. */
-function representativeContract(obj){
-  const list = contractList(obj).filter(ct=>contractStatus(ct)!=='superseded');
+function representativeContract(obj, entityLabel){
+  const list = contractList(obj, entityLabel).filter(ct=>contractStatus(ct)!=='superseded');
   if(list.length===0) return null;
   const rank = ct=>{
     const st = contractStatus(ct);
@@ -1857,10 +1872,10 @@ function representativeContract(obj){
   };
   return [...list].sort((a,b)=> rank(a)-rank(b))[0];
 }
-function contractBadgeHTML(obj){
-  const all = contractList(obj);
+function contractBadgeHTML(obj, entityLabel){
+  const all = contractList(obj, entityLabel);
   if(all.length===0) return `<button class="contract-badge" data-open-contracts="1">📎 Chưa có hợp đồng</button>`;
-  const rep = representativeContract(obj);
+  const rep = representativeContract(obj, entityLabel);
   const nonSup = all.filter(ct=>contractStatus(ct)!=='superseded');
   if(!rep) return `<button class="contract-badge" data-open-contracts="1">📎 Chỉ còn bản đã thay thế <span class="cnt-extra">${all.length} bản</span></button>`;
   const status = contractStatus(rep);
@@ -1882,8 +1897,8 @@ function wireContractBadges(tbl, list, entityLabel, editable){
   });
 }
 /* unitFilter: '' = xem tất cả đơn vị; tên đơn vị cụ thể = chỉ hiện hợp đồng áp dụng chung HOẶC có chứa đơn vị đó. */
-function contractRowsHTML(obj, editable, unitFilter){
-  const items = [...contractList(obj)]
+function contractRowsHTML(obj, editable, unitFilter, entityLabel){
+  const items = [...contractList(obj, entityLabel)]
     .filter(ct=> !unitFilter || !ct.units || ct.units.length===0 || ct.units.includes(unitFilter))
     .sort((a,b)=> (b.createdAt||'').localeCompare(a.createdAt||''));
   if(items.length===0) return `<div class="empty" style="padding:20px 0;"><div class="big">Chưa có hợp đồng nào${unitFilter?' cho đơn vị này':''}</div></div>`;
@@ -1923,7 +1938,7 @@ function openContractsModal(obj, list, entityLabel, editable, unitFilter){
       </select>
     </div>` : '';
 
-  const hasActive = contractList(obj).some(ct=>contractStatus(ct)==='active');
+  const hasActive = contractList(obj, entityLabel).some(ct=>contractStatus(ct)==='active');
   const unitChecklistHtml = hasUnits ? `
       <div class="field" style="grid-column:1/-1;">
         <label>Đơn vị áp dụng</label>
@@ -1968,8 +1983,8 @@ function openContractsModal(obj, list, entityLabel, editable, unitFilter){
     </div>
   ` : '';
 
-  openModal(`Hợp đồng · ${escHtml(obj.name)}`, `${escHtml(entityLabel)} — ${contractList(obj).length} bản trong lịch sử`,
-    `${filterHtml}<div class="contract-list" id="ctListBox">${contractRowsHTML(obj, editable, unitFilter)}</div>${formHtml}`,
+  openModal(`Hợp đồng · ${escHtml(obj.name)}`, `${escHtml(entityLabel)} — ${contractList(obj, entityLabel).length} bản trong lịch sử`,
+    `${filterHtml}<div class="contract-list" id="ctListBox">${contractRowsHTML(obj, editable, unitFilter, entityLabel)}</div>${formHtml}`,
     (body)=>{
       const wireListButtons = ()=>{
         body.querySelectorAll('[data-mark-superseded]').forEach(b=>b.addEventListener('click', ()=>{
@@ -1977,7 +1992,8 @@ function openContractsModal(obj, list, entityLabel, editable, unitFilter){
         }));
         body.querySelectorAll('[data-del-contract]').forEach(b=>b.addEventListener('click', ()=>{
           confirmModal('Xoá bản hợp đồng này khỏi lịch sử?', ()=>{
-            obj.contracts = contractList(obj).filter(ct=>ct.id!==b.dataset.delContract);
+            const store = CONTRACT_STORE_BY_LABEL[entityLabel];
+            state[store.arr] = state[store.arr].filter(ct=>ct.id!==b.dataset.delContract);
             logActivity('delete', entityLabel+' · Hợp đồng', `${obj.name}: xoá 1 bản hợp đồng`);
             saveState(); renderAll(); openContractsModal(obj, list, entityLabel, editable, unitFilter);
           });
@@ -1986,7 +2002,7 @@ function openContractsModal(obj, list, entityLabel, editable, unitFilter){
       wireListButtons();
       const filterSel = body.querySelector('#ctUnitFilter');
       if(filterSel) filterSel.addEventListener('change', ()=>{
-        document.getElementById('ctListBox').innerHTML = contractRowsHTML(obj, editable, filterSel.value);
+        document.getElementById('ctListBox').innerHTML = contractRowsHTML(obj, editable, filterSel.value, entityLabel);
         wireListButtons();
       });
       if(editable){
@@ -2028,11 +2044,12 @@ function openContractsModal(obj, list, entityLabel, editable, unitFilter){
             createdAt: new Date().toISOString(),
             createdBy: currentUser() ? currentUser().name : '(không rõ)',
           };
-          if(!obj.contracts) obj.contracts = [];
+          const store = CONTRACT_STORE_BY_LABEL[entityLabel];
+          newCt[store.idField] = obj.id;
           if(doSupersede){
-            obj.contracts.filter(ct=>contractStatus(ct)==='active' && contractUnitsOverlap(ct,newCt)).forEach(ct=>{ ct.supersededBy = newCt.id; });
+            contractList(obj, entityLabel).filter(ct=>contractStatus(ct)==='active' && contractUnitsOverlap(ct,newCt)).forEach(ct=>{ ct.supersededBy = newCt.id; });
           }
-          obj.contracts.push(newCt);
+          state[store.arr].push(newCt);
           logActivity('create', entityLabel+' · Hợp đồng', `${obj.name}: thêm "${ten}"${doSupersede?' (thay thế bản cũ cùng đơn vị)':''}`);
           toast('Đã thêm hợp đồng: '+ten);
           saveState(); renderAll(); openContractsModal(obj, list, entityLabel, editable, unitFilter);
@@ -2041,16 +2058,18 @@ function openContractsModal(obj, list, entityLabel, editable, unitFilter){
     });
 }
 function markContractSuperseded(obj, ctId, entityLabel, unitFilter){
-  const ct = contractList(obj).find(x=>x.id===ctId);
+  const ct = contractList(obj, entityLabel).find(x=>x.id===ctId);
   if(!ct) return;
   ct.supersededBy = 'manual';
   logActivity('update', entityLabel+' · Hợp đồng', `${obj.name}: đánh dấu 1 bản hợp đồng đã thay thế`);
-  saveState(); renderAll(); openContractsModal(obj, contractList(obj), entityLabel, true, unitFilter);
+  saveState(); renderAll(); openContractsModal(obj, contractList(obj, entityLabel), entityLabel, true, unitFilter);
 }
 
 /* ---------------------------- Yêu cầu / Trao đổi với Đối tác ----------------------------
-   Dùng chung cho cả 3 khối (NCC/Ngân hàng/Bảo hiểm) — mỗi "đối tượng" (supplier/bank/insurer) có mảng
-   obj.requests = [{id, status, createdAt, updatedAt, messages:[{id,text,authorName,authorRole,at}]}].
+   Dùng chung cho cả 3 khối (NCC/Ngân hàng/Bảo hiểm) — MỖI YÊU CẦU LÀ 1 BẢN GHI ĐỘC LẬP trong
+   state.requests/bankRequests/insRequests (không lồng trong object NCC/NH/BH — cùng lý do với Hợp đồng ở
+   trên, xem migrateContractsRequestsToRecordsV1), tự mang supplierId/bankId/insurerId:
+   {id, supplierId|bankId|insurerId, status, createdAt, updatedAt, messages:[{id,text,authorName,authorRole,at}]}.
    Đối tác chỉ thấy/viết được vào đúng "obj" của mình (qua scopedObjsFor/partnerScopeFilter đã có sẵn cho
    Hợp đồng/Doanh số). Nội bộ (Admin/Quản lý/Nhân viên có quyền module) thấy & trả lời được mọi yêu cầu
    trong module đó; chỉ Admin/Quản lý đổi được trạng thái. */
@@ -2059,11 +2078,19 @@ const REQUEST_STATUSES = [
   {id:'dang_xu_ly', label:'Đang xử lý', cls:'muted'},
   {id:'da_xu_ly', label:'Đã xử lý', cls:'ok'},
 ];
+const REQUEST_STORE_BY_MODULE = {
+  ncc: {arr:'requests', idField:'supplierId'},
+  nh: {arr:'bankRequests', idField:'bankId'},
+  bh: {arr:'insRequests', idField:'insurerId'},
+};
 function requestStatusMeta(id){ return REQUEST_STATUSES.find(s=>s.id===id) || REQUEST_STATUSES[0]; }
-function requestList(obj){ return obj.requests || []; }
-function requestOpenCount(objs){ return objs.reduce((sum,o)=> sum + requestList(o).filter(r=>r.status!=='da_xu_ly').length, 0); }
-function requestBadgeHTML(objs){
-  const n = requestOpenCount(objs);
+function requestList(obj, moduleId){
+  const store = REQUEST_STORE_BY_MODULE[moduleId];
+  return (store && obj) ? state[store.arr].filter(r=>r[store.idField]===obj.id) : [];
+}
+function requestOpenCount(objs, moduleId){ return objs.reduce((sum,o)=> sum + requestList(o, moduleId).filter(r=>r.status!=='da_xu_ly').length, 0); }
+function requestBadgeHTML(objs, moduleId){
+  const n = requestOpenCount(objs, moduleId);
   return n>0 ? `<span class="alert-dot" title="${n} yêu cầu chưa xử lý xong">${n}</span>` : '';
 }
 // Gửi email báo "có tin nhắn mới" cho phía CÒN LẠI (Đối tác viết -> báo nội bộ phụ trách module đó; nội bộ
@@ -2153,7 +2180,7 @@ function renderRequestsTab(c, cfg){
   const partner = isPartnerAccount(u);
   const scopedObjs = scopedObjsFor(cfg.idKey, cfg.objs);
   let allThreads = [];
-  scopedObjs.forEach(o=> requestList(o).forEach(r=> allThreads.push({req:r, obj:o})));
+  scopedObjs.forEach(o=> requestList(o, cfg.moduleId).forEach(r=> allThreads.push({req:r, obj:o})));
   // Nhóm "còn mở" (Mới/Đang xử lý) LÊN TRÊN, cũ nhất lên đầu (giống hàng chờ — việc tồn đọng lâu nhất phải
   // thấy trước, không bị đội mất công thao tác nhỡ tay đè lên). Nhóm "Đã xử lý" xuống dưới cùng, mới nhất lên
   // trước, chỉ để tra cứu lại — không cần ai để ý ưu tiên trong nhóm này.
@@ -2217,11 +2244,12 @@ function renderRequestsTab(c, cfg){
     const obj = partner ? scopedObjs[0] : scopedObjs.find(o=>o.id===document.getElementById('reqf_obj').value);
     if(!obj){ toast('Chưa chọn được '+cfg.entityShort); return; }
     sendBtn.disabled = true; sendBtn.textContent = 'Đang gửi...';
-    if(!obj.requests) obj.requests = [];
     const now = new Date().toISOString();
+    const store = REQUEST_STORE_BY_MODULE[cfg.moduleId];
     const newReq = { id: uid('req'), status: 'moi', createdAt: now, updatedAt: now,
       messages: [{ id: uid('msg'), text, authorName: u?u.name:'(không rõ)', authorRole: role, at: now }] };
-    obj.requests.push(newReq);
+    newReq[store.idField] = obj.id;
+    state[store.arr].push(newReq);
     logActivity('create', cfg.entityLabel, `${cfg.nameOf(obj)}: yêu cầu mới từ ${u?u.name:''}`);
     toast('Đã gửi yêu cầu');
     saveState(); renderAll(); // renderAll() vẽ lại toàn trang -> nút mới tự về trạng thái bình thường, không cần tự bật lại disabled=false
@@ -2265,7 +2293,7 @@ function renderRequestsTab(c, cfg){
     listBox.querySelectorAll('[data-open-req]').forEach(el=>{
       el.addEventListener('click', ()=>{
         const obj = scopedObjs.find(o=>o.id===el.dataset.obj);
-        const req = obj && requestList(obj).find(r=>r.id===el.dataset.openReq);
+        const req = obj && requestList(obj, cfg.moduleId).find(r=>r.id===el.dataset.openReq);
         if(obj && req) openRequestThreadModal(req, obj, cfg);
       });
     });
@@ -2513,6 +2541,7 @@ function seedState(){
 
   return {
     suppliers, policies, transactions: [], reconciliations: [],
+    contracts: [], requests: [], // Hợp đồng & Yêu cầu/Trao đổi của NCC — mỗi bản ghi tự có supplierId, KHÔNG lồng trong object supplier (xem migrateContractsRequestsToRecordsV1)
     units, monitoring,
     reportDate: todayISO(),
     nextSupplierNo: suppliers.length+1,
@@ -2524,8 +2553,10 @@ function seedState(){
     activityLogNcc: [], activityLogNh: [], activityLogBh: [], activityLogShared: [],
     trashNcc: [], trashNh: [], trashBh: [], trashShared: [],
     banks, bankPolicies, bankTransactions: [], bankReconciliations: [],
+    bankContracts: [], bankRequests: [], // tương đương contracts/requests ở trên, dành cho Ngân hàng
     nextBankNo: banks.length+1,
     insurers, insRates, insTransactions: [], insReconciliations: [],
+    insContracts: [], insRequests: [], // tương đương contracts/requests ở trên, dành cho Bảo hiểm
     insMonthlyRevenue: [], // {id, insurerId, month:'YYYY-MM', serviceAmount, note, updatedBy, updatedAt} — DT dịch vụ/sửa chữa nhập tay theo hãng theo tháng
     insAllocAlertThreshold: 0.05, // ngưỡng cảnh báo chênh lệch (Thực tế − Đề xuất tỷ lệ bán), dạng phân số — chỉ Admin sửa được
     insRenewalAlertDays: 45, // hồ sơ còn ≤ số ngày này tới mốc tái tục -> tính là "Sắp đến hạn" — chỉ Admin sửa được
@@ -3214,9 +3245,9 @@ function renderNav(){
         const t = tabs[i];
         const badge = t.id==='bh_transactions' ? insAlertBadgeHTML()
           : t.id==='bh_renewal' ? renewalAlertBadgeHTML()
-          : t.id==='ncc_requests' ? requestBadgeHTML(scopedObjsFor('supplierId', state.suppliers))
-          : t.id==='nh_requests' ? requestBadgeHTML(scopedObjsFor('bankId', state.banks))
-          : t.id==='bh_requests' ? requestBadgeHTML(scopedObjsFor('insurerId', state.insurers))
+          : t.id==='ncc_requests' ? requestBadgeHTML(scopedObjsFor('supplierId', state.suppliers), 'ncc')
+          : t.id==='nh_requests' ? requestBadgeHTML(scopedObjsFor('bankId', state.banks), 'nh')
+          : t.id==='bh_requests' ? requestBadgeHTML(scopedObjsFor('insurerId', state.insurers), 'bh')
           : '';
         html += `<div class="nav-item ${t.id===activeId?'active':''}" data-tab="${t.id}" title="${escAttr(t.label)}"><span class="dot"></span><span class="label-text">${t.label}</span>${t.comingSoon?'<span class="soon-tag">Sắp có</span>':''}${badge}</div>`;
         i++;
@@ -3872,7 +3903,7 @@ function renderSuppliers(c){
         <td><input class="cell-edit" data-field="category" data-id="${s.id}" value="${escAttr(s.category||'')}" ${editable?'':'disabled'}></td>
         <td><select class="cell-edit" data-field="priority" data-id="${s.id}" ${editable?'':'disabled'}>${['P1','P2','P3','P4','P5'].map(p=>`<option ${s.priority===p?'selected':''}>${p}</option>`).join('')}</select></td>
         <td><select class="cell-edit" data-field="status" data-id="${s.id}" ${editable?'':'disabled'}>${['Đang sử dụng','Theo dõi','Thử nghiệm','Ngừng sử dụng'].map(p=>`<option ${s.status===p?'selected':''}>${p}</option>`).join('')}</select></td>
-        <td>${contractBadgeHTML(s)}</td>
+        <td>${contractBadgeHTML(s, 'NCC')}</td>
         <td>${editable?`<button class="row-del" data-del="${s.id}" title="Xoá NCC">✕</button>`:''}</td>
       </tr>`).join('')}</tbody>`;
   wireContractBadges(tbl, state.suppliers, 'NCC', editable);
@@ -4999,7 +5030,7 @@ function renderBankSuppliers(c){
         <td class="wrap"><input class="cell-edit" data-field="name" data-id="${b.id}" value="${escAttr(b.name)}" ${editable?'':'disabled'}></td>
         <td><input class="cell-edit" data-field="contact" data-id="${b.id}" value="${escAttr(b.contact||'')}" ${editable?'':'disabled'}></td>
         <td><select class="cell-edit" data-field="status" data-id="${b.id}" ${editable?'':'disabled'}>${['Đang hợp tác','Theo dõi','Thử nghiệm','Ngừng hợp tác'].map(p=>`<option ${b.status===p?'selected':''}>${p}</option>`).join('')}</select></td>
-        <td>${contractBadgeHTML(b)}</td>
+        <td>${contractBadgeHTML(b, 'NH')}</td>
         <td>${editable?`<button class="row-del" data-del="${b.id}" title="Xoá ngân hàng">✕</button>`:''}</td>
       </tr>`).join('')}</tbody>`;
   wireContractBadges(tbl, state.banks, 'NH', editable);
@@ -5805,7 +5836,7 @@ function renderInsSuppliers(c){
         <td class="num"><input class="cell-edit num pct" data-field="bhds" data-id="${ins.id}" type="number" step="0.1" value="${round2(ins.bhds*100)}" ${dis} style="width:60px"></td>
         <td class="wrap"><input class="cell-edit" data-field="terms" data-id="${ins.id}" value="${escAttr(ins.terms||'')}" ${dis}></td>
         <td><select class="cell-edit" data-field="status" data-id="${ins.id}" ${dis}>${['Đang hợp tác','Theo dõi','Thử nghiệm','Ngừng hợp tác'].map(p=>`<option ${ins.status===p?'selected':''}>${p}</option>`).join('')}</select></td>
-        <td>${contractBadgeHTML(ins)}</td>
+        <td>${contractBadgeHTML(ins, 'NCC Bảo hiểm')}</td>
         <td>${editable?`<button class="row-del" data-del="${ins.id}" title="Xoá NCC">✕</button>`:''}</td>
       </tr>`;
     }).join('')}</tbody>`;
@@ -8059,6 +8090,39 @@ function migrateActivityLogTrashSplitV1(){
   delete state.trash;
   return changed;
 }
+// Chuyển Hợp đồng & Yêu cầu/Trao đổi từ chỗ LỒNG SẴN bên trong từng object NCC/NH/BH (obj.contracts,
+// obj.requests) sang bản ghi độc lập riêng (state.contracts/bankContracts/insContracts,
+// state.requests/bankRequests/insRequests — mỗi bản ghi tự mang supplierId/bankId/insurerId) — để đồng bộ
+// Firebase theo TỪNG BẢN GHI như Doanh số, thay vì phải kéo cả cục hợp đồng+tin nhắn mỗi khi động vào 1 NCC
+// bất kỳ. Chỉ chuyển đúng phần module đã thực sự tải về (hasModuleAccess) — tài khoản chỉ có 1-2 module sẽ
+// không đụng tới module chưa tải, tránh ghi đè nhầm dữ liệu module khác bằng mảng rỗng. Chạy lại vô hại
+// (không còn gì lồng sẵn thì coi như không đổi gì).
+function migrateContractsRequestsToRecordsV1(){
+  let changed = false;
+  const moves = [
+    {mod:'ncc', objs: state.suppliers, idField:'supplierId', ctArr:'contracts', reqArr:'requests'},
+    {mod:'nh',  objs: state.banks,     idField:'bankId',     ctArr:'bankContracts', reqArr:'bankRequests'},
+    {mod:'bh',  objs: state.insurers,  idField:'insurerId',  ctArr:'insContracts',  reqArr:'insRequests'},
+  ];
+  moves.forEach(({mod, objs, idField, ctArr, reqArr})=>{
+    if(!hasModuleAccess(mod, currentUser()) || !Array.isArray(objs)) return;
+    if(!Array.isArray(state[ctArr])) state[ctArr] = [];
+    if(!Array.isArray(state[reqArr])) state[reqArr] = [];
+    objs.forEach(o=>{
+      if(Array.isArray(o.contracts) && o.contracts.length){
+        o.contracts.forEach(ct=> state[ctArr].push({...ct, [idField]: o.id}));
+        changed = true;
+      }
+      if(Array.isArray(o.requests) && o.requests.length){
+        o.requests.forEach(r=> state[reqArr].push({...r, [idField]: o.id}));
+        changed = true;
+      }
+      delete o.contracts; delete o.requests; // dọn field cũ dù có gì để chuyển hay không, tránh sót lại object rỗng []
+    });
+  });
+  if(changed) logActivity('update','Cài đặt', 'Tự động tách Hợp đồng & Yêu cầu/Trao đổi thành bản ghi riêng (không còn lồng trong từng NCC/NH/BH)');
+  return changed;
+}
 
 (async function init(){
   // Đóng menu tài khoản (Đổi mật khẩu / Đăng xuất) khi bấm ra ngoài — gắn đúng 1 lần, không phụ
@@ -8132,6 +8196,7 @@ function migrateActivityLogTrashSplitV1(){
   await syncBranchesForCurrentUser();
   if(await migratePasswordsV1()) saveState();
   if(currentRole()==='Admin' && migrateActivityLogTrashSplitV1()) saveState(); // cần đủ cả 4 nhánh nên chỉ Admin chạy được đúng
+  if(migrateContractsRequestsToRecordsV1()) saveState();
   setStoragePill(storageMode);
   resetInactivityTimer(); // nếu phiên đăng nhập cũ còn hiệu lực (đã có currentUserId), bắt đầu đếm luôn từ lúc mở trang
   renderAll();
