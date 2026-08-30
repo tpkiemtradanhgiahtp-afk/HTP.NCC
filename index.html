@@ -284,7 +284,12 @@
   table.data th{
     text-align:left; font-size:10.8px; text-transform:uppercase; letter-spacing:0.06em;
     color:var(--slate); font-weight:600; padding:9px 12px; border-bottom:1px solid var(--line);
-    background:#FBFAF6; white-space:nowrap; position:sticky; top:0; z-index:3;
+    background:#FBFAF6; white-space:nowrap;
+    /* Đã THỬ dán cứng (position:sticky) để không mất tiêu đề khi cuộn bảng dài, nhưng khi trang có NHIỀU
+       bảng liên tiếp (VD "Bảng theo dõi mốc CK" + "Tất cả NCC"), mỗi bảng tự dán ở cùng 1 mốc pixel khiến
+       tiêu đề của bảng dưới đè chồng lên giữa các dòng dữ liệu của chính nó hoặc bảng khác — che mất dữ
+       liệu thật, TỆ HƠN hẳn so với việc chỉ mất tiêu đề khi cuộn. Đã hoàn tác về cách cũ (không dán cứng)
+       vì che mất dữ liệu là lỗi nghiêm trọng hơn nhiều so với bất tiện thiếu tiêu đề khi cuộn. */
   }
   table.data td{
     padding:9px 12px; border-bottom:1px solid #F0EDE4; vertical-align:middle; white-space:nowrap;
@@ -454,7 +459,12 @@
     padding:11px 18px; border-radius:8px; font-size:12.5px; box-shadow:0 8px 24px rgba(0,0,0,.25);
     opacity:0; transform:translateY(8px); pointer-events:none; transition:all .25s ease; z-index:50;
   }
-  .toast.show{ opacity:1; transform:translateY(0); }
+  .toast.show{ opacity:1; transform:translateY(0); pointer-events:auto; }
+  .toast-undo-btn{
+    margin-left:10px; background:none; border:1px solid rgba(243,236,217,0.45); color:#F3ECD9;
+    border-radius:5px; padding:3px 10px; font-size:11.5px; cursor:pointer; font-weight:600;
+  }
+  .toast-undo-btn:hover{ background:rgba(243,236,217,0.15); }
 
   .tabs-hidden{ display:none !important; }
 
@@ -1068,6 +1078,7 @@ async function subscribeBranch(branch){
     if(json===lastSavedMeta[branch]) return; // echo của chính mình vừa ghi -> bỏ qua
     lastSavedMeta[branch] = json;
     Object.assign(state, data);
+    badgeCacheDirty = true; // ngưỡng cảnh báo (VD insRenewalAlertDays) đổi từ nơi khác cũng có thể đổi số đếm badge
     renderAll();
   }, err=>{ console.error('Lỗi lắng nghe meta nhánh "'+branch+'"', err); fb.status='error'; fb.error = err.message||String(err); });
   fb.unsubs[branch].push(()=>metaRef.off('value', metaListener));
@@ -1092,6 +1103,7 @@ async function subscribeBranch(branch){
       const list = [];
       Object.keys(obj).forEach(id=>{ known.set(id, JSON.stringify(obj[id])); list.push(obj[id]); });
       state[field] = list;
+      badgeCacheDirty = true; // vừa tải thêm 1 nhánh dữ liệu mới giữa phiên làm việc -> cần tính lại badge
     }catch(e){ console.error('Lỗi tải nhánh bản ghi "'+fkey+'"', e); }
 
     const onAdded = fieldRef.on('child_added', snap=>{
@@ -1108,6 +1120,7 @@ async function subscribeBranch(branch){
       // giống hệt child_changed bên dưới.
       const idx = state[field].findIndex(x=>recordKeyOf(x)===id);
       if(idx!==-1) state[field][idx] = data; else state[field].push(data);
+      badgeCacheDirty = true; // dữ liệu vừa đổi do đồng bộ real-time từ nơi khác, không đi qua saveState() của chính máy này
       renderAll();
     }, err=>{ console.error('Lỗi lắng nghe (added) '+fkey, err); });
 
@@ -1121,6 +1134,7 @@ async function subscribeBranch(branch){
       const idx = state[field].findIndex(x=>recordKeyOf(x)===id);
       if(idx!==-1) state[field][idx] = data; else state[field].push(data);
       if(branch==='shared' && field==='accounts' && currentUserId && !(state.accounts||[]).some(a=>a.id===currentUserId)) currentUserId = null;
+      badgeCacheDirty = true; // như trên — đồng bộ real-time từ nơi khác
       renderAll();
     }, err=>{ console.error('Lỗi lắng nghe (changed) '+fkey, err); });
 
@@ -1129,6 +1143,7 @@ async function subscribeBranch(branch){
       known.delete(id);
       const idx = state[field].findIndex(x=>recordKeyOf(x)===id);
       if(idx!==-1) state[field].splice(idx,1);
+      badgeCacheDirty = true; // như trên — đồng bộ real-time từ nơi khác
       renderAll();
     }, err=>{ console.error('Lỗi lắng nghe (removed) '+fkey, err); });
 
@@ -1360,7 +1375,29 @@ let pendingSave = false; // true = có thay đổi đang chờ ghi (chưa chắc
    Firebase) — không cần đọc lại server trước khi ghi để "hợp nhất" như cách làm trước đây nữa. Chỉ còn
    đúng 1 tình huống hiếm: 2 người sửa ĐÚNG CÙNG 1 bản ghi cùng lúc — khi đó ai ghi sau thắng đúng bản ghi
    đó (chấp nhận được, không ảnh hưởng các bản ghi khác). */
+/* ---------------------------- Cache số đếm badge (chấm đỏ trên menu) ----------------------------
+   Trước đây insAlertBadgeHTML()/renewalAlertBadgeHTML()/requestBadgeHTML() được gọi lại từ đầu MỖI LẦN vẽ
+   trang (kể cả chỉ đổi tab, gõ tìm kiếm... không hề đổi dữ liệu gì) — với dữ liệu ít như hiện tại thì không
+   cảm nhận được chậm, nhưng sẽ rõ rệt hơn khi lượng NCC/tin nhắn/hợp đồng tích luỹ nhiều theo thời gian.
+   Giờ chỉ tính lại khi THẬT SỰ có gì thay đổi — đánh dấu "cần tính lại" (badgeCacheDirty=true) ngay trong
+   saveState(), vì MỌI thao tác ghi dữ liệu trong app đều đi qua đúng 1 cửa này; những lần vẽ lại trang
+   không kèm ghi dữ liệu (đổi tab, gõ tìm kiếm...) sẽ dùng lại đúng kết quả đã tính từ lần trước. */
+let badgeCacheDirty = true; // true ban đầu để lần vẽ đầu tiên luôn tính đủ
+let badgeCache = {};
+function recomputeBadgeCacheIfNeeded(){
+  if(!badgeCacheDirty) return;
+  badgeCache = {
+    insAlert: insAlertBadgeHTML(),
+    renewal: renewalAlertBadgeHTML(),
+    nccRequests: requestBadgeHTML(scopedObjsFor('supplierId', state.suppliers), 'ncc'),
+    nhRequests: requestBadgeHTML(scopedObjsFor('bankId', state.banks), 'nh'),
+    bhRequests: requestBadgeHTML(scopedObjsFor('insurerId', state.insurers), 'bh'),
+  };
+  badgeCacheDirty = false;
+}
+
 function saveState(){
+  badgeCacheDirty = true; // có ghi dữ liệu -> lần vẽ trang kế tiếp phải tính lại badge, không dùng cache cũ
   pendingSave = true;
   clearTimeout(saveTimer);
   saveTimer = setTimeout(async ()=>{
@@ -1505,6 +1542,27 @@ function toast(msg){
   t.classList.add('show');
   clearTimeout(toast._t);
   toast._t = setTimeout(()=>t.classList.remove('show'), 2200);
+}
+// Toast có nút "Hoàn tác" — dùng ngay sau softDelete() (trashId = kết quả trả về của softDelete). Hiện lâu
+// hơn toast thường (5s thay vì 2.2s) để kịp bấm; bấm là khôi phục lại ngay tại chỗ, không cần vào Thùng rác.
+function toastUndo(msg, trashId){
+  if(!trashId){ toast(msg); return; } // phòng hờ softDelete() trả về null (không tìm thấy bản ghi) -> vẫn báo bình thường
+  const t = document.getElementById('toast');
+  t.innerHTML = `<span>${escHtml(msg)}</span> <button type="button" class="toast-undo-btn" id="toastUndoBtn">Hoàn tác</button>`;
+  t.classList.add('show');
+  clearTimeout(toast._t);
+  toast._t = setTimeout(()=>t.classList.remove('show'), 5000);
+  document.getElementById('toastUndoBtn').addEventListener('click', ()=>{
+    const restored = restoreFromTrash(trashId);
+    clearTimeout(toast._t);
+    t.classList.remove('show');
+    if(restored){
+      logActivity('create', restored.entityLabel, `Hoàn tác xoá: ${trashItemSummary(restored)}`);
+      saveState();
+      toast('Đã hoàn tác');
+      renderAll();
+    }
+  });
 }
 /* ---------------------------- Gợi ý lần đầu dùng (dismissible) ----------------------------
    Xuất hiện 1 lần cho tới khi người dùng bấm ✕ — lưu vào localStorage của TRÌNH DUYỆT (không đồng bộ qua
@@ -2083,6 +2141,15 @@ const REQUEST_STORE_BY_MODULE = {
   nh: {arr:'bankRequests', idField:'bankId'},
   bh: {arr:'insRequests', idField:'insurerId'},
 };
+// Bộ lọc "Yêu cầu / Trao đổi" — cấp MODULE (không phải cục bộ trong hàm render) để giữ nguyên lựa chọn khi
+// rời tab này rồi quay lại, giống các bộ lọc khác trong app (txUnitFilter, insTxUnitFilter...). Tách riêng
+// theo từng module (ncc/nh/bh) vì 1 hàm render dùng chung cho cả 3 nhưng bộ lọc của module này không nên
+// lẫn sang module khác (VD lọc theo tên 1 NCC không nên áp dụng nhầm khi xem tab Ngân hàng).
+let reqFilterState = {
+  ncc: {obj:'', status:''},
+  nh: {obj:'', status:''},
+  bh: {obj:'', status:''},
+};
 function requestStatusMeta(id){ return REQUEST_STATUSES.find(s=>s.id===id) || REQUEST_STATUSES[0]; }
 function requestList(obj, moduleId){
   const store = REQUEST_STORE_BY_MODULE[moduleId];
@@ -2112,12 +2179,29 @@ function notifyAboutRequestMessage(obj, cfg, authorIsPartner, authorName, messag
   const body = `${authorName||'(không rõ)'} vừa gửi 1 tin nhắn trong mục "Yêu cầu / Trao đổi" liên quan tới ${cfg.nameOf(obj)}:\n\n"${messageText||''}"\n\nVui lòng đăng nhập vào hệ thống để xem toàn bộ hội thoại và phản hồi.`;
   sendEmailNotification(toEmails, subject, body).catch(err=> console.warn('Gửi email thông báo thất bại (bỏ qua, không ảnh hưởng thao tác chính):', err));
 }
+// Có tin nhắn nào MỚI HƠN lần mình xem gần nhất không, và tin cuối đó không phải do chính mình gửi (tin của
+// chính mình thì hiển nhiên đã biết nội dung, không tính là "chưa đọc"). req.lastSeenBy: {accountId: ISOString}.
+function threadHasUnread(req){
+  if(!currentUserId) return false;
+  const last = req.messages[req.messages.length-1];
+  if(!last || last.authorId===currentUserId) return false;
+  const seenAt = (req.lastSeenBy && req.lastSeenBy[currentUserId]) || '';
+  return last.at > seenAt;
+}
 // Modal xem/trả lời 1 thread — mở lại chính nó sau khi gửi trả lời để thấy tin nhắn mới ngay, giống cách
 // modal Hợp đồng tự mở lại sau khi thêm bản mới.
 function openRequestThreadModal(req, obj, cfg){
   const role = currentRole();
   const canManage = ['Admin','Quản lý'].includes(role);
   const canWrite = isPartnerAccount(currentUser()) || ['Admin','Quản lý','Nhân viên'].includes(role);
+  // Đánh dấu "đã xem" ngay khi mở — chỉ ghi lại (saveState) nếu trước đó THẬT SỰ đang có tin chưa đọc, tránh
+  // ghi dữ liệu vô ích mỗi lần mở lại 1 thread đã đọc từ trước.
+  if(currentUserId){
+    const wasUnread = threadHasUnread(req);
+    if(!req.lastSeenBy) req.lastSeenBy = {};
+    req.lastSeenBy[currentUserId] = new Date().toISOString();
+    if(wasUnread) saveState();
+  }
   const msgsHTML = req.messages.map(m=>{
     const mine = m.authorRole==='Đối tác';
     return `<div style="padding:10px 12px;border:1px solid var(--line);border-radius:8px;margin-bottom:8px;${mine?'background:var(--gold-soft)':''}">
@@ -2150,7 +2234,7 @@ function openRequestThreadModal(req, obj, cfg){
           replyBtn.disabled = true; replyBtn.textContent = 'Đang gửi...';
           const u = currentUser();
           const now = new Date().toISOString();
-          req.messages.push({ id: uid('msg'), text, authorName: u?u.name:'(không rõ)', authorRole: role, at: now });
+          req.messages.push({ id: uid('msg'), text, authorName: u?u.name:'(không rõ)', authorRole: role, authorId: currentUserId, at: now });
           req.updatedAt = now;
           if(req.status==='moi' && !isPartnerAccount(u)) req.status = 'dang_xu_ly'; // nội bộ vừa trả lời -> tự chuyển khỏi "Mới"
           logActivity('update', cfg.entityLabel, `${cfg.nameOf(obj)}: có tin nhắn mới trong 1 yêu cầu`);
@@ -2201,7 +2285,7 @@ function renderRequestsTab(c, cfg){
     ? `<div class="helper" style="color:var(--rust);margin-bottom:10px">⚠ Chưa có Admin/Quản lý nào của module này điền Email ở "Quản trị tài khoản" — Đối tác gửi yêu cầu sẽ KHÔNG có ai nhận được thông báo qua email (vẫn thấy được trong app như bình thường).</div>`
     : '';
 
-  let filterObjText = '', filterStatus = ''; // chỉ nội bộ mới thấy 2 bộ lọc này — Đối tác đã tự lọc sẵn theo chính họ
+  const rf = reqFilterState[cfg.moduleId]; // giữ nguyên lựa chọn lọc khi rời tab này rồi quay lại
   const hintText = partner
     ? 'Đây là nơi bạn gửi thắc mắc/đề nghị cho chúng tôi — chúng tôi sẽ trả lời trực tiếp tại đây, bạn sẽ nhận được email báo khi có phản hồi mới.'
     : 'Đối tác có thể gửi thắc mắc/đề nghị ở đây. Bạn cũng chủ động viết trước cho họ được — chọn đúng '+cfg.entityShort+' rồi gửi như bình thường.';
@@ -2224,11 +2308,11 @@ function renderRequestsTab(c, cfg){
       <div class="panel-head">
         <div><h2>Danh sách yêu cầu</h2></div>
         ${partner ? '' : `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-          <input id="reqf_filter_obj" list="reqf_filter_obj_list" placeholder="Lọc theo ${cfg.entityShort}..." style="max-width:200px">
+          <input id="reqf_filter_obj" list="reqf_filter_obj_list" placeholder="Lọc theo ${cfg.entityShort}..." value="${escAttr(rf.obj)}" style="max-width:200px">
           <datalist id="reqf_filter_obj_list">${scopedObjs.map(o=>`<option value="${escAttr(cfg.nameOf(o))}">`).join('')}</datalist>
           <select id="reqf_filter_status" style="max-width:150px">
             <option value="">Tất cả trạng thái</option>
-            ${REQUEST_STATUSES.map(s=>`<option value="${s.id}">${s.label}</option>`).join('')}
+            ${REQUEST_STATUSES.map(s=>`<option value="${s.id}" ${rf.status===s.id?'selected':''}>${s.label}</option>`).join('')}
           </select>
         </div>`}
       </div>
@@ -2247,7 +2331,7 @@ function renderRequestsTab(c, cfg){
     const now = new Date().toISOString();
     const store = REQUEST_STORE_BY_MODULE[cfg.moduleId];
     const newReq = { id: uid('req'), status: 'moi', createdAt: now, updatedAt: now,
-      messages: [{ id: uid('msg'), text, authorName: u?u.name:'(không rõ)', authorRole: role, at: now }] };
+      messages: [{ id: uid('msg'), text, authorName: u?u.name:'(không rõ)', authorRole: role, authorId: currentUserId, at: now }] };
     newReq[store.idField] = obj.id;
     state[store.arr].push(newReq);
     logActivity('create', cfg.entityLabel, `${cfg.nameOf(obj)}: yêu cầu mới từ ${u?u.name:''}`);
@@ -2257,16 +2341,16 @@ function renderRequestsTab(c, cfg){
     scrollToAndFlashRequest(newReq.id); // vì danh sách sắp "còn mở: cũ nhất lên đầu", yêu cầu vừa tạo (mới nhất) có thể nằm khá xa đầu trang — cuộn tới cho người dùng thấy ngay, khỏi tự dò
   });
   if(!partner){
-    document.getElementById('reqf_filter_obj').addEventListener('input', e=>{ filterObjText = e.target.value; drawReqList(); });
-    document.getElementById('reqf_filter_status').addEventListener('change', e=>{ filterStatus = e.target.value; drawReqList(); });
+    document.getElementById('reqf_filter_obj').addEventListener('input', e=>{ rf.obj = e.target.value; drawReqList(); });
+    document.getElementById('reqf_filter_status').addEventListener('change', e=>{ rf.status = e.target.value; drawReqList(); });
   }
   drawReqList();
 
   function drawReqList(){
     const listBox = document.getElementById('reqListBox');
     const visible = allThreads.filter(({req,obj})=>{
-      if(filterObjText && cfg.nameOf(obj).trim().toLowerCase()!==filterObjText.trim().toLowerCase()) return false;
-      if(filterStatus && req.status!==filterStatus) return false;
+      if(rf.obj && cfg.nameOf(obj).trim().toLowerCase()!==rf.obj.trim().toLowerCase()) return false;
+      if(rf.status && req.status!==rf.status) return false;
       return true;
     });
     if(allThreads.length===0){
@@ -2281,9 +2365,10 @@ function renderRequestsTab(c, cfg){
       const last = req.messages[req.messages.length-1];
       const meta = requestStatusMeta(req.status);
       const snippet = last ? (last.text.length>140 ? last.text.slice(0,140)+'...' : last.text) : '';
-      return `<div data-open-req="${req.id}" data-obj="${obj.id}" style="padding:14px 20px;border-bottom:1px solid var(--line);cursor:pointer;display:flex;justify-content:space-between;gap:14px;align-items:center">
+      const unread = threadHasUnread(req);
+      return `<div data-open-req="${req.id}" data-obj="${obj.id}" style="padding:14px 20px;border-bottom:1px solid var(--line);cursor:pointer;display:flex;justify-content:space-between;gap:14px;align-items:center;${unread?'background:var(--gold-soft)':''}">
         <div style="min-width:0">
-          <div style="font-weight:600">${escHtml(cfg.nameOf(obj))}</div>
+          <div style="font-weight:${unread?800:600}">${unread?'<span style="color:var(--rust)">●</span> ':''}${escHtml(cfg.nameOf(obj))}</div>
           <div class="meta-line" style="white-space:pre-wrap">${escHtml(snippet)}</div>
           <div class="meta-line">${req.messages.length} tin nhắn · Cập nhật ${new Date(req.updatedAt).toLocaleString('vi-VN')}</div>
         </div>
@@ -2684,6 +2769,16 @@ function performGlobalSearch(query){
       const s = supplierById(p.supplierId);
       if((p.code||'').toLowerCase().includes(q)) push('Chính sách CK', `${p.code} — ${s?s.name:''} (${p.type})`, 'policies');
     });
+    (pf ? state.contracts.filter(pf) : state.contracts).forEach(ct=>{
+      const s = supplierById(ct.supplierId);
+      const hay = [ct.ten, ct.soHopDong, s?s.name:''].join(' ').toLowerCase();
+      if(hay.includes(q)) push('Hợp đồng NCC', `${ct.ten||'(chưa đặt tên)'} — ${s?s.name:''}`, 'suppliers');
+    });
+    (pf ? state.requests.filter(pf) : state.requests).forEach(r=>{
+      const s = supplierById(r.supplierId);
+      const hay = [s?s.name:'', ...(r.messages||[]).map(m=>m.text)].join(' ').toLowerCase();
+      if(hay.includes(q)) push('Yêu cầu (NCC)', `${s?s.name:''} — ${requestStatusMeta(r.status).label}`, 'ncc_requests', ()=>{ reqFilterState.ncc.obj = s?s.name:''; reqFilterState.ncc.status=''; });
+    });
   }
   if(hasModuleAccess('nh', u)){
     const pf = partnerScopeFilter('bankId');
@@ -2695,6 +2790,16 @@ function performGlobalSearch(query){
       const hay = [t.customer, t.phone, t.vehicle, t.refCode, b?b.name:''].join(' ').toLowerCase();
       if(hay.includes(q)) push('Doanh số NH', `${t.customer||'(chưa có tên KH)'} — ${b?b.name:''} — ${fmt(t.loanAmount)}đ — ${t.date}`, 'nh_transactions', ()=>{ bankTxBankFilter = b?b.name:''; bankTxUnitFilter=''; });
     });
+    (pf ? state.bankContracts.filter(pf) : state.bankContracts).forEach(ct=>{
+      const b = bankById(ct.bankId);
+      const hay = [ct.ten, ct.soHopDong, b?b.name:''].join(' ').toLowerCase();
+      if(hay.includes(q)) push('Hợp đồng NH', `${ct.ten||'(chưa đặt tên)'} — ${b?b.name:''}`, 'nh_suppliers');
+    });
+    (pf ? state.bankRequests.filter(pf) : state.bankRequests).forEach(r=>{
+      const b = bankById(r.bankId);
+      const hay = [b?b.name:'', ...(r.messages||[]).map(m=>m.text)].join(' ').toLowerCase();
+      if(hay.includes(q)) push('Yêu cầu (NH)', `${b?b.name:''} — ${requestStatusMeta(r.status).label}`, 'nh_requests', ()=>{ reqFilterState.nh.obj = b?b.name:''; reqFilterState.nh.status=''; });
+    });
   }
   if(hasModuleAccess('bh', u)){
     const pf = partnerScopeFilter('insurerId');
@@ -2705,6 +2810,16 @@ function performGlobalSearch(query){
       const ins = insurerById(t.insurerId);
       const hay = [t.customer, t.phone, t.vehicle, t.policyNo, ins?ins.name:''].join(' ').toLowerCase();
       if(hay.includes(q)) push('Doanh số Bảo hiểm', `${t.customer||'(chưa có tên KH)'} — ${ins?ins.name:''} — ${fmt(t.premiumAmount)}đ — ${t.date}`, 'bh_transactions', ()=>{ insTxInsurerFilter = ins?ins.name:''; insTxUnitFilter=''; });
+    });
+    (pf ? state.insContracts.filter(pf) : state.insContracts).forEach(ct=>{
+      const ins = insurerById(ct.insurerId);
+      const hay = [ct.ten, ct.soHopDong, ins?ins.name:''].join(' ').toLowerCase();
+      if(hay.includes(q)) push('Hợp đồng Bảo hiểm', `${ct.ten||'(chưa đặt tên)'} — ${ins?ins.name:''}`, 'bh_suppliers');
+    });
+    (pf ? state.insRequests.filter(pf) : state.insRequests).forEach(r=>{
+      const ins = insurerById(r.insurerId);
+      const hay = [ins?ins.name:'', ...(r.messages||[]).map(m=>m.text)].join(' ').toLowerCase();
+      if(hay.includes(q)) push('Yêu cầu (Bảo hiểm)', `${ins?ins.name:''} — ${requestStatusMeta(r.status).label}`, 'bh_requests', ()=>{ reqFilterState.bh.obj = ins?ins.name:''; reqFilterState.bh.status=''; });
     });
   }
   return results.slice(0, 30);
@@ -2808,19 +2923,21 @@ function moduleOfArrName(arrName){
 }
 function trashKeyFor(module){ return module==='ncc'?'trashNcc':module==='nh'?'trashNh':module==='bh'?'trashBh':'trashShared'; }
 function softDelete(arrName, item, entityLabel){
-  if(!item || !Array.isArray(state[arrName])) return;
+  if(!item || !Array.isArray(state[arrName])) return null;
   const idx = state[arrName].findIndex(x=>x.id===item.id);
-  if(idx===-1) return;
+  if(idx===-1) return null;
   state[arrName].splice(idx,1);
   recentlyDeletedIds.add(item.id);
   const key = trashKeyFor(moduleOfArrName(arrName));
   if(!Array.isArray(state[key])) state[key] = [];
+  const trashId = uid('trash');
   state[key].unshift({
-    trashId: uid('trash'), arrName, entityLabel,
+    trashId, arrName, entityLabel,
     deletedAt: new Date().toISOString(), deletedBy: currentUserId,
     data: item,
   });
   if(state[key].length>300) state[key].length = 300; // chặn phình vô hạn, ưu tiên giữ mục mới xoá gần đây
+  return trashId; // trả về để nơi gọi gắn được nút "Hoàn tác" ngay trên toast (xem toastUndo)
 }
 const TRASH_KEYS = ['trashNcc','trashNh','trashBh','trashShared'];
 function restoreFromTrash(trashId){
@@ -3231,6 +3348,7 @@ function sidebarActiveId(){
 }
 
 function renderNav(){
+  recomputeBadgeCacheIfNeeded();
   const nav = document.getElementById('navList');
   const activeId = sidebarActiveId();
   const tabs = navTabs();
@@ -3243,11 +3361,11 @@ function renderNav(){
       html += `<div class="nav-group-items">`;
       while(i<tabs.length && tabs[i].section===section){
         const t = tabs[i];
-        const badge = t.id==='bh_transactions' ? insAlertBadgeHTML()
-          : t.id==='bh_renewal' ? renewalAlertBadgeHTML()
-          : t.id==='ncc_requests' ? requestBadgeHTML(scopedObjsFor('supplierId', state.suppliers), 'ncc')
-          : t.id==='nh_requests' ? requestBadgeHTML(scopedObjsFor('bankId', state.banks), 'nh')
-          : t.id==='bh_requests' ? requestBadgeHTML(scopedObjsFor('insurerId', state.insurers), 'bh')
+        const badge = t.id==='bh_transactions' ? badgeCache.insAlert
+          : t.id==='bh_renewal' ? badgeCache.renewal
+          : t.id==='ncc_requests' ? badgeCache.nccRequests
+          : t.id==='nh_requests' ? badgeCache.nhRequests
+          : t.id==='bh_requests' ? badgeCache.bhRequests
           : '';
         html += `<div class="nav-item ${t.id===activeId?'active':''}" data-tab="${t.id}" title="${escAttr(t.label)}"><span class="dot"></span><span class="label-text">${t.label}</span>${t.comingSoon?'<span class="soon-tag">Sắp có</span>':''}${badge}</div>`;
         i++;
@@ -3292,12 +3410,13 @@ SUBTAB_GROUPS.bh_reconcile = SUBTAB_GROUPS.bh_transactions;
 SUBTAB_GROUPS.bh_allocation = SUBTAB_GROUPS.bh_transactions;
 
 function subTabsHTML(){
+  recomputeBadgeCacheIfNeeded();
   const group = SUBTAB_GROUPS[activeTab];
   if(!group) return '';
   const visibleIds = new Set(visibleTabs().map(t=>t.id));
   const filtered = group.filter(g=>visibleIds.has(g.id));
   if(filtered.length<2) return ''; // chỉ còn 0-1 subtab (vd Đối tác bị ẩn bớt) thì khỏi hiện thanh subtab
-  return `<div class="subtabs">${filtered.map(g=>`<div class="subtab-item ${g.id===activeTab?'active':''}" data-subtab="${g.id}">${g.label}${g.id==='bh_allocation'?insAlertBadgeHTML():''}</div>`).join('')}</div>`;
+  return `<div class="subtabs">${filtered.map(g=>`<div class="subtab-item ${g.id===activeTab?'active':''}" data-subtab="${g.id}">${g.label}${g.id==='bh_allocation'?badgeCache.insAlert:''}</div>`).join('')}</div>`;
 }
 function bindSubTabs(c){
   c.querySelectorAll('[data-subtab]').forEach(el=>{
@@ -3914,11 +4033,15 @@ function renderSuppliers(c){
         const id = btn.dataset.del;
         const sup = supplierById(id);
         const hasDeps = state.policies.some(p=>p.supplierId===id) || state.transactions.some(t=>t.supplierId===id);
-        if(hasDeps && !confirm('NCC này đang có chính sách/doanh số liên quan. Xoá NCC sẽ không xoá các dữ liệu đó nhưng chúng sẽ mất liên kết. Vẫn xoá?')) return;
-        softDelete('suppliers', sup, 'NCC');
-        delete state.monitoring[id];
-        logActivity('delete','NCC', `Xoá NCC "${sup?sup.name:id}"`);
-        renderAll();
+        const doDelete = ()=>{
+          const trashId = softDelete('suppliers', sup, 'NCC');
+          delete state.monitoring[id];
+          logActivity('delete','NCC', `Xoá NCC "${sup?sup.name:id}"`);
+          toastUndo('Đã xoá NCC "'+(sup?sup.name:id)+'"', trashId);
+          renderAll();
+        };
+        if(hasDeps) confirmModal('NCC này đang có chính sách/doanh số liên quan. Xoá NCC sẽ không xoá các dữ liệu đó nhưng chúng sẽ mất liên kết. Vẫn xoá?', doDelete);
+        else doDelete();
       });
     });
   }
@@ -4144,8 +4267,9 @@ function renderPolicies(c){
     tbl.querySelectorAll('[data-del]').forEach(btn=>{
       btn.addEventListener('click', ()=>{
         const p = state.policies.find(x=>x.id===btn.dataset.del);
-        softDelete('policies', p, 'Chính sách CK');
+        const trashId = softDelete('policies', p, 'Chính sách CK');
         logActivity('delete','Chính sách CK', `Xoá CS "${p?p.code:''}"`);
+        toastUndo('Đã xoá chính sách "'+(p?p.code:'')+'"', trashId);
         renderAll();
       });
     });
@@ -4379,8 +4503,9 @@ function renderTxTable(editable){
       const t = state.transactions.find(x=>x.id===btn.dataset.del);
       if(t && isRecordLockedForMe(t, state.reconciliations, 'supplierId')){ toast('Chứng từ thuộc kỳ đối soát đã chốt — chỉ Admin được xoá'); return; }
       const s = t ? supplierById(t.supplierId) : null;
-      softDelete('transactions', t, 'Doanh số');
+      const trashId = softDelete('transactions', t, 'Doanh số');
       logActivity('delete','Doanh số', `Xoá chứng từ ${t?t.doc||'':''} (${s?s.name:''}, ${t?fmt(t.gross):''}đ)`);
+      toastUndo('Đã xoá chứng từ', trashId);
       renderAll();
     });
   });
@@ -4867,8 +4992,9 @@ function renderReconTable(editable){
         if(r && r.locked && currentRole()!=='Admin'){ toast('Kỳ đã chốt — chỉ Admin được xoá'); return; }
         const s = r ? supplierById(r.supplierId) : null;
         confirmModal(`Xoá kỳ "${r?r.period:''}"${r&&r.locked?' (đã chốt)':''}?`, ()=>{
-          softDelete('reconciliations', r, 'Đối soát CK');
+          const trashId = softDelete('reconciliations', r, 'Đối soát CK');
           logActivity('delete','Đối soát CK', `Xoá kỳ "${r?r.period:''}" (${s?s.name:''})`);
+          toastUndo('Đã xoá kỳ "'+(r?r.period:'')+'"', trashId);
           renderAll();
         });
       });
@@ -5041,10 +5167,14 @@ function renderBankSuppliers(c){
         const id = btn.dataset.del;
         const bk = bankById(id);
         const hasDeps = state.bankPolicies.some(p=>p.bankId===id) || state.bankTransactions.some(t=>t.bankId===id);
-        if(hasDeps && !confirm('Ngân hàng này đang có chính sách/doanh số liên quan. Xoá sẽ không xoá các dữ liệu đó nhưng chúng sẽ mất liên kết. Vẫn xoá?')) return;
-        softDelete('banks', bk, 'NH');
-        logActivity('delete','NH', `Xoá ngân hàng "${bk?bk.name:id}"`);
-        renderAll();
+        const doDelete = ()=>{
+          const trashId = softDelete('banks', bk, 'NH');
+          logActivity('delete','NH', `Xoá ngân hàng "${bk?bk.name:id}"`);
+          toastUndo('Đã xoá ngân hàng "'+(bk?bk.name:id)+'"', trashId);
+          renderAll();
+        };
+        if(hasDeps) confirmModal('Ngân hàng này đang có chính sách/doanh số liên quan. Xoá sẽ không xoá các dữ liệu đó nhưng chúng sẽ mất liên kết. Vẫn xoá?', doDelete);
+        else doDelete();
       });
     });
   }
@@ -5183,8 +5313,9 @@ function renderBankPolicies(c){
         const p = state.bankPolicies.find(x=>x.id===btn.dataset.del);
         const b = p ? bankById(p.bankId) : null;
         confirmModal(`Xoá chính sách ${p?monthLabel(p.month):''} của "${b?b.name:''}"?`, ()=>{
-          softDelete('bankPolicies', p, 'Chính sách CK (NH)');
+          const trashId = softDelete('bankPolicies', p, 'Chính sách CK (NH)');
           logActivity('delete','Chính sách CK (NH)', `Xoá chính sách ${p?monthLabel(p.month):''} — ${b?b.name:''}`);
+          toastUndo('Đã xoá chính sách', trashId);
           renderAll();
         });
       });
@@ -5448,8 +5579,9 @@ function renderBankTxTable(editable){
       const t = state.bankTransactions.find(x=>x.id===btn.dataset.del);
       if(t && isRecordLockedForMe(t, state.bankReconciliations, 'bankId')){ toast('Hồ sơ thuộc kỳ đối soát đã chốt — chỉ Admin được xoá'); return; }
       const b = t ? bankById(t.bankId) : null;
-      softDelete('bankTransactions', t, 'Doanh số (NH)');
+      const trashId = softDelete('bankTransactions', t, 'Doanh số (NH)');
       logActivity('delete','Doanh số (NH)', `Xoá hồ sơ (${b?b.name:''}, ${t?fmt(t.loanAmount):''}đ)`);
+      toastUndo('Đã xoá hồ sơ', trashId);
       renderAll();
     });
   });
@@ -5725,8 +5857,9 @@ function renderBankReconTable(editable){
         if(r && r.locked && currentRole()!=='Admin'){ toast('Kỳ đã chốt — chỉ Admin được xoá'); return; }
         const b = r ? bankById(r.bankId) : null;
         confirmModal(`Xoá kỳ "${r?r.period:''}"${r&&r.locked?' (đã chốt)':''}?`, ()=>{
-          softDelete('bankReconciliations', r, 'Đối soát CK (NH)');
+          const trashId = softDelete('bankReconciliations', r, 'Đối soát CK (NH)');
           logActivity('delete','Đối soát CK (NH)', `Xoá kỳ "${r?r.period:''}" (${b?b.name:''})`);
+          toastUndo('Đã xoá kỳ "'+(r?r.period:'')+'"', trashId);
           renderAll();
         });
       });
@@ -5848,10 +5981,14 @@ function renderInsSuppliers(c){
         const id = btn.dataset.del;
         const ins = insurerById(id);
         const hasDeps = state.insRates.some(r=>r.insurerId===id);
-        if(hasDeps && !confirm('NCC này đang có biểu phí liên quan. Xoá sẽ không xoá các dòng biểu phí đó nhưng chúng sẽ mất liên kết. Vẫn xoá?')) return;
-        softDelete('insurers', ins, 'NCC Bảo hiểm');
-        logActivity('delete','NCC Bảo hiểm', `Xoá NCC bảo hiểm "${ins?ins.name:id}"`);
-        renderAll();
+        const doDelete = ()=>{
+          const trashId = softDelete('insurers', ins, 'NCC Bảo hiểm');
+          logActivity('delete','NCC Bảo hiểm', `Xoá NCC bảo hiểm "${ins?ins.name:id}"`);
+          toastUndo('Đã xoá NCC bảo hiểm "'+(ins?ins.name:id)+'"', trashId);
+          renderAll();
+        };
+        if(hasDeps) confirmModal('NCC này đang có biểu phí liên quan. Xoá sẽ không xoá các dòng biểu phí đó nhưng chúng sẽ mất liên kết. Vẫn xoá?', doDelete);
+        else doDelete();
       });
     });
   }
@@ -6008,8 +6145,9 @@ function renderInsPolicies(c){
         const row = state.insRates.find(x=>x.id===btn.dataset.del);
         const ins = row ? insurerById(row.insurerId) : null;
         confirmModal(`Xoá khoảng "${row?row.valueLabel:''}" của "${ins?ins.name:''}"?`, ()=>{
-          softDelete('insRates', row, 'Biểu phí Bảo hiểm');
+          const trashId = softDelete('insRates', row, 'Biểu phí Bảo hiểm');
           logActivity('delete','Biểu phí Bảo hiểm', `Xoá khoảng "${row?row.valueLabel:''}" — ${ins?ins.name:''}`);
+          toastUndo('Đã xoá khoảng biểu phí', trashId);
           renderAll();
         });
       });
@@ -6527,8 +6665,9 @@ function renderInsTxTable(editable){
       const t = state.insTransactions.find(x=>x.id===btn.dataset.del);
       if(t && isRecordLockedForMe(t, state.insReconciliations, 'insurerId')){ toast('Hợp đồng thuộc kỳ đối soát đã chốt — chỉ Admin được xoá'); return; }
       const ins = t ? insurerById(t.insurerId) : null;
-      softDelete('insTransactions', t, 'Doanh số (Bảo hiểm)');
+      const trashId = softDelete('insTransactions', t, 'Doanh số (Bảo hiểm)');
       logActivity('delete','Doanh số (Bảo hiểm)', `Xoá hợp đồng (${ins?ins.name:''}, ${t?fmt(t.premiumAmount):''}đ)`);
+      toastUndo('Đã xoá hợp đồng bảo hiểm', trashId);
       renderAll();
     });
   });
@@ -6968,8 +7107,9 @@ function renderInsReconTable(editable){
         if(r && r.locked && currentRole()!=='Admin'){ toast('Kỳ đã chốt — chỉ Admin được xoá'); return; }
         const ins = r ? insurerById(r.insurerId) : null;
         confirmModal(`Xoá kỳ "${r?r.period:''}"${r&&r.locked?' (đã chốt)':''}?`, ()=>{
-          softDelete('insReconciliations', r, 'Đối soát CK (Bảo hiểm)');
+          const trashId = softDelete('insReconciliations', r, 'Đối soát CK (Bảo hiểm)');
           logActivity('delete','Đối soát CK (Bảo hiểm)', `Xoá kỳ "${r?r.period:''}" (${ins?ins.name:''})`);
+          toastUndo('Đã xoá kỳ "'+(r?r.period:'')+'"', trashId);
           renderAll();
         });
       });
@@ -7227,6 +7367,138 @@ function deleteUnit(u){
   state.accounts.forEach(a=>{ if(a.unit===u) a.unit=''; });
   logActivity('delete','Cài đặt', `Xoá đơn vị "${u}" khỏi danh sách (gỡ liên kết khỏi các tài khoản đang phụ trách)`);
 }
+/* ---------------------------- Lưu trữ & dọn dữ liệu cũ (Cài đặt, chỉ Admin) ----------------------------
+   Chỉ xoá dữ liệu ĐÃ CHỐT XONG trước 1 mốc ngày — tuyệt đối không đụng dữ liệu còn "sống":
+   - Doanh số: chỉ xoá nếu nằm trong 1 kỳ Đối soát CK đã "chốt" (dùng đúng lockingReconOf() có sẵn).
+   - Đối soát CK: chỉ xoá nếu đã chốt VÀ toàn bộ kỳ đã trước mốc ngày.
+   - Hợp đồng: chỉ xoá nếu đã "Hết hạn" hoặc "Đã thay thế" (dùng đúng contractStatus() có sẵn).
+   - Yêu cầu/Trao đổi: chỉ xoá nếu đã ở trạng thái "Đã xử lý".
+   Xoá THẲNG, không qua Thùng rác (mục đích là giảm dung lượng thật sự) — bắt buộc xuất file lưu trữ trước. */
+let archiveExportedForCutoff = null; // ghi nhớ ĐÃ xuất file cho đúng mốc ngày nào — đổi ngày phải xuất lại
+const ARCHIVE_TX_GROUPS = [
+  {key:'transactions', reconArr:'reconciliations', idField:'supplierId', label:'Doanh số NCC'},
+  {key:'bankTransactions', reconArr:'bankReconciliations', idField:'bankId', label:'Doanh số NH'},
+  {key:'insTransactions', reconArr:'insReconciliations', idField:'insurerId', label:'Doanh số Bảo hiểm'},
+];
+const ARCHIVE_RECON_GROUPS = [
+  {key:'reconciliations', label:'Đối soát CK (NCC)'},
+  {key:'bankReconciliations', label:'Đối soát CK (NH)'},
+  {key:'insReconciliations', label:'Đối soát CK (Bảo hiểm)'},
+];
+const ARCHIVE_CONTRACT_GROUPS = [
+  {key:'contracts', label:'Hợp đồng NCC'},
+  {key:'bankContracts', label:'Hợp đồng NH'},
+  {key:'insContracts', label:'Hợp đồng Bảo hiểm'},
+];
+const ARCHIVE_REQUEST_GROUPS = [
+  {key:'requests', label:'Yêu cầu (NCC)'},
+  {key:'bankRequests', label:'Yêu cầu (NH)'},
+  {key:'insRequests', label:'Yêu cầu (Bảo hiểm)'},
+];
+function archiveGroups(cutoff){
+  if(!cutoff) return [];
+  const groups = [];
+  ARCHIVE_TX_GROUPS.forEach(g=>{
+    const items = (state[g.key]||[]).filter(t=> t.date < cutoff && lockingReconOf(t, state[g.reconArr], g.idField));
+    if(items.length) groups.push({key:g.key, label:g.label, items});
+  });
+  ARCHIVE_RECON_GROUPS.forEach(g=>{
+    const items = (state[g.key]||[]).filter(r=> r.locked && r.toDate && r.toDate < cutoff);
+    if(items.length) groups.push({key:g.key, label:g.label, items});
+  });
+  ARCHIVE_CONTRACT_GROUPS.forEach(g=>{
+    const items = (state[g.key]||[]).filter(ct=>{
+      const st = contractStatus(ct);
+      if(st==='expired') return ct.ngayHetHan && ct.ngayHetHan < cutoff;
+      if(st==='superseded') return (ct.createdAt||'').slice(0,10) < cutoff;
+      return false;
+    });
+    if(items.length) groups.push({key:g.key, label:g.label, items});
+  });
+  ARCHIVE_REQUEST_GROUPS.forEach(g=>{
+    const items = (state[g.key]||[]).filter(r=> r.status==='da_xu_ly' && (r.updatedAt||'').slice(0,10) < cutoff);
+    if(items.length) groups.push({key:g.key, label:g.label, items});
+  });
+  return groups;
+}
+// Chuyển 1 nhóm bản ghi thành các dòng dễ đọc để xuất Excel — mỗi loại dữ liệu có cột khác nhau.
+function archiveRowsFor(key, items){
+  const finders = {
+    transactions: t=>({'Ngày':t.date,'Đơn vị':t.unit,'NCC':(supplierById(t.supplierId)||{}).name||'','Số CT':t.doc||'','Nhóm hàng':t.category||'','Trước VAT':t.gross,'Trả hàng':t.returns,'Người nhập':t.createdBy||''}),
+    bankTransactions: t=>({'Ngày':t.date,'Đơn vị':t.unit,'Ngân hàng':(bankById(t.bankId)||{}).name||'','Khách hàng':t.customer||'','SĐT':t.phone||'','Biển số':t.vehicle||'','Số tiền vay':t.loanAmount,'Trạng thái':t.status}),
+    insTransactions: t=>({'Ngày':t.date,'Đơn vị':t.unit,'NCC bảo hiểm':(insurerById(t.insurerId)||{}).name||'','Khách hàng':t.customer||'','SĐT':t.phone||'','Biển số':t.vehicle||'','Phí bảo hiểm':t.premiumAmount,'Trạng thái':t.status}),
+    reconciliations: r=>({'Kỳ':r.period,'NCC':(supplierById(r.supplierId)||{}).name||'','Từ ngày':r.fromDate,'Đến ngày':r.toDate,'Đã chốt':r.locked?'Có':'Không'}),
+    bankReconciliations: r=>({'Kỳ':r.period,'Ngân hàng':(bankById(r.bankId)||{}).name||'','Từ ngày':r.fromDate,'Đến ngày':r.toDate,'Đã chốt':r.locked?'Có':'Không'}),
+    insReconciliations: r=>({'Kỳ':r.period,'NCC bảo hiểm':(insurerById(r.insurerId)||{}).name||'','Từ ngày':r.fromDate,'Đến ngày':r.toDate,'Đã chốt':r.locked?'Có':'Không'}),
+    contracts: ct=>({'NCC':(supplierById(ct.supplierId)||{}).name||'','Tên hợp đồng':ct.ten,'Số HĐ':ct.soHopDong||'','Ngày ký':ct.ngayKy||'','Hiệu lực':ct.ngayHieuLuc||'','Hết hạn':ct.ngayHetHan||'','Link':ct.link||''}),
+    bankContracts: ct=>({'Ngân hàng':(bankById(ct.bankId)||{}).name||'','Tên hợp đồng':ct.ten,'Số HĐ':ct.soHopDong||'','Ngày ký':ct.ngayKy||'','Hiệu lực':ct.ngayHieuLuc||'','Hết hạn':ct.ngayHetHan||'','Link':ct.link||''}),
+    insContracts: ct=>({'NCC bảo hiểm':(insurerById(ct.insurerId)||{}).name||'','Tên hợp đồng':ct.ten,'Số HĐ':ct.soHopDong||'','Ngày ký':ct.ngayKy||'','Hiệu lực':ct.ngayHieuLuc||'','Hết hạn':ct.ngayHetHan||'','Link':ct.link||''}),
+    requests: r=>({'NCC':(supplierById(r.supplierId)||{}).name||'','Trạng thái':requestStatusMeta(r.status).label,'Cập nhật lúc':r.updatedAt,'Nội dung':(r.messages||[]).map(m=>`[${m.authorName}] ${m.text}`).join(' | ')}),
+    bankRequests: r=>({'Ngân hàng':(bankById(r.bankId)||{}).name||'','Trạng thái':requestStatusMeta(r.status).label,'Cập nhật lúc':r.updatedAt,'Nội dung':(r.messages||[]).map(m=>`[${m.authorName}] ${m.text}`).join(' | ')}),
+    insRequests: r=>({'NCC bảo hiểm':(insurerById(r.insurerId)||{}).name||'','Trạng thái':requestStatusMeta(r.status).label,'Cập nhật lúc':r.updatedAt,'Nội dung':(r.messages||[]).map(m=>`[${m.authorName}] ${m.text}`).join(' | ')}),
+  };
+  const fn = finders[key];
+  return fn ? items.map(fn) : items;
+}
+function wireArchivePanel(){
+  const cutoffInput = document.getElementById('archiveCutoff');
+  const previewBox = document.getElementById('archivePreviewBox');
+  const exportBtn = document.getElementById('archiveExportBtn');
+  const confirmText = document.getElementById('archiveConfirmText');
+  const purgeBtn = document.getElementById('archivePurgeBtn');
+  function refreshPreview(){
+    const cutoff = cutoffInput.value;
+    if(!cutoff){ previewBox.textContent = 'Chọn 1 ngày mốc trước.'; }
+    else{
+      const groups = archiveGroups(cutoff);
+      const total = groups.reduce((s,g)=>s+g.items.length,0);
+      previewBox.innerHTML = total>0
+        ? `Sẽ xoá được <b>${total}</b> bản ghi đã chốt xong trước ${cutoff}:<br>${groups.map(g=>`- ${escHtml(g.label)}: ${g.items.length}`).join('<br>')}`
+        : 'Không có dữ liệu nào đủ điều kiện xoá trước mốc này (chỉ tính dữ liệu đã chốt xong).';
+    }
+    updatePurgeBtnState();
+  }
+  function updatePurgeBtnState(){
+    const cutoff = cutoffInput.value;
+    const total = archiveGroups(cutoff).reduce((s,g)=>s+g.items.length,0);
+    purgeBtn.disabled = !(cutoff && total>0 && archiveExportedForCutoff===cutoff && confirmText.value.trim()==='XOÁ VĨNH VIỄN');
+  }
+  cutoffInput.addEventListener('change', refreshPreview);
+  confirmText.addEventListener('input', updatePurgeBtnState);
+  refreshPreview();
+  exportBtn.addEventListener('click', ()=>{
+    const cutoff = cutoffInput.value;
+    if(!cutoff){ toast('Chọn ngày mốc trước'); return; }
+    const groups = archiveGroups(cutoff);
+    if(groups.length===0){ toast('Không có gì để xuất'); return; }
+    const sheets = {};
+    groups.forEach(g=>{ sheets[g.label.slice(0,31)] = archiveRowsFor(g.key, g.items); });
+    exportToExcel('luu_tru_truoc_'+cutoff+'.xlsx', sheets);
+    archiveExportedForCutoff = cutoff;
+    logActivity('update','Cài đặt', `Xuất file lưu trữ dữ liệu trước ${cutoff} (chuẩn bị xoá vĩnh viễn)`);
+    toast('Đã xuất file lưu trữ — giữ file này lại trước khi xoá vĩnh viễn');
+    updatePurgeBtnState();
+  });
+  purgeBtn.addEventListener('click', ()=>{
+    if(purgeBtn.disabled) return;
+    const cutoff = cutoffInput.value;
+    confirmModal(`Xoá VĨNH VIỄN toàn bộ dữ liệu đã chốt xong trước ${cutoff}?\n\nKHÔNG đi qua Thùng rác — không thể khôi phục sau bước này. Đảm bảo bạn đã tải và lưu file lưu trữ vừa xuất.`, ()=>{
+      const groups = archiveGroups(cutoff);
+      let total = 0;
+      groups.forEach(g=>{
+        const removeIds = new Set(g.items.map(x=>x.id));
+        state[g.key] = (state[g.key]||[]).filter(x=>!removeIds.has(x.id));
+        total += removeIds.size;
+      });
+      logActivity('delete','Cài đặt', `Xoá vĩnh viễn ${total} bản ghi đã chốt xong trước ${cutoff} (dọn dữ liệu lưu trữ)`);
+      archiveExportedForCutoff = null;
+      saveState();
+      toast(`Đã xoá vĩnh viễn ${total} bản ghi`);
+      renderAll();
+    }, {danger:true, confirmLabel:'Xoá vĩnh viễn'});
+  });
+}
+
 function renderSettings(c){
   setTitle('Cài đặt', 'Danh sách đơn vị, ngày báo cáo, và quản lý dữ liệu');
   const canUnits = canEdit('settings');
@@ -7316,6 +7588,23 @@ function renderSettings(c){
         <div class="helper">Trạng thái lưu hiện tại: <b id="storageDetail">${storageMode==='firebase'?'Firebase — đồng bộ real-time':storageMode==='cloud'?'Đồng bộ dùng chung trò chuyện':storageMode==='local'?'Lưu cục bộ trên trình duyệt':'Chỉ trong phiên làm việc này'}</b></div>
       </div>
     </div>
+    ${isAdmin ? `
+    <div class="panel">
+      <div class="panel-head"><div><h2>Lưu trữ & dọn dữ liệu cũ</h2>
+      <div class="desc">Xoá vĩnh viễn dữ liệu ĐÃ CHỐT XONG (Doanh số trong kỳ Đối soát CK đã khoá / Hợp đồng đã hết hạn hoặc đã bị thay thế / Yêu cầu-Trao đổi đã xử lý xong) trước 1 mốc ngày — giúp giảm dung lượng khi dùng nhiều năm. Dữ liệu CHƯA chốt xong sẽ không bị đụng tới dù cũ tới đâu. Bắt buộc xuất file lưu trữ trước khi được xoá.</div></div></div>
+      <div class="panel-body">
+        <div class="form-grid">
+          <div class="field" style="max-width:220px"><label>Xoá dữ liệu trước ngày</label><input type="date" id="archiveCutoff" value="${escAttr(archiveExportedForCutoff||'')}"></div>
+        </div>
+        <div id="archivePreviewBox" class="helper" style="margin-top:10px"></div>
+        <div style="margin-top:12px"><button class="btn btn-ghost" id="archiveExportBtn">⇩ Xuất file lưu trữ</button></div>
+        <div class="form-grid" style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)">
+          <div class="field"><label>Gõ "XOÁ VĨNH VIỄN" để xác nhận</label><input id="archiveConfirmText" placeholder="XOÁ VĨNH VIỄN" autocomplete="off"></div>
+          <button class="btn btn-danger-ghost" id="archivePurgeBtn" disabled>🗑 Xoá vĩnh viễn dữ liệu cũ</button>
+        </div>
+        <div class="helper" style="margin-top:6px">Phải xuất file lưu trữ đúng mốc ngày này rồi mới bấm xoá được — đổi ngày phải xuất lại file mới.</div>
+      </div>
+    </div>` : ''}
     ${(isAdmin && fb.status==='connected') ? `
     <div class="panel">
       <div class="panel-head"><div><h2>Sao lưu tự động</h2>
@@ -7332,6 +7621,7 @@ function renderSettings(c){
   `;
   wireInfoToggles(c);
   if(isAdmin){
+    wireArchivePanel();
     document.getElementById('driveSaveBtn').addEventListener('click', ()=>{
       state.driveUploadUrl = document.getElementById('driveUrlInput').value.trim();
       state.driveUploadSecret = document.getElementById('driveSecretInput').value.trim();
@@ -7963,8 +8253,9 @@ function renderAccounts(c){
         toast('Cần giữ lại ít nhất 1 tài khoản Admin'); return;
       }
       confirmModal(`Xoá tài khoản "${acc.name}"?`, ()=>{
-        softDelete('accounts', acc, 'Tài khoản');
+        const trashId = softDelete('accounts', acc, 'Tài khoản');
         logActivity('delete','Tài khoản', `Xoá tài khoản "${acc.name}"`);
+        toastUndo('Đã xoá tài khoản "'+acc.name+'"', trashId);
         renderAll();
       });
     });
