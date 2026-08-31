@@ -6569,6 +6569,17 @@ function matchMethodLabel(method){
   return ({plate:'Biển số xe', phone:'SĐT khách hàng', name:'Tên khách hàng (không dấu)',
     manual:'Liên kết thủ công', manual_none:'Đã xác nhận: chưa có hợp đồng phù hợp', none:'Chưa khớp được'})[method] || 'Chưa khớp được';
 }
+// Khoá nhóm dùng chung cho cả 2 nguồn Lịch tái tục (qua khoản vay / bảo hiểm độc lập) — ưu tiên biển số,
+// dự phòng SĐT/tên, để nhận diện "cùng 1 xe" mà không cần biết trước đây là khớp kiểu gì.
+function renewalGroupKeyFor(t){
+  const plate = normalizePlate(t.vehicle);
+  if(plate) return 'plate:'+plate;
+  const phone = normalizePhone(t.phone);
+  if(phone) return 'phone:'+phone;
+  const name = normalizeName(t.customer);
+  if(name) return 'name:'+name;
+  return null;
+}
 // Tìm hợp đồng bảo hiểm khớp với 1 hồ sơ vay — ưu tiên: liên kết thủ công (nếu có) > biển số > SĐT > tên.
 // Trả về {matches, method} để giao diện hiển thị rõ đang khớp theo cách nào, tránh coi kết quả suy đoán
 // như dữ liệu chắc chắn.
@@ -6626,10 +6637,54 @@ function renewalRowFor(t){
   // đang xử lý, không nên xếp chung với "chưa ai động vào" dù kỹ thuật vẫn coi là chưa cấp đơn chính thức.
   const hasPendingForCycle = pendingMatches.some(m=> m.date>=anchorDate);
   if(status!=='ok' && hasPendingForCycle) status = 'in_progress';
-  return {t, policy, lastIssued, pendingMatches, anchorDate, nextDue, daysLeft, status, matchMethod:method};
+  return {source:'bank', t, policy, lastIssued, pendingMatches, anchorDate, nextDue, daysLeft, status, matchMethod:method};
+}
+/* ---------------------------- Lịch tái tục · nguồn "Bảo hiểm độc lập" (không qua khoản vay) ----------------------------
+   Mặc định MỌI đơn bảo hiểm "Đã cấp đơn" đều cần theo dõi tái tục (đúng thực tế nghiệp vụ hiện tại — không
+   có hợp đồng nhiều năm hay ngoại lệ) — CHỈ bỏ qua nếu: (1) xe đó đã được theo dõi qua đường vay ngân hàng
+   rồi (tránh hiện trùng 2 dòng cho cùng 1 xe), hoặc (2) đơn đó bị đánh dấu tay "Không theo dõi tái tục"
+   (t.renewalExempt — dùng cho trường hợp hiếm: hợp đồng nhiều năm, khách đã bán xe/huỷ...). */
+function standaloneRenewalRows(){
+  const bankTrackedKeys = new Set();
+  state.bankTransactions.forEach(t=>{
+    if(t.status!=='Đã giải ngân') return;
+    const policy = activeBankPolicy(t.bankId, t.date, t.product);
+    if(policy && policy.annualRenewalRequired){
+      const key = renewalGroupKeyFor(t);
+      if(key) bankTrackedKeys.add(key);
+    }
+  });
+  const active = state.insTransactions.filter(t=>t.status!=='Huỷ');
+  const groups = new Map();
+  active.forEach(t=>{
+    const key = renewalGroupKeyFor(t);
+    if(!key || bankTrackedKeys.has(key)) return; // không đủ thông tin để nhóm, hoặc đã theo dõi qua đường vay -> bỏ qua tránh trùng
+    if(!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(t);
+  });
+  const rows = [];
+  groups.forEach((txs, key)=>{
+    const issued = txs.filter(t=>t.status==='Đã cấp đơn' && !t.renewalExempt);
+    if(issued.length===0) return; // chưa từng cấp đơn nào (toàn "Đang xử lý"), hoặc đơn cấp gần nhất đã bị đánh dấu miễn -> chưa có gì để tính mốc
+    const sorted = issued.slice().sort((a,b)=> b.date.localeCompare(a.date));
+    const lastIssued = sorted[0];
+    const pendingMatches = txs.filter(t=>t.status!=='Đã cấp đơn' && t.status!=='Huỷ');
+    const anchorDate = lastIssued.date;
+    const nextDue = addYearsToDate(anchorDate, 1);
+    if(!nextDue) return;
+    const today = new Date(); today.setHours(0,0,0,0);
+    const daysLeft = Math.round((nextDue-today)/86400000);
+    const threshold = renewalAlertDays();
+    let status = daysLeft<0 ? 'overdue' : (daysLeft<=threshold ? 'due_soon' : 'ok');
+    const hasPendingForCycle = pendingMatches.some(m=> m.date>=anchorDate);
+    if(status!=='ok' && hasPendingForCycle) status = 'in_progress';
+    rows.push({source:'standalone', t:lastIssued, lastIssued, pendingMatches, anchorDate, nextDue, daysLeft, status, matchMethod: key.split(':')[0]});
+  });
+  return rows;
 }
 function allRenewalRows(){
-  return state.bankTransactions.map(renewalRowFor).filter(Boolean);
+  const bankRows = state.bankTransactions.map(renewalRowFor).filter(Boolean);
+  return [...bankRows, ...standaloneRenewalRows()];
 }
 // Số hồ sơ Sắp đến hạn + Quá hạn thật sự cần hành động — dùng để gắn chấm đỏ trên menu Bảo hiểm (giống cơ
 // chế insAllocAlertCount). Hồ sơ đang "in_progress" không tính vào đây vì nhân viên đã đang xử lý rồi.
@@ -7354,15 +7409,15 @@ function renderInsRenewal(c){
   const canManageLinks = currentRole()==='Admin' || currentRole()==='Quản lý';
   const alertDays = renewalAlertDays();
   const allRows = allRenewalRows();
-  setTitle('Lịch tái tục', allRows.length+' hồ sơ vay thuộc gói yêu cầu mua lại bảo hiểm hằng năm — tự liên kết theo biển số xe với Doanh số Bảo hiểm');
+  setTitle('Lịch tái tục', allRows.length+' hồ sơ cần theo dõi — gồm cả hồ sơ vay (gói yêu cầu tái tục hằng năm) và bảo hiểm bán độc lập (không qua vay)');
   const overdueCount = allRows.filter(r=>r.status==='overdue').length;
   const dueSoonCount = allRows.filter(r=>r.status==='due_soon').length;
   const inProgressCount = allRows.filter(r=>r.status==='in_progress').length;
   c.innerHTML = `
-    ${hintBannerHTML('renewal_intro', 'Danh sách này tự động lọc ra các hồ sơ vay thuộc gói yêu cầu mua lại bảo hiểm hằng năm, liên kết theo biển số xe với Doanh số Bảo hiểm — nếu khớp sai, bấm "Sửa liên kết" ở cột cuối để chỉnh tay.')}
+    ${hintBannerHTML('renewal_intro', 'Danh sách này gồm 2 nguồn: (1) hồ sơ vay thuộc gói yêu cầu mua lại bảo hiểm hằng năm, (2) mọi đơn bảo hiểm KHÔNG đi kèm khoản vay nào — mặc định đều cần theo dõi tái tục, chỉ cần đánh dấu "Không theo dõi" cho trường hợp ngoại lệ (hợp đồng nhiều năm, khách đã bán xe...). Nếu khớp sai, bấm "Sửa liên kết"/"Không theo dõi" ở cột cuối để chỉnh tay.')}
     <div class="panel">
       <div class="panel-head">
-        <div><h2>Bộ lọc</h2><div class="desc">Chỉ tính hồ sơ vay "Đã giải ngân" thuộc gói vay đã bật "Yêu cầu mua lại bảo hiểm hằng năm" ở Chính sách CK (Ngân hàng). Liên kết tự động theo biển số xe, dự phòng SĐT/tên khách hàng khi thiếu biển số — có thể sửa tay nếu khớp sai.</div></div>
+        <div><h2>Bộ lọc</h2><div class="desc">Nguồn "Qua khoản vay": hồ sơ "Đã giải ngân" thuộc gói vay đã bật "Yêu cầu mua lại bảo hiểm hằng năm" ở Chính sách CK (Ngân hàng). Nguồn "Bảo hiểm độc lập": mọi đơn bảo hiểm Đã cấp đơn không gắn khoản vay nào — mặc định đều theo dõi. Liên kết/nhóm xe tự động theo biển số, dự phòng SĐT/tên khách hàng.</div></div>
         <div class="mini-stats-row">
           <div class="mini-stat"><div class="mini-stat-label">Quá hạn</div><div class="mini-stat-value" style="color:var(--rust)">${overdueCount}</div></div>
           <div class="mini-stat"><div class="mini-stat-label">Sắp đến hạn</div><div class="mini-stat-value" style="color:var(--amber)">${dueSoonCount}</div></div>
@@ -7422,10 +7477,12 @@ function renderInsRenewal(c){
   }
   document.getElementById('irwExportBtn').addEventListener('click', ()=>{
     const rows = currentRenewalRows().map(r=>{
-      const b = bankById(r.t.bankId);
+      const b = r.source==='bank' ? bankById(r.t.bankId) : null;
       return {
+        'Nguồn': r.source==='bank' ? 'Qua khoản vay' : 'Bảo hiểm độc lập',
         'Đơn vị': r.t.unit, 'Khách hàng': r.t.customer||'', 'SĐT': r.t.phone||'', 'Biển số': r.t.vehicle||'',
-        'Ngân hàng': b?b.name:'', 'Gói vay': r.t.product||DEFAULT_BANK_PRODUCT, 'Ngày giải ngân': r.t.date,
+        'Ngân hàng': b?b.name:'', 'Gói vay': r.source==='bank' ? (r.t.product||DEFAULT_BANK_PRODUCT) : '',
+        'Ngày giải ngân': r.source==='bank' ? r.t.date : '',
         'Lần cấp đơn BH gần nhất': r.lastIssued ? r.lastIssued.date : '', 'Cách khớp': matchMethodLabel(r.matchMethod),
         'Mốc đến hạn tiếp theo': r.nextDue.toISOString().slice(0,10),
         'Số ngày còn lại (âm = quá hạn)': r.daysLeft, 'Trạng thái': renewalStatusLabel(r.status),
@@ -7450,7 +7507,7 @@ function renderInsRenewal(c){
     const tbl = document.getElementById('renewalTable');
     const rows = currentRenewalRows();
     if(allRows.length===0){
-      tbl.outerHTML = `<div class="empty"><div class="big">Chưa có hồ sơ nào cần theo dõi</div>Bật "Yêu cầu mua lại bảo hiểm hằng năm" ở Chính sách CK của gói vay tương ứng (VD: TFS) trong module Ngân hàng.</div>`;
+      tbl.outerHTML = `<div class="empty"><div class="big">Chưa có hồ sơ nào cần theo dõi</div>Chưa có đơn bảo hiểm "Đã cấp đơn" nào trong hệ thống, hoặc tất cả đã bị đánh dấu "Không theo dõi tái tục".</div>`;
       return;
     }
     if(rows.length===0){
@@ -7459,31 +7516,52 @@ function renderInsRenewal(c){
     }
     tbl.innerHTML = `
       <thead><tr>
-        <th class="wrap">Khách hàng</th><th>Biển số</th><th class="wrap">Ngân hàng / Gói vay</th><th>Ngày giải ngân</th>
+        <th class="wrap">Nguồn</th><th class="wrap">Khách hàng</th><th>Biển số</th>
         <th>Lần cấp đơn BH gần nhất</th><th>Cách khớp</th><th>Mốc đến hạn tiếp theo</th><th class="num">Số ngày</th><th>Trạng thái</th><th></th>
       </tr></thead>
       <tbody>${rows.map(r=>{
-        const b = bankById(r.t.bankId);
+        const isBank = r.source==='bank';
+        const b = isBank ? bankById(r.t.bankId) : null;
         const daysTxt = r.daysLeft<0 ? `Quá ${-r.daysLeft} ngày` : `Còn ${r.daysLeft} ngày`;
         const lastInsCell = r.lastIssued ? r.lastIssued.date
           : (r.pendingMatches.length ? `<em title="Có hợp đồng ngày ${escAttr(r.pendingMatches[0].date)} nhưng chưa Đã cấp đơn">Đang xử lý (${r.pendingMatches[0].date})</em>`
           : '<em>Chưa có</em>');
+        // Gộp "Nguồn" + "Ngân hàng/Gói vay" + "Ngày giải ngân" thành 1 cột duy nhất — vì phần lớn hồ sơ giờ
+        // là "Bảo hiểm độc lập" (không có khoản vay), để 2 cột riêng sẽ toàn dấu "—" lãng phí chỗ, rối mắt.
+        const sourceCell = isBank
+          ? `<div style="font-weight:600">🏦 ${b?escHtml(b.name):'<em>(đã xoá)</em>'}</div><div class="meta-line">${escHtml(r.t.product||DEFAULT_BANK_PRODUCT)} · Giải ngân ${r.t.date}</div>`
+          : `<span class="meta-line" title="Không có khoản vay nào theo dõi xe này — tự theo dõi trực tiếp từ Doanh số Bảo hiểm">📄 Bảo hiểm độc lập</span>`;
+        const actionBtn = isBank
+          ? (canManageLinks ? `<button class="btn btn-ghost" data-editlink="${r.t.id}" style="font-size:11.5px;padding:4px 8px;white-space:nowrap">Sửa liên kết</button>` : '')
+          : (canManageLinks ? `<button class="btn btn-ghost" data-exempt="${r.t.id}" style="font-size:11.5px;padding:4px 8px;white-space:nowrap" title="Dùng khi hợp đồng nhiều năm hoặc khách đã bán xe/huỷ — sẽ không hiện lại trong Lịch tái tục nữa">🚫 Không theo dõi</button>` : '');
         return `<tr>
+          <td class="wrap">${sourceCell}</td>
           <td class="wrap"><b>${escHtml(r.t.customer||'(chưa có tên KH)')}</b><div class="meta-line">${escHtml(r.t.phone||'')} · ${escHtml(r.t.unit)}</div></td>
           <td>${escHtml(r.t.vehicle||'—')}</td>
-          <td class="wrap">${b?escHtml(b.name):'<em>(đã xoá)</em>'}<div class="meta-line">${escHtml(r.t.product||DEFAULT_BANK_PRODUCT)}</div></td>
-          <td>${r.t.date}</td>
           <td>${lastInsCell}</td>
           <td class="meta-line">${escHtml(matchMethodLabel(r.matchMethod))}</td>
           <td>${r.nextDue.toISOString().slice(0,10)}</td>
           <td class="num" style="font-weight:600;${r.status==='overdue'?'color:var(--rust)':r.status==='due_soon'?'color:var(--amber)':''}">${daysTxt}</td>
           <td>${renewalStatusStampHTML(r.status)}</td>
-          <td>${canManageLinks ? `<button class="btn btn-ghost" data-editlink="${r.t.id}" style="font-size:11.5px;padding:4px 8px;white-space:nowrap">Sửa liên kết</button>` : ''}</td>
+          <td>${actionBtn}</td>
         </tr>`;
       }).join('')}</tbody>`;
     if(canManageLinks){
       tbl.querySelectorAll('[data-editlink]').forEach(btn=>{
         btn.addEventListener('click', ()=> openRenewalLinkModal(btn.dataset.editlink));
+      });
+      tbl.querySelectorAll('[data-exempt]').forEach(btn=>{
+        btn.addEventListener('click', ()=>{
+          const insTx = state.insTransactions.find(x=>x.id===btn.dataset.exempt);
+          if(!insTx) return;
+          confirmModal(`Đánh dấu "Không theo dõi tái tục" cho hợp đồng của "${insTx.customer||'(chưa có tên KH)'}" (${insTx.vehicle||'—'})?\n\nDùng khi: hợp đồng bảo hiểm nhiều năm, hoặc khách đã bán xe/huỷ hợp đồng. Hồ sơ này sẽ không hiện lại trong Lịch tái tục nữa — có thể bật lại bằng cách sửa trực tiếp ở Doanh số Bảo hiểm nếu cần.`, ()=>{
+            insTx.renewalExempt = true;
+            logActivity('update','Doanh số (Bảo hiểm)', `${insTx.customer||''} (${insTx.vehicle||''}) — Đánh dấu không theo dõi tái tục`);
+            saveState();
+            toast('Đã đánh dấu không theo dõi tái tục');
+            renderAll();
+          }, {danger:false});
+        });
       });
     }
   }
