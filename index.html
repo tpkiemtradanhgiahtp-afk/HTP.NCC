@@ -937,7 +937,7 @@ const BRANCH_RECORD_FIELDS = {
 const BRANCH_META_FIELDS = {
   ncc:    ['nextSupplierNo','monitoring','reportDate'],
   nh:     ['nextBankNo'],
-  bh:     ['insAllocAlertThreshold','nextInsNo','insRenewalAlertDays'],
+  bh:     ['insAllocAlertThreshold','nextInsNo','insRenewalAlertDays','insAllocMonthLocks'],
   shared: ['units','driveUploadUrl','driveUploadSecret','emailNotifyEnabled','editPerms'],
 };
 // Toàn bộ field của 1 nhánh (gộp cả 2 loại trên) — dùng ở những chỗ chỉ cần biết "nhánh này có field gì"
@@ -2733,6 +2733,7 @@ function seedState(){
     insMonthlyRevenue: [], // {id, insurerId, month:'YYYY-MM', serviceAmount, note, updatedBy, updatedAt} — DT dịch vụ/sửa chữa nhập tay theo hãng theo tháng
     insAllocAlertThreshold: 0.05, // ngưỡng cảnh báo chênh lệch (Thực tế − Đề xuất tỷ lệ bán), dạng phân số — chỉ Admin sửa được
     insRenewalAlertDays: 45, // hồ sơ còn ≤ số ngày này tới mốc tái tục -> tính là "Sắp đến hạn" — chỉ Admin sửa được
+    insAllocMonthLocks: {}, // {'YYYY-MM': {locked, lockedBy, lockedAt}} — Admin "chốt" tỷ lệ phân bổ theo tháng, xem isInsAllocMonthLocked()
     nextInsNo: insurers.length+1,
     driveUploadUrl: '', // URL Web App của Google Apps Script dùng để upload ảnh/PDF hợp đồng lên Drive — chỉ Admin sửa (Cài đặt)
     driveUploadSecret: '', // mã bí mật gửi kèm mỗi lần upload để tránh người ngoài spam vào cổng upload này
@@ -6974,6 +6975,24 @@ function insAlertBadgeHTML(){
   const n = insAllocAlertCount();
   return n>0 ? `<span class="alert-dot" title="${n} hãng đang lệch tỷ lệ bán quá ngưỡng cảnh báo">${n}</span>` : '';
 }
+// "Chốt" tỷ lệ phân bổ theo THÁNG (không phải theo từng hãng riêng lẻ) — vì tổng tỷ lệ cả tháng luôn phải
+// = 100%, khoá lẻ từng hãng sẽ làm vỡ tính toàn vẹn đó nếu hãng còn lại vẫn sửa được. Chỉ khoá đúng cột
+// "Tỷ lệ phân bổ tháng" — KHÔNG khoá "DT dịch vụ/sửa chữa" (số liệu thô, vẫn có thể cần sửa sai sót sau
+// này mà không ảnh hưởng gì tới tỷ lệ ĐÃ CHỐT, vì tỷ lệ chốt xong là cố định, không tự tính lại theo DV).
+function isInsAllocMonthLocked(month){
+  return !!(state.insAllocMonthLocks && state.insAllocMonthLocks[month] && state.insAllocMonthLocks[month].locked);
+}
+function insAllocMonthLockInfo(month){
+  return (state.insAllocMonthLocks && state.insAllocMonthLocks[month]) || null;
+}
+function lockInsAllocMonth(month){
+  if(!state.insAllocMonthLocks) state.insAllocMonthLocks = {};
+  state.insAllocMonthLocks[month] = { locked:true, lockedBy:currentUserId, lockedAt:new Date().toISOString() };
+}
+function unlockInsAllocMonth(month){
+  if(!state.insAllocMonthLocks) state.insAllocMonthLocks = {};
+  state.insAllocMonthLocks[month] = { locked:false, lockedBy:currentUserId, lockedAt:new Date().toISOString() };
+}
 function renderInsAllocation(c){
   const partnerAcc = isPartnerAccount(currentUser()) ? currentUser() : null;
   setTitle('Phân bổ đơn vị', (partnerAcc?'Phí bảo hiểm thu của bạn theo từng đơn vị':'Đóng góp phí bảo hiểm thu của từng đơn vị cho từng NCC — cộng dồn toàn thời gian, chỉ tính hợp đồng "Đã cấp đơn"'));
@@ -6993,7 +7012,8 @@ function renderInsAllocation(c){
             <label>Ngưỡng cảnh báo (%) ${!isAdmin?'🔒':''}</label>
             <input id="insAlertThresholdInput" type="number" min="0" max="100" step="0.5" value="${thresholdPct}" ${isAdmin?'':'disabled'} style="width:100%">
           </div>
-          ${editable ? `<div class="field"><label>&nbsp;</label><button class="btn btn-ghost" id="insApplyPrevBtn" type="button" title="Lấy 'Đề xuất tỷ lệ bán tháng sau' của tháng liền trước, điền vào cột 'Tỷ lệ phân bổ tháng' của tháng đang xem cho mọi hãng">↳ Áp dụng đề xuất tháng trước</button></div>` : ''}
+          ${editable ? `<div class="field"><label>&nbsp;</label><button class="btn btn-ghost" id="insApplyPrevBtn" type="button" ${isInsAllocMonthLocked(insAllocMonth)?'disabled title="Tháng này đã chốt — mở khoá trước khi áp dụng đề xuất"':`title="Lấy 'Đề xuất tỷ lệ bán tháng sau' của tháng liền trước, điền vào cột 'Tỷ lệ phân bổ tháng' của tháng đang xem cho mọi hãng"`}>↳ Áp dụng đề xuất tháng trước</button></div>` : ''}
+          ${isAdmin ? `<div class="field"><label>&nbsp;</label><button class="btn ${isInsAllocMonthLocked(insAllocMonth)?'btn-primary':'btn-danger-ghost'}" id="insAllocLockBtn" type="button">${isInsAllocMonthLocked(insAllocMonth)?'🔓 Mở khoá tháng này':'🔒 Chốt tỷ lệ phân bổ tháng này'}</button></div>` : ''}
         </div>
       </div>
       <div class="panel-body" id="insAllocKpiWrap" style="padding-bottom:12px"></div>
@@ -7009,11 +7029,12 @@ function renderInsAllocation(c){
   const monthInput = document.getElementById('insAllocMonthInput');
   monthInput.addEventListener('change', ()=>{
     insAllocMonth = monthInput.value || currentMonthISO();
-    renderInsRevenueTable(editable);
+    renderAll(); // đổi cả renderInsRevenueTable(editable) thành renderAll() vì nút Chốt/Mở khoá + nút "Áp dụng đề xuất" cũng cần cập nhật lại theo đúng trạng thái khoá của tháng mới chọn
   });
   const applyPrevBtn = document.getElementById('insApplyPrevBtn');
   if(applyPrevBtn){
     applyPrevBtn.addEventListener('click', ()=>{
+      if(isInsAllocMonthLocked(insAllocMonth)){ toast('Tháng này đã chốt — mở khoá trước khi áp dụng đề xuất'); return; }
       const {prev, applied} = applyPrevMonthSuggestionToAllocation(insAllocMonth);
       if(applied===0){ toast(`Chưa có dữ liệu đề xuất ở tháng ${prev} để áp dụng.`); return; }
       logActivity('update','Tỷ lệ phân bổ (Bảo hiểm)', `Áp dụng đề xuất tháng ${prev} → tỷ lệ phân bổ tháng ${insAllocMonth} cho ${applied} hãng`);
@@ -7024,6 +7045,24 @@ function renderInsAllocation(c){
     });
   }
   if(isAdmin){
+    const lockBtn = document.getElementById('insAllocLockBtn');
+    if(lockBtn) lockBtn.addEventListener('click', ()=>{
+      const month = insAllocMonth;
+      const locked = isInsAllocMonthLocked(month);
+      const monthLabel = (()=>{ const {from} = insMonthBounds(month); return from ? from.toLocaleDateString('vi-VN',{month:'long',year:'numeric'}) : month; })();
+      confirmModal(
+        locked
+          ? `Mở khoá tỷ lệ phân bổ tháng ${monthLabel}? Mọi vai trò có quyền (Admin/Quản lý) sẽ sửa lại được cột "Tỷ lệ phân bổ tháng".`
+          : `Chốt tỷ lệ phân bổ tháng ${monthLabel}? Cột "Tỷ lệ phân bổ tháng" của MỌI hãng trong tháng này sẽ khoá lại, kể cả Quản lý cũng không sửa được nữa — chỉ Admin mở khoá lại được. Cột "DT dịch vụ/sửa chữa" không bị ảnh hưởng.`,
+        ()=>{
+          if(locked) unlockInsAllocMonth(month); else lockInsAllocMonth(month);
+          logActivity('update','Tỷ lệ phân bổ (Bảo hiểm)', `${locked?'🔓 Mở khoá':'🔒 Chốt'} tỷ lệ phân bổ tháng ${month}`);
+          saveState();
+          toast(locked ? 'Đã mở khoá' : 'Đã chốt tỷ lệ phân bổ tháng này');
+          renderAll();
+        }, {danger: !locked}
+      );
+    });
     const thInput = document.getElementById('insAlertThresholdInput');
     thInput.addEventListener('change', ()=>{
       const pct = Math.max(0, Number(thInput.value)||0);
@@ -7082,12 +7121,19 @@ function renderInsRevenueTable(editable){
   if(!tbl) return;
   if(state.insurers.length===0){ tbl.outerHTML = `<div class="empty"><div class="big">Chưa có NCC bảo hiểm</div></div>`; return; }
   const month = insAllocMonth;
-  const {rows, sys, threshold} = insAllocRows(month);
+  const monthLocked = isInsAllocMonthLocked(month);
+  const rateEditable = editable && !monthLocked; // chỉ cột "Tỷ lệ phân bổ tháng" bị khoá khi tháng đã chốt — DV vẫn sửa được bình thường
+  const { rows, sys, threshold} = insAllocRows(month);
   const breaches = rows.filter(r=>r.status==='over'||r.status==='under');
   const monthLabel = (()=>{ const {from} = insMonthBounds(month); return from ? from.toLocaleDateString('vi-VN',{month:'long',year:'numeric'}) : month; })();
 
   if(kpiWrap){
+    const lockInfo = insAllocMonthLockInfo(month);
+    const lockedBanner = monthLocked ? `
+      <div class="locked-note" style="margin-top:0">🔒 Tỷ lệ phân bổ tháng ${monthLabel} đã được CHỐT${lockInfo&&lockInfo.lockedAt?' lúc '+new Date(lockInfo.lockedAt).toLocaleString('vi-VN'):''}${lockInfo&&lockInfo.lockedBy?' bởi '+escHtml((state.accounts.find(a=>a.id===lockInfo.lockedBy)||{}).name||''):''} — chỉ Admin mở khoá lại được. Cột "DT dịch vụ/sửa chữa" vẫn sửa được bình thường.</div>
+    ` : '';
     kpiWrap.innerHTML = `
+      ${lockedBanner}
       <div class="stat-strip" style="margin-bottom:${breaches.length>0?'10px':'0'}">
         <div class="stat-chip"><span class="stat-dot"></span><span class="stat-label">Tổng DT hệ thống ${monthLabel}:</span> <b>${sys.total>0?fmt(sys.total):'—'}</b><span class="stat-label">(BR ${fmt(sys.br)} · DV ${fmt(sys.dv)})</span></div>
         <div class="stat-chip ${breaches.length>0?'rust':'forest'}"><span class="stat-dot"></span><span class="stat-label">Vượt ngưỡng ${fmtPct(threshold)}:</span> <b>${breaches.length}/${rows.length} hãng</b></div>
@@ -7108,7 +7154,7 @@ function renderInsRevenueTable(editable){
     <thead>
     <tr>
       <th>Hãng</th>
-      ${thCompact('Phân bổ', 'tháng (%)', 'Tỷ lệ phân bổ tháng (%) — kế hoạch bán ra Admin/Quản lý giao cho hãng trong tháng, thường lấy từ Đề xuất tháng trước', true)}
+      ${thCompact('Phân bổ', 'tháng (%)', 'Tỷ lệ phân bổ tháng (%) — kế hoạch bán ra Admin/Quản lý giao cho hãng trong tháng, thường lấy từ Đề xuất tháng trước'+(monthLocked?' — ĐÃ CHỐT, chỉ Admin mở khoá mới sửa được':''), true)}
       ${thCompact('BR', 'bán ra', 'DT bán ra (BR) — phí bảo hiểm thu, tự tính từ hợp đồng "Đã cấp đơn" trong tháng', true)}
       ${thCompact('DV', 'dịch vụ', 'DT dịch vụ/sửa chữa (DV) — nhập tay theo tháng', true)}
       ${thCompact('SC/BR', 'DV÷BR', 'Tỷ lệ DT dịch vụ/sửa chữa so với DT bán ra (DV÷BR)', true)}
@@ -7124,9 +7170,9 @@ function renderInsRevenueTable(editable){
       <tr style="${meta.row}">
         <td>${escHtml(r.ins.name)}</td>
         <td class="num">
-          ${editable
+          ${rateEditable
             ? `<input class="cell-edit num mini-field" data-alloc="${r.ins.id}" type="text" inputmode="decimal" value="${r.allocationRate!=null?round2(r.allocationRate*100):''}" placeholder="—" style="text-align:right">`
-            : (r.allocationRate!=null?fmtPct(r.allocationRate):'—')}
+            : (r.allocationRate!=null?fmtPct(r.allocationRate):'—')}${monthLocked?' 🔒':''}
         </td>
         <td class="num">${r.br>0?fmt(r.br):'—'}</td>
         <td class="num">
@@ -7153,7 +7199,7 @@ function renderInsRevenueTable(editable){
       <td class="num">—</td>
       <td>—</td>
     </tr></tfoot>`;
-  if(editable){
+  if(rateEditable){
     tbl.querySelectorAll('input[data-alloc]').forEach(el=>{
       el.addEventListener('change', ()=>{
         const insurerId = el.dataset.alloc;
@@ -7166,6 +7212,8 @@ function renderInsRevenueTable(editable){
         renderInsRevenueTable(editable);
       });
     });
+  }
+  if(editable){
     tbl.querySelectorAll('input[data-ins]').forEach(el=>{
       attachMoneyFormatting(el);
       el.addEventListener('change', ()=>{
