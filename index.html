@@ -938,7 +938,7 @@ const BRANCH_META_FIELDS = {
   ncc:    ['nextSupplierNo','monitoring','reportDate'],
   nh:     ['nextBankNo'],
   bh:     ['insAllocAlertThreshold','nextInsNo','insRenewalAlertDays'],
-  shared: ['units','driveUploadUrl','driveUploadSecret','emailNotifyEnabled'],
+  shared: ['units','driveUploadUrl','driveUploadSecret','emailNotifyEnabled','editPerms'],
 };
 // Toàn bộ field của 1 nhánh (gộp cả 2 loại trên) — dùng ở những chỗ chỉ cần biết "nhánh này có field gì"
 // mà không cần phân biệt loại (VD: reset dữ liệu khi unsubscribe, kiểm tra tên module hợp lệ, sao lưu).
@@ -2737,6 +2737,7 @@ function seedState(){
     driveUploadUrl: '', // URL Web App của Google Apps Script dùng để upload ảnh/PDF hợp đồng lên Drive — chỉ Admin sửa (Cài đặt)
     driveUploadSecret: '', // mã bí mật gửi kèm mỗi lần upload để tránh người ngoài spam vào cổng upload này
     emailNotifyEnabled: true, // chỉ để HIỂN THỊ trạng thái trong app — công tắc THẬT SỰ nằm ở Apps Script (PropertiesService), xem handleSetEmailEnabled
+    editPerms: JSON.parse(JSON.stringify(DEFAULT_EDIT_PERMS)), // Admin tự cấu hình được qua "Quản trị tài khoản" — xem canEdit()
   };
 }
 
@@ -2749,14 +2750,17 @@ const ROLES = ['Admin','Quản lý','Nhân viên','Đối tác'];
 // Các tab/khu vực mà mỗi vai trò được phép SỬA (mọi vai trò đã đăng nhập đều XEM được tất cả tab mình thấy).
 // LƯU Ý: vai trò "Đối tác" CỐ Ý không xuất hiện trong bất kỳ danh sách nào dưới đây -> không có quyền sửa ở
 // bất cứ khu vực nào (chỉ xem), trừ 1 ngoại lệ tự xác nhận hoa hồng của chính mình xử lý riêng ở render.
-const EDIT_PERMS = {
+// Giá trị GỐC/mặc định — dùng làm "khôi phục mặc định" và làm nguồn dữ liệu ban đầu khi seed lần đầu. Từ
+// khi có tính năng "Admin tự cấu hình phân quyền" (renderAccounts), quyền THẬT SỰ đang áp dụng nằm ở
+// state.editPerms (đồng bộ Firebase như mọi dữ liệu khác) — xem canEdit() bên dưới.
+const DEFAULT_EDIT_PERMS = {
   suppliers:    ['Admin','Quản lý'],
   policies:     ['Admin','Quản lý'],
   transactions: ['Admin','Quản lý','Nhân viên'],
   reconcile:    ['Admin','Quản lý'],
   monitor:      ['Admin','Quản lý'],   // chọn chu kỳ theo dõi / ngày báo cáo
-  settings:     ['Admin'],   // danh sách đơn vị — cả tab Cài đặt giờ chỉ Admin xem/sửa được (mục "Hệ thống")
-  accounts:     ['Admin'],             // quản trị tài khoản
+  settings:     ['Admin'],   // danh sách đơn vị — cả tab Cài đặt giờ chỉ Admin xem/sửa được (mục "Hệ thống") — CỐ ĐỊNH, không cho cấu hình lại
+  accounts:     ['Admin'],             // quản trị tài khoản — CỐ ĐỊNH, không cho cấu hình lại
   nh_suppliers:    ['Admin','Quản lý'],
   nh_policies:     ['Admin','Quản lý'],
   nh_transactions: ['Admin','Quản lý','Nhân viên'],
@@ -2767,6 +2771,20 @@ const EDIT_PERMS = {
   bh_reconcile:    ['Admin','Quản lý'],
   bh_allocation:   ['Admin','Quản lý'],  // nhập DT dịch vụ/sửa chữa theo hãng theo tháng
 };
+// Các dòng hiện trong bảng "Phân quyền theo vai trò" (Quản trị tài khoản) — mỗi dòng có thể gộp NHIỀU key
+// (VD "Doanh số" gộp cả transactions/nh_transactions/bh_transactions) để 1 lần bấm áp dụng đồng thời cho
+// cả 3 module, tránh tình trạng bật quyền NCC mà quên bật NH/BH cho cùng 1 khái niệm quyền. locked:true =
+// cố định Admin-only, không cho cấu hình lại qua bảng này (tránh lỡ tay tự khoá quyền quản trị của mình).
+const PERM_AREA_ROWS = [
+  {label:'Danh mục NCC / NH / Bảo hiểm', keys:['suppliers','nh_suppliers','bh_suppliers'], locked:false},
+  {label:'Chính sách CK / Biểu phí', keys:['policies','nh_policies','bh_policies'], locked:false},
+  {label:'Doanh số', keys:['transactions','nh_transactions','bh_transactions'], locked:false},
+  {label:'Đối soát CK', keys:['reconcile','nh_reconcile','bh_reconcile'], locked:false},
+  {label:'Theo dõi mốc CK (chọn chu kỳ)', keys:['monitor'], locked:false},
+  {label:'Phân bổ dịch vụ Bảo hiểm (DT dịch vụ/sửa chữa)', keys:['bh_allocation'], locked:false},
+  {label:'Cài đặt đơn vị', keys:['settings'], locked:true},
+  {label:'Quản trị tài khoản', keys:['accounts'], locked:true},
+];
 
 /* ---------------------------- Phân quyền theo MODULE (mức giao diện) ----------------------------
    Độc lập với vai trò: quyết định tài khoản đó có THẤY (được dùng) module nào trong 3 module lớn hay
@@ -2950,7 +2968,11 @@ function currentRole(){ const u = currentUser(); return u ? u.role : null; }
 function canEdit(area){
   const role = currentRole();
   if(!role) return false;
-  return (EDIT_PERMS[area]||[]).includes(role);
+  // "Admin" luôn được sửa mọi khu vực, kể cả khi dữ liệu cấu hình lỡ bị thiếu/hỏng — không phụ thuộc
+  // state.editPerms để tránh trường hợp Admin tự khoá nhầm chính mình khỏi mọi thứ.
+  if(role==='Admin') return true;
+  const allowed = (state.editPerms && state.editPerms[area]) || DEFAULT_EDIT_PERMS[area] || [];
+  return allowed.includes(role);
 }
 // (Đã xoá hàm roleClass() cũ — không được gọi ở đâu trong app, mọi nơi đều dùng roleBadgeClass() bên dưới.)
 // (roleClass chỉ cần khớp với CSS .role-badge.Admin/.Quan-ly/.Nhan-vien — map thủ công cho chắc)
@@ -8290,8 +8312,54 @@ function renderTrash(c){
 }
 
 let accountsSelected = new Set(); // chọn tạm để xoá hàng loạt — reset mỗi lần mở lại trang Quản trị tài khoản
+// Bấm 1 ô trong bảng "Phân quyền theo vai trò" -> bật/tắt role đó cho TẤT CẢ key gộp trong dòng, đồng thời
+// (áp dụng ngay, không cần nút Lưu riêng — nhất quán với cách các cài đặt khác trong app hoạt động).
+function togglePermForRole(keys, role, grant){
+  if(!state.editPerms) state.editPerms = JSON.parse(JSON.stringify(DEFAULT_EDIT_PERMS));
+  keys.forEach(k=>{
+    if(!Array.isArray(state.editPerms[k])) state.editPerms[k] = (DEFAULT_EDIT_PERMS[k]||[]).slice();
+    const set = new Set(state.editPerms[k]);
+    if(grant) set.add(role); else set.delete(role);
+    if(!set.has('Admin')) set.add('Admin'); // phòng hờ tuyệt đối — dù logic canEdit() đã luôn cho Admin qua, vẫn không để dữ liệu tự thiếu Admin
+    state.editPerms[k] = Array.from(set);
+  });
+}
+function wirePermsTable(){
+  document.querySelectorAll('[data-perm-toggle]').forEach(td=>{
+    td.addEventListener('click', ()=>{
+      const role = td.dataset.permToggle;
+      const keys = td.closest('tr').dataset.permKeys.split(',');
+      const currentlyAllowed = td.textContent.trim()==='✅';
+      const label = td.closest('tr').querySelector('td').textContent.trim();
+      confirmModal(`${currentlyAllowed?'Thu hồi':'Cấp'} quyền sửa "${label}" cho vai trò "${role}"?`, ()=>{
+        togglePermForRole(keys, role, !currentlyAllowed);
+        logActivity('update','Cài đặt', `Phân quyền: ${currentlyAllowed?'thu hồi':'cấp'} "${label}" ${currentlyAllowed?'khỏi':'cho'} vai trò "${role}"`);
+        saveState();
+        toast(currentlyAllowed ? 'Đã thu hồi quyền' : 'Đã cấp quyền');
+        renderAll();
+      }, {danger: currentlyAllowed});
+    });
+  });
+  const grantBtn = document.getElementById('permsGrantAllMgrBtn');
+  const revokeBtn = document.getElementById('permsRevokeAllMgrBtn');
+  if(grantBtn) grantBtn.addEventListener('click', ()=>{
+    confirmModal('Cấp TOÀN BỘ quyền sửa (trừ khu vực cố định "Quản trị tài khoản"/"Cài đặt đơn vị") cho vai trò "Quản lý"?', ()=>{
+      PERM_AREA_ROWS.filter(r=>!r.locked).forEach(r=> togglePermForRole(r.keys, 'Quản lý', true));
+      logActivity('update','Cài đặt', 'Phân quyền: cấp toàn bộ quyền sửa cho vai trò "Quản lý"');
+      saveState(); toast('Đã cấp toàn bộ quyền cho Quản lý'); renderAll();
+    });
+  });
+  if(revokeBtn) revokeBtn.addEventListener('click', ()=>{
+    confirmModal('Thu hồi TOÀN BỘ quyền sửa (trừ khu vực cố định) khỏi vai trò "Quản lý"? Quản lý sẽ chỉ còn xem được, không sửa được gì.', ()=>{
+      PERM_AREA_ROWS.filter(r=>!r.locked).forEach(r=> togglePermForRole(r.keys, 'Quản lý', false));
+      logActivity('update','Cài đặt', 'Phân quyền: thu hồi toàn bộ quyền sửa khỏi vai trò "Quản lý"');
+      saveState(); toast('Đã thu hồi toàn bộ quyền của Quản lý'); renderAll();
+    }, {danger:true});
+  });
+}
 function renderAccounts(c){
   accountsSelected = new Set();
+  const isAdmin = currentRole()==='Admin';
   setTitle('Quản trị tài khoản', state.accounts.length+' tài khoản — phân quyền theo vai trò, module & đơn vị phụ trách');
   c.innerHTML = `
     <div class="panel">
@@ -8355,26 +8423,37 @@ function renderAccounts(c){
       <div class="panel-body" id="unassignedUnitsBox"></div>
     </div>
     <div class="panel">
-      <div class="panel-head"><div><h2>Phân quyền theo vai trò</h2></div></div>
+      <div class="panel-head"><div><h2>Phân quyền theo vai trò</h2>
+      <div class="desc">${isAdmin ? 'Bấm trực tiếp vào ô ✅/— để cấp/thu hồi quyền sửa cho Quản lý và Nhân viên — áp dụng ngay, không cần lưu riêng.' : ''}</div></div>
+      ${isAdmin ? `<div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-ghost" id="permsGrantAllMgrBtn" style="font-size:11.5px;padding:5px 10px">Cấp toàn bộ cho Quản lý</button>
+        <button class="btn btn-ghost" id="permsRevokeAllMgrBtn" style="font-size:11.5px;padding:5px 10px">Thu hồi toàn bộ khỏi Quản lý</button>
+      </div>` : ''}
+      </div>
       <div class="panel-body">
-        <table class="data">
+        <table class="data" id="permsTable">
           <thead><tr><th>Khu vực</th>${ROLES.map(r=>`<th>${r}</th>`).join('')}</tr></thead>
           <tbody>
-            ${Object.entries({
-              'Danh mục NCC': EDIT_PERMS.suppliers, 'Chính sách CK': EDIT_PERMS.policies,
-              'Doanh số': EDIT_PERMS.transactions, 'Đối soát CK': EDIT_PERMS.reconcile,
-              'Theo dõi mốc CK (chọn chu kỳ)': EDIT_PERMS.monitor, 'Cài đặt đơn vị': EDIT_PERMS.settings,
-              'Quản trị tài khoản': EDIT_PERMS.accounts,
-            }).map(([label, allowed])=>`
-              <tr><td>${label}</td>${ROLES.map(r=>`<td style="text-align:center">${allowed.includes(r)?'✅':'—'}</td>`).join('')}</tr>
+            ${PERM_AREA_ROWS.map(({label, keys, locked})=>`
+              <tr data-perm-keys="${escAttr(keys.join(','))}">
+                <td>${label}${locked?' <span class="meta-line">(cố định)</span>':''}</td>
+                ${ROLES.map(r=>{
+                  if(r==='Admin') return `<td style="text-align:center">✅</td>`;
+                  if(r==='Đối tác') return `<td style="text-align:center">—</td>`; // Đối tác không thuộc diện cấu hình ở bảng này, quyền của Đối tác xử lý riêng theo từng chỗ cụ thể
+                  const allowed = keys.every(k=> ((state.editPerms&&state.editPerms[k])||DEFAULT_EDIT_PERMS[k]||[]).includes(r));
+                  const clickable = isAdmin && !locked;
+                  return `<td style="text-align:center;${clickable?'cursor:pointer':''}" ${clickable?`data-perm-toggle="${escAttr(r)}"`:''} title="${clickable?'Bấm để '+(allowed?'thu hồi':'cấp')+' quyền':(locked?'Cố định, không cấu hình được ở đây':'')}">${allowed?'✅':'—'}</td>`;
+                }).join('')}
+              </tr>
             `).join('')}
           </tbody>
         </table>
-        <div class="helper">Bảng trên là phân quyền <b>SỬA</b> theo vai trò (mọi vai trò đều <b>xem được</b> các tab thuộc module mình được cấp). Việc <b>THẤY module nào</b> (NCC / Ngân hàng / Bảo hiểm) được cấu hình riêng theo từng tài khoản ở cột "Module" trong bảng danh sách tài khoản bên trên — Admin luôn thấy đủ mọi module. Nhân viên có gán Đơn vị sẽ bị khoá đúng đơn vị đó khi nhập Doanh số (không chọn sang đơn vị khác được), giúp tránh nhập nhầm đơn vị.</div>
+        <div class="helper">Bảng trên là phân quyền <b>SỬA</b> theo vai trò (mọi vai trò đều <b>xem được</b> các tab thuộc module mình được cấp). "Danh mục", "Chính sách CK/Biểu phí", "Doanh số", "Đối soát CK" áp dụng ĐỒNG THỜI cho cả 3 module NCC/Ngân hàng/Bảo hiểm (bấm 1 ô là đổi cả 3). "Quản trị tài khoản" và "Cài đặt đơn vị" cố định chỉ Admin, không cấu hình lại được ở đây — tránh lỡ tay tự khoá quyền quản trị của chính mình. Đối tác không nằm trong bảng này — quyền của Đối tác xử lý riêng (chỉ tự sửa được ô "xác nhận" hoa hồng ở Đối soát CK). Việc <b>THẤY module nào</b> (NCC / Ngân hàng / Bảo hiểm) được cấu hình riêng theo từng tài khoản ở cột "Module" trong bảng danh sách tài khoản bên trên — Admin luôn thấy đủ mọi module. Nhân viên có gán Đơn vị sẽ bị khoá đúng đơn vị đó khi nhập Doanh số (không chọn sang đơn vị khác được), giúp tránh nhập nhầm đơn vị.</div>
       </div>
     </div>
   `;
   wireInfoToggles(c);
+  if(isAdmin) wirePermsTable();
   const kindSel = document.getElementById('af_kind');
   const roleField = document.getElementById('af_role_field');
   const unitField = document.getElementById('af_unit_field');
