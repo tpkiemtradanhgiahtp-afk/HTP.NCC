@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Quản trị mục tiêu Đối tác/NCC · Doanh số & Chiết khấu</title>
+<title>Quản trị mục tiêu Đối tác/NCC · Doanh số &amp; Chiết khấu</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Playfair+Display:wght@700;800;900&display=swap" rel="stylesheet">
@@ -2531,12 +2531,14 @@ function openPolicyTargetsModal(p, editable){
     });
 }
 
-/* ---------------------------- Nhóm áp dụng mốc CK theo đơn vị (unitScope trên từng mốc) ----------------------------
-   Badge + modal để gắn/gỡ "Nhóm áp dụng" cho 1 dòng mốc CK cơ bản — CHỈ có ý nghĩa với loại "CK theo doanh
-   số"/"CK cố định" (không áp dụng cho "Thưởng thêm"). Để trống (mặc định) = mốc này áp dụng CHUNG, tính
-   trên tổng doanh số toàn NCC như trước giờ — chỉ khi thật sự cần 1 nhóm đơn vị có mốc riêng mới cần gán. */
+/* ---------------------------- Nhóm áp dụng theo đơn vị (unitScope trên từng dòng chính sách) ----------------------------
+   Áp dụng cho cả 3 loại dòng chính sách: "CK theo doanh số"/"CK cố định" (mốc cơ bản, dùng cơ chế NHÓM +
+   phần-còn-lại ở supplierPolicyGroups để không cộng trùng doanh số) và "Thưởng thêm" (tính ĐỘC LẬP theo
+   từng dòng ở policyPeriodRevenue, không cần cơ chế nhóm vì các dòng thưởng vốn không tạo thành 1 "đường
+   cong" cần loại trừ lẫn nhau). Để trống (mặc định) = áp dụng CHUNG, tính trên tổng doanh số toàn NCC như
+   trước giờ — chỉ khi thật sự cần 1 nhóm đơn vị có mốc/thưởng riêng mới cần gán. */
 function unitScopeBadgeHTML(p){
-  if(!(p.type==='CK theo doanh số'||p.type==='CK cố định')) return '<span style="color:var(--slate)">—</span>';
+  if(!(p.type==='CK theo doanh số'||p.type==='CK cố định'||p.type==='Thưởng thêm')) return '<span style="color:var(--slate)">—</span>';
   const scope = p.unitScope||[];
   if(scope.length===0) return `<button class="contract-badge" data-open-scope="1">🏷 Chung</button>`;
   return `<button class="contract-badge st-active" data-open-scope="1" title="${escAttr(scope.join(', '))}">🏷 ${scope.length===1?escHtml(scope[0]):scope.length+' đơn vị'}</button>`;
@@ -2554,10 +2556,14 @@ function openUnitScopeModal(p, editable){
   const units = state.units||[];
   const s = supplierById(p.supplierId);
   const scope = p.unitScope||[];
+  const isBonus = p.type==='Thưởng thêm';
+  const helperText = isBonus
+    ? 'Để trống (không tick gì) = dòng thưởng này áp dụng CHUNG, tính trên TỔNG doanh số toàn NCC (mặc định, giữ nguyên cách tính cũ). Tick đúng các đơn vị cần tính riêng — dòng "Thưởng thêm" tính ĐỘC LẬP theo từng dòng, không ảnh hưởng tới các dòng thưởng/mốc CK khác của cùng NCC.'
+    : 'Để trống (không tick gì) = mốc này áp dụng CHUNG, tính trên TỔNG doanh số toàn NCC (mặc định, giữ nguyên cách tính cũ). Chỉ tick đúng các đơn vị cần tách riêng mốc — các mốc khác của cùng NCC chưa gán nhóm nào sẽ tự gộp thành 1 nhóm "còn lại", tính trên đúng phần đơn vị chưa bị nhóm nào khác nhận (không cộng trùng doanh số).';
   const bodyHtml = units.length===0 ? `
     <div class="empty" style="padding:20px 0;"><div class="big">Chưa có đơn vị nào</div>Thêm đơn vị ở tab Cài đặt trước khi gán nhóm.</div>
   ` : `
-    <div class="helper" style="margin-bottom:12px">Để trống (không tick gì) = mốc này áp dụng CHUNG, tính trên TỔNG doanh số toàn NCC (mặc định, giữ nguyên cách tính cũ). Chỉ tick đúng các đơn vị cần tách riêng mốc — các mốc khác của cùng NCC chưa gán nhóm nào sẽ tự gộp thành 1 nhóm "còn lại", tính trên đúng phần đơn vị chưa bị nhóm nào khác nhận (không cộng trùng doanh số).</div>
+    <div class="helper" style="margin-bottom:12px">${helperText}</div>
     <div style="display:flex; flex-wrap:wrap; gap:8px 14px; padding:10px; border:1px solid var(--line); border-radius:7px;">
       ${units.map(u=>`
         <label style="display:flex; align-items:center; gap:6px; font-size:12.5px; font-weight:400; cursor:pointer;">
@@ -2565,8 +2571,8 @@ function openUnitScopeModal(p, editable){
         </label>`).join('')}
     </div>
   `;
-  openModal(`Nhóm áp dụng mốc CK · ${escHtml(p.code||p.id)}`,
-    `${s?escHtml(s.name):''} — Mốc ${fmt(p.threshold)}đ, CK ${fmtPct(p.rate)}`,
+  openModal(`Nhóm áp dụng ${isBonus?'thưởng':'mốc CK'} · ${escHtml(p.code||p.id)}`,
+    `${s?escHtml(s.name):''} — ${isBonus?`Mốc thưởng ${fmt(p.threshold)}đ, Thưởng ${fmtPct(p.bonusRate)}`:`Mốc ${fmt(p.threshold)}đ, CK ${fmtPct(p.rate)}`}`,
     bodyHtml + (editable&&units.length>0 ? `<button class="btn btn-primary btn-sm" id="scopeSaveBtn" style="margin-top:14px">Lưu nhóm áp dụng</button>` : ''),
     (body)=>{
       if(!editable) return;
@@ -2575,7 +2581,7 @@ function openUnitScopeModal(p, editable){
         const chosen = Array.from(body.querySelectorAll('.scope-unit-chk:checked')).map(el=>el.value);
         p.unitScope = chosen;
         logActivity('update','Chính sách CK', `${s?s.name:''} · ${p.code||p.id}: đổi nhóm áp dụng → ${chosen.length?chosen.join(', '):'Chung'}`);
-        const warns = tierConflicts(p.supplierId);
+        const warns = isBonus ? [] : tierConflicts(p.supplierId); // Thưởng thêm tính độc lập, không tham gia kiểm tra xung đột đường cong mốc
         toast(warns.length>0 ? `Đã lưu — phát hiện ${warns.length} xung đột mốc, xem cảnh báo ở đầu trang` : 'Đã lưu nhóm áp dụng');
         saveState(); renderAll(); closeModal();
       });
@@ -3309,7 +3315,10 @@ function tierConflicts(supplierId, asOfDate){
 function policyPeriodRevenue(p, ref){
   const period = cyclePeriod(p.cycle, ref, p.endDate);
   if(!period) return null;
-  return sumRevenue(p.supplierId, period[0], period[1]);
+  // "Thưởng thêm" tính ĐỘC LẬP theo từng dòng (không cần cơ chế nhóm+phần-còn-lại như CK cơ bản) — nếu dòng
+  // này có gán unitScope thì chỉ tính doanh số đúng các đơn vị đó, để trống = tính trên tổng NCC như cũ.
+  const unitFilter = (p.unitScope && p.unitScope.length) ? p.unitScope : undefined;
+  return sumRevenue(p.supplierId, period[0], period[1], unitFilter);
 }
 function bonusAmount(supplierId, ref){
   let total=0;
@@ -4422,13 +4431,21 @@ function renderPolicies(c){
       <th class="wrap">NCC</th><th>Mã CS</th><th>Loại</th><th>Chu kỳ</th><th class="num money-col">Mốc (VNĐ)</th>
       <th class="num">Tỷ lệ CK</th><th class="num">Thưởng thêm</th><th>Bắt đầu</th><th>Kết thúc</th><th>Phương pháp</th><th class="wrap">Điều kiện</th><th>Nhóm áp dụng</th><th>Phân bổ đơn vị</th><th></th>
     </tr></thead>
-    <tbody>${policyList.map(p=>{
-      const s = supplierById(p.supplierId);
-      const dis = editable?'':'disabled';
-      const isBaseTier = p.type==='CK theo doanh số'||p.type==='CK cố định';
-      const cycleDisabled = dis || (isBaseTier?'disabled':'');
-      const rowConflict = isBaseTier && tierConflicts(p.supplierId).some(w=>w.includes(p.code||p.id));
-      return `<tr data-rowid="${p.id}" ${rowConflict?'style="background:var(--rust-soft)"':''}>
+    <tbody>${(()=>{
+      // Cache lại kết quả tierConflicts() theo TỪNG NCC — tránh việc 1 NCC có N mốc thì bị kiểm tra chéo lại
+      // từ đầu N lần (1 lần/dòng) trong khi kết quả kiểm tra chéo đó không đổi gì giữa các dòng cùng 1 NCC.
+      const conflictCache = new Map();
+      const getConflicts = (supplierId)=>{
+        if(!conflictCache.has(supplierId)) conflictCache.set(supplierId, tierConflicts(supplierId));
+        return conflictCache.get(supplierId);
+      };
+      return policyList.map(p=>{
+        const s = supplierById(p.supplierId);
+        const dis = editable?'':'disabled';
+        const isBaseTier = p.type==='CK theo doanh số'||p.type==='CK cố định';
+        const cycleDisabled = dis || (isBaseTier?'disabled':'');
+        const rowConflict = isBaseTier && getConflicts(p.supplierId).some(w=>w.includes(p.code||p.id));
+        return `<tr data-rowid="${p.id}" ${rowConflict?'style="background:var(--rust-soft)"':''}>
         <td class="wrap">${s?escHtml(s.name):'<em>(NCC đã xoá)</em>'}${rowConflict?' ⚠':''}</td>
         <td><input class="cell-edit" data-field="code" data-id="${p.id}" value="${escAttr(p.code)}" ${dis}></td>
         <td><select class="cell-edit" data-field="type" data-id="${p.id}" ${dis}>${['CK theo doanh số','CK cố định','Thưởng thêm'].map(v=>`<option ${p.type===v?'selected':''}>${v}</option>`).join('')}</select></td>
@@ -4444,7 +4461,8 @@ function renderPolicies(c){
         <td>${policyTargetBadgeHTML(p)}</td>
         <td>${editable?`<button class="row-del" data-del="${p.id}">✕</button>`:''}</td>
       </tr>`;
-    }).join('')}</tbody>`;
+      }).join('');
+    })()}</tbody>`;
   wireUnitScopeBadges(tbl, editable);
   wirePolicyTargetBadges(tbl, editable);
   if(editable){
