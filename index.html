@@ -927,9 +927,9 @@ let fb = { status:'disconnected', db:null, refs:{}, unsubs:{}, loaded:{}, error:
 // tải lại nguyên khối mỗi khi có ai đó thao tác — quan trọng khi dữ liệu tích luỹ nhiều theo thời gian
 // (VD: 5.000 chứng từ mà chỉ 1 người vừa thêm 1 dòng, mọi người khác chỉ tải đúng 1 dòng đó, không phải cả 5.000).
 const BRANCH_RECORD_FIELDS = {
-  ncc:    ['suppliers','policies','transactions','reconciliations','contracts','requests','activityLogNcc','trashNcc'],
-  nh:     ['banks','bankPolicies','bankTransactions','bankReconciliations','bankContracts','bankRequests','activityLogNh','trashNh'],
-  bh:     ['insurers','insRates','insTransactions','insReconciliations','insMonthlyRevenue','insContracts','insRequests','activityLogBh','trashBh'],
+  ncc:    ['suppliers','policies','transactions','reconciliations','contracts','requests','activityLogNcc','trashNcc','yearlyTargets'],
+  nh:     ['banks','bankPolicies','bankTransactions','bankReconciliations','bankContracts','bankRequests','activityLogNh','trashNh','bankYearlyTargets'],
+  bh:     ['insurers','insRates','insTransactions','insReconciliations','insMonthlyRevenue','insContracts','insRequests','activityLogBh','trashBh','insYearlyTargets'],
   shared: ['accounts','activityLogShared','trashShared'],
 };
 // Field còn lại: nhỏ, ít đổi, không phình to theo lượng chứng từ/thời gian — vẫn đọc/ghi gộp chung 1 khối
@@ -2715,6 +2715,7 @@ function seedState(){
   return {
     suppliers, policies, transactions: [], reconciliations: [],
     contracts: [], requests: [], // Hợp đồng & Yêu cầu/Trao đổi của NCC — mỗi bản ghi tự có supplierId, KHÔNG lồng trong object supplier (xem migrateContractsRequestsToRecordsV1)
+    yearlyTargets: [], // {id, partnerId, year, targetAmount, note, linkedPolicyId, createdBy, createdAt} — Mục tiêu doanh số năm của từng NCC
     units, monitoring,
     reportDate: todayISO(),
     nextSupplierNo: suppliers.length+1,
@@ -2727,9 +2728,11 @@ function seedState(){
     trashNcc: [], trashNh: [], trashBh: [], trashShared: [],
     banks, bankPolicies, bankTransactions: [], bankReconciliations: [],
     bankContracts: [], bankRequests: [], // tương đương contracts/requests ở trên, dành cho Ngân hàng
+    bankYearlyTargets: [], // tương đương yearlyTargets ở trên, dành cho Ngân hàng
     nextBankNo: banks.length+1,
     insurers, insRates, insTransactions: [], insReconciliations: [],
     insContracts: [], insRequests: [], // tương đương contracts/requests ở trên, dành cho Bảo hiểm
+    insYearlyTargets: [], // tương đương yearlyTargets ở trên, dành cho Bảo hiểm
     insMonthlyRevenue: [], // {id, insurerId, month:'YYYY-MM', serviceAmount, note, updatedBy, updatedAt} — DT dịch vụ/sửa chữa nhập tay theo hãng theo tháng
     insAllocAlertThreshold: 0.05, // ngưỡng cảnh báo chênh lệch (Thực tế − Đề xuất tỷ lệ bán), dạng phân số — chỉ Admin sửa được
     insRenewalAlertDays: 45, // hồ sơ còn ≤ số ngày này tới mốc tái tục -> tính là "Sắp đến hạn" — chỉ Admin sửa được
@@ -2771,6 +2774,7 @@ const DEFAULT_EDIT_PERMS = {
   bh_transactions: ['Admin','Quản lý','Nhân viên'],
   bh_reconcile:    ['Admin','Quản lý'],
   bh_allocation:   ['Admin','Quản lý'],  // nhập DT dịch vụ/sửa chữa theo hãng theo tháng
+  yearly_targets:  ['Admin','Quản lý'],  // Mục tiêu năm — dùng chung cho cả 3 module
 };
 // Các dòng hiện trong bảng "Phân quyền theo vai trò" (Quản trị tài khoản) — mỗi dòng có thể gộp NHIỀU key
 // (VD "Doanh số" gộp cả transactions/nh_transactions/bh_transactions) để 1 lần bấm áp dụng đồng thời cho
@@ -2783,6 +2787,7 @@ const PERM_AREA_ROWS = [
   {label:'Đối soát CK', keys:['reconcile','nh_reconcile','bh_reconcile'], locked:false},
   {label:'Theo dõi mốc CK (chọn chu kỳ)', keys:['monitor'], locked:false},
   {label:'Phân bổ dịch vụ Bảo hiểm (DT dịch vụ/sửa chữa)', keys:['bh_allocation'], locked:false},
+  {label:'Mục tiêu năm', keys:['yearly_targets'], locked:false},
   {label:'Cài đặt đơn vị', keys:['settings'], locked:true},
   {label:'Quản trị tài khoản', keys:['accounts'], locked:true},
 ];
@@ -2986,9 +2991,9 @@ function roleBadgeClass(role){
 // Xác định module ('ncc'|'nh'|'bh'|'shared') của 1 dòng Nhật ký hoạt động, dựa theo nhãn "entity" đã gán
 // sẵn ở từng nơi gọi logActivity() — tra theo bảng cố định thay vì đoán, để không lệ thuộc cách đặt tên.
 const LOG_ENTITY_MODULE = {
-  'NCC':'ncc', 'Chính sách CK':'ncc', 'Doanh số':'ncc', 'Đối soát CK':'ncc', 'Theo dõi mốc CK':'ncc', 'Yêu cầu (NCC)':'ncc',
-  'NH':'nh', 'Chính sách CK (NH)':'nh', 'Doanh số (NH)':'nh', 'Đối soát CK (NH)':'nh', 'Yêu cầu (NH)':'nh',
-  'NCC Bảo hiểm':'bh', 'Biểu phí Bảo hiểm':'bh', 'Doanh số (Bảo hiểm)':'bh', 'Đối soát CK (Bảo hiểm)':'bh',
+  'NCC':'ncc', 'Chính sách CK':'ncc', 'Doanh số':'ncc', 'Đối soát CK':'ncc', 'Theo dõi mốc CK':'ncc', 'Yêu cầu (NCC)':'ncc', 'Mục tiêu năm (NCC)':'ncc',
+  'NH':'nh', 'Chính sách CK (NH)':'nh', 'Doanh số (NH)':'nh', 'Đối soát CK (NH)':'nh', 'Yêu cầu (NH)':'nh', 'Mục tiêu năm (NH)':'nh',
+  'NCC Bảo hiểm':'bh', 'Biểu phí Bảo hiểm':'bh', 'Doanh số (Bảo hiểm)':'bh', 'Đối soát CK (Bảo hiểm)':'bh', 'Mục tiêu năm (Bảo hiểm)':'bh',
   'DT dịch vụ (Bảo hiểm)':'bh', 'Tỷ lệ phân bổ (Bảo hiểm)':'bh', 'Cài đặt (Bảo hiểm)':'bh', 'Yêu cầu (Bảo hiểm)':'bh',
   'Tài khoản':'shared', 'Cài đặt':'shared', 'Lỗi hệ thống':'shared',
 };
@@ -3400,6 +3405,7 @@ function supplierCalcGroups(supplierId){
 /* ---------------------------- Router / Nav ---------------------------- */
 const TABS = [
   {id:'dashboard', label:'Dashboard', section:'Tổng quan'},
+  {id:'yearly_targets', label:'Mục tiêu năm', section:'Tổng quan', partnerVisible:true},
   {id:'monitor', label:'Theo dõi mốc CK', section:'Tổng quan', module:'ncc'},
   {id:'suppliers', label:'Danh mục - Chính sách NCC', section:'NCC Dịch vụ Ô tô - Xe máy', module:'ncc'},
   {id:'policies', label:'Chính sách CK', section:'NCC Dịch vụ Ô tô - Xe máy', hidden:true, parent:'suppliers', module:'ncc', partnerVisible:true, partnerTopLevel:true},
@@ -3702,6 +3708,7 @@ function renderAll(){
   const c = document.getElementById('content');
   c.innerHTML = '';
   if(activeTab==='dashboard') renderDashboard(c);
+  else if(activeTab==='yearly_targets') renderYearlyTargets(c);
   else if(activeTab==='monitor') renderMonitor(c);
   else if(activeTab==='suppliers') renderSuppliers(c);
   else if(activeTab==='policies') renderPolicies(c);
@@ -4091,6 +4098,297 @@ function renderDashboard(c){
         </tbody>`;
     }
   }
+}
+
+/* ---------------------------- Mục tiêu năm (NCC / Ngân hàng / Bảo hiểm) ----------------------------
+   Theo dõi % đạt doanh số năm của từng đối tác, ĐỘC LẬP với hệ thống mốc CK theo tháng/quý hiện có (không
+   đụng gì tới baseTierPolicies()/currentTier() đang chạy). Riêng NCC có thể "gắn kèm CK": tick chọn sẽ tự
+   tạo 1 dòng Chính sách CK (cycle YTD, threshold = đúng mục tiêu năm) để nhập tiếp tỷ lệ % thưởng — Ngân
+   hàng/Bảo hiểm KHÔNG có cấu trúc "mốc doanh số" tương đương (hoa hồng 2 module này là bảng tỷ lệ cố định/
+   theo tháng, không theo mốc luỹ kế), nên chỉ theo dõi tiến độ thuần, không có tuỳ chọn gắn CK. */
+let ytYear = String(new Date().getFullYear());
+// Cách tính "Dự kiến cả năm" — áp dụng chung cho mọi thẻ đang hiện (chọn ở panel đầu trang):
+// 'linear'  = bình quân tuyến tính từ đầu năm (mặc định cũ, không phân biệt mùa vụ)
+// 'pace30/60/90' = theo đà N ngày gần nhất (bắt xu hướng gần đây, không bị pha loãng bởi tháng đầu năm chậm)
+// 'yoy'     = so cùng kỳ năm trước: hệ số tăng trưởng = Cả năm trước ÷ Cùng kỳ năm trước, nhân vào luỹ kế năm nay
+const YT_PROJECTION_METHODS = [
+  {id:'linear', label:'Bình quân từ đầu năm'},
+  {id:'pace30', label:'Theo đà 30 ngày gần nhất'},
+  {id:'pace60', label:'Theo đà 60 ngày gần nhất'},
+  {id:'pace90', label:'Theo đà 90 ngày gần nhất'},
+  {id:'yoy',    label:'So sánh cùng kỳ năm trước'},
+];
+let ytProjectionMethod = 'linear';
+function yearlyTargetModuleConfig(moduleId){
+  if(moduleId==='ncc') return {
+    id:'ncc', label:'NCC Dịch vụ Ô tô - Xe máy', partnerLabel:'NCC',
+    partners: ()=> state.suppliers, partnerById: id=> supplierById(id),
+    fieldKey:'yearlyTargets',
+    revenueFn: (partnerId, from, to)=> sumRevenue(partnerId, from, to),
+    supportsLinkedCK: true,
+    linkedPolicyById: id=> state.policies.find(p=>p.id===id),
+    logLabel:'Mục tiêu năm (NCC)',
+  };
+  if(moduleId==='nh') return {
+    id:'nh', label:'Ngân hàng', partnerLabel:'Ngân hàng',
+    partners: ()=> state.banks, partnerById: id=> bankById(id),
+    fieldKey:'bankYearlyTargets',
+    revenueFn: (partnerId, from, to)=> bankLoanSum(partnerId, from, to),
+    supportsLinkedCK:false,
+    logLabel:'Mục tiêu năm (NH)',
+  };
+  if(moduleId==='bh') return {
+    id:'bh', label:'Bảo hiểm', partnerLabel:'NCC Bảo hiểm',
+    partners: ()=> state.insurers, partnerById: id=> insurerById(id),
+    fieldKey:'insYearlyTargets',
+    revenueFn: (partnerId, from, to)=> insPremiumSum(partnerId, from, to),
+    supportsLinkedCK:false,
+    logLabel:'Mục tiêu năm (Bảo hiểm)',
+  };
+  return null;
+}
+// Khoảng ngày dùng để tính "doanh số luỹ kế" của 1 năm: năm hiện tại thì tính tới đúng Ngày báo cáo (đồng
+// bộ với mọi chỗ khác trong app đang dùng field này); năm đã qua thì tính trọn 01/01 -> 31/12.
+function yearlyTargetRange(year){
+  const y = Number(year);
+  const from = new Date(y,0,1);
+  const now = toDate(state.reportDate) || new Date();
+  const isCurrentYear = y===now.getFullYear();
+  const to = isCurrentYear ? now : new Date(y,11,31);
+  return {from, to, isCurrentYear};
+}
+// % thời gian đã trôi qua trong năm (so với 31/12) — dùng để so sánh "đang bám tiến độ" hay "có nguy cơ
+// trễ". Năm đã qua luôn coi như 100% thời gian đã trôi qua (đã chốt sổ, không còn "tiến độ" để bám nữa).
+function yearElapsedFraction(year){
+  const {from, to, isCurrentYear} = yearlyTargetRange(year);
+  if(!isCurrentYear) return 1;
+  const yearEnd = new Date(Number(year),11,31);
+  const totalDays = (yearEnd - from)/86400000 + 1;
+  const elapsedDays = (to - from)/86400000 + 1;
+  return Math.max(0, Math.min(1, elapsedDays/totalDays));
+}
+// Tính "Dự kiến cả năm" theo đúng phương pháp đang chọn (ytProjectionMethod). Năm đã đóng sổ (không phải
+// năm hiện tại) thì khỏi cần dự phóng gì — luỹ kế CHÍNH LÀ số cuối cùng. fallbackUsed=true nghĩa là chọn
+// "So sánh cùng kỳ năm trước" nhưng năm trước chưa có đủ dữ liệu (đối tác mới, hoặc năm trước = 0đ) —
+// tự động rơi về bình quân tuyến tính để vẫn ra được 1 con số, có báo rõ trên thẻ.
+function projectedRevenueFor(cfg, target, revenue, from, to, isCurrentYear, timeFrac){
+  if(!isCurrentYear) return {projected: revenue, fallbackUsed:false};
+  const year = Number(target.year);
+  const yearEnd = new Date(year,11,31);
+  const remainingDays = Math.max(0, Math.round((yearEnd - to)/86400000));
+  const linear = timeFrac>0 ? revenue/timeFrac : revenue;
+
+  if(ytProjectionMethod==='pace30' || ytProjectionMethod==='pace60' || ytProjectionMethod==='pace90'){
+    const days = ytProjectionMethod==='pace30'?30:ytProjectionMethod==='pace60'?60:90;
+    let paceFrom = new Date(to); paceFrom.setDate(paceFrom.getDate()-days+1);
+    if(paceFrom < from) paceFrom = from; // không lùi về trước 01/01 (năm mới bắt đầu, chưa đủ N ngày)
+    const paceDays = Math.max(1, Math.round((to - paceFrom)/86400000)+1);
+    const paceRevenue = cfg.revenueFn(target.partnerId, paceFrom, to);
+    const dailyRate = paceRevenue/paceDays;
+    return {projected: revenue + dailyRate*remainingDays, fallbackUsed:false};
+  }
+  if(ytProjectionMethod==='yoy'){
+    const prevYear = year-1;
+    const prevFrom = new Date(prevYear,0,1);
+    const prevSameDayTo = new Date(prevYear, to.getMonth(), to.getDate());
+    const prevFullTo = new Date(prevYear,11,31);
+    const prevPartial = cfg.revenueFn(target.partnerId, prevFrom, prevSameDayTo);
+    const prevFull = cfg.revenueFn(target.partnerId, prevFrom, prevFullTo);
+    if(prevPartial>0 && prevFull>0){
+      return {projected: revenue*(prevFull/prevPartial), fallbackUsed:false};
+    }
+    return {projected: linear, fallbackUsed:true}; // thiếu dữ liệu năm trước -> tạm dùng bình quân tuyến tính
+  }
+  return {projected: linear, fallbackUsed:false}; // 'linear' (mặc định)
+}
+function yearlyTargetCalc(cfg, target){
+  const {from, to, isCurrentYear} = yearlyTargetRange(target.year);
+  const revenue = cfg.revenueFn(target.partnerId, from, to);
+  const pct = target.targetAmount>0 ? revenue/target.targetAmount : 0;
+  const timeFrac = yearElapsedFraction(target.year);
+  const {projected, fallbackUsed} = projectedRevenueFor(cfg, target, revenue, from, to, isCurrentYear, timeFrac);
+  let status, statusClass;
+  if(pct>=1){ status='Đã đạt'; statusClass='ok'; }
+  else if(pct >= timeFrac - 0.05){ status='Đang bám tiến độ'; statusClass='ok'; }
+  else if(pct >= timeFrac - 0.15){ status='Cần chú ý'; statusClass='pending'; }
+  else { status='Có nguy cơ trễ'; statusClass='warn'; }
+  return {revenue, pct, projected, fallbackUsed, status, statusClass};
+}
+// Danh sách năm hiện ở dropdown: năm hiện tại LUÔN có mặt, cộng thêm mọi năm đã từng tạo mục tiêu (ở cả 3
+// module) — để vẫn xem lại được mục tiêu của năm cũ dù đang ở năm mới.
+function yearsWithTargetsOrCurrent(){
+  const years = new Set([String(new Date().getFullYear())]);
+  ['ncc','nh','bh'].forEach(m=>{
+    const cfg = yearlyTargetModuleConfig(m);
+    (state[cfg.fieldKey]||[]).forEach(t=> years.add(String(t.year)));
+  });
+  return Array.from(years).sort().reverse();
+}
+
+function renderYearlyTargets(c){
+  setTitle('Mục tiêu năm', 'Theo dõi % đạt doanh số năm của từng đối tác — độc lập với mốc CK theo tháng/quý');
+  const editable = canEdit('yearly_targets');
+  const modules = MODULES.filter(m=>hasModuleAccess(m.id, currentUser()));
+  const years = yearsWithTargetsOrCurrent();
+  if(!years.includes(ytYear)) ytYear = years[0];
+
+  c.innerHTML = `
+    <div class="panel">
+      <div class="panel-head"><div><h2>Chọn năm</h2><div class="desc">Doanh số luỹ kế tính tới đúng Ngày báo cáo hiện tại (nếu chọn năm hiện tại) hoặc trọn năm (nếu chọn năm đã qua)</div></div>
+        <select id="yt_year" style="width:120px">${years.map(y=>`<option value="${y}" ${y===ytYear?'selected':''}>${y}</option>`).join('')}</select>
+      </div>
+      <div class="panel-body" style="padding-top:0">
+        <div class="field" style="max-width:320px">
+          <label>Cách tính "Dự kiến cả năm"</label>
+          <select id="yt_projection">${YT_PROJECTION_METHODS.map(m=>`<option value="${m.id}" ${m.id===ytProjectionMethod?'selected':''}>${m.label}</option>`).join('')}</select>
+        </div>
+        <div class="helper">Áp dụng cho mọi thẻ đang hiện bên dưới. Năm đã qua (đóng sổ) luôn hiện đúng số thực tế, không dự phóng gì thêm dù chọn cách tính nào.</div>
+      </div>
+    </div>
+    ${modules.map(m=>`<div id="ytBlock_${m.id}"></div>`).join('')}
+    ${modules.length===0 ? `<div class="empty"><div class="big">Không có module nào để hiện</div></div>` : ''}
+  `;
+  document.getElementById('yt_year').addEventListener('change', e=>{ ytYear = e.target.value; renderAll(); });
+  document.getElementById('yt_projection').addEventListener('change', e=>{ ytProjectionMethod = e.target.value; renderAll(); });
+  modules.forEach(m=> renderYearlyTargetBlock(document.getElementById('ytBlock_'+m.id), m.id, editable));
+}
+
+function renderYearlyTargetBlock(el, moduleId, editable){
+  const cfg = yearlyTargetModuleConfig(moduleId);
+  // Tài khoản Đối tác chỉ thấy đúng mục tiêu của chính mình (partnerId của họ), không thấy đối tác khác —
+  // dùng lại đúng partnerScopeFilter đã có sẵn cho mọi tab khác (Chính sách CK, Doanh số...).
+  const pf = partnerScopeFilter('partnerId');
+  const targets = (state[cfg.fieldKey]||[]).filter(t=>String(t.year)===String(ytYear) && (!pf || pf(t)));
+  const partnersWithoutTarget = cfg.partners().filter(p=> !targets.some(t=>t.partnerId===p.id));
+
+  el.innerHTML = `
+    <div class="panel">
+      <div class="panel-head"><div><h2>${escHtml(cfg.label)}</h2><div class="desc">${targets.length} mục tiêu năm ${escHtml(ytYear)}</div></div>
+        ${editable && partnersWithoutTarget.length>0 ? `<button class="btn btn-primary" data-yt-add="${moduleId}">+ Thêm mục tiêu</button>` : ''}
+      </div>
+      <div class="panel-body">
+        ${targets.length===0 ? `<div class="empty">Chưa có mục tiêu năm nào cho ${escHtml(cfg.partnerLabel)} trong năm ${escHtml(ytYear)}.${editable&&partnersWithoutTarget.length>0?' Bấm "+ Thêm mục tiêu" để bắt đầu.':''}</div>` : `
+        <div style="display:flex;flex-direction:column;gap:14px">
+          ${targets.map(t=>{
+            const p = cfg.partnerById(t.partnerId);
+            const calc = yearlyTargetCalc(cfg, t);
+            const pctShow = Math.min(100, Math.round(calc.pct*1000)/10);
+            const barColor = calc.statusClass==='ok'?'var(--forest)':calc.statusClass==='pending'?'var(--amber)':'var(--rust)';
+            const linkedPolicy = (cfg.supportsLinkedCK && t.linkedPolicyId) ? cfg.linkedPolicyById(t.linkedPolicyId) : null;
+            return `
+            <div style="border:1px solid var(--line);border-radius:10px;padding:14px 16px">
+              <div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap">
+                <div style="font-weight:600">${escHtml(p?p.name:'(đã xoá)')}</div>
+                <div style="display:flex;align-items:center;gap:8px">
+                  ${linkedPolicy ? `<span class="tag gold" title="Đã gắn kèm chính sách CK — bấm để mở tab Chính sách CK" style="cursor:pointer" data-goto-policy="1">CK: ${fmtPct(linkedPolicy.rate)}</span>` : ''}
+                  <span class="stamp ${calc.statusClass}">${calc.status}</span>
+                  ${editable ? `<button class="row-del" data-yt-edit="${t.id}" data-yt-module="${moduleId}" title="Sửa">✎</button>
+                  <button class="row-del" data-yt-del="${t.id}" data-yt-module="${moduleId}" title="Xoá">✕</button>` : ''}
+                </div>
+              </div>
+              <div style="display:flex;gap:18px;flex-wrap:wrap;margin-top:6px;font-size:13px;color:var(--slate)">
+                <div>Mục tiêu: <b style="color:var(--ink)">${fmt(t.targetAmount)}đ</b></div>
+                <div>Luỹ kế: <b style="color:var(--ink)">${fmt(calc.revenue)}đ</b></div>
+                <div>Dự kiến cả năm: <b style="color:var(--ink)">${fmt(calc.projected)}đ</b>${calc.fallbackUsed?' <span title="Thiếu dữ liệu cùng kỳ năm trước để so sánh — tạm dùng bình quân tuyến tính" style="color:var(--amber);cursor:help">*</span>':''}</div>
+                ${t.note ? `<div>Ghi chú: ${escHtml(t.note)}</div>` : ''}
+              </div>
+              <div style="margin-top:10px;height:10px;border-radius:6px;background:var(--paper);overflow:hidden">
+                <div style="height:100%;width:${pctShow}%;background:${barColor};border-radius:6px"></div>
+              </div>
+              <div style="margin-top:4px;font-size:12px;color:var(--slate)">${pctShow}% mục tiêu</div>
+            </div>`;
+          }).join('')}
+        </div>`}
+      </div>
+    </div>`;
+
+  if(editable){
+    const addBtn = el.querySelector('[data-yt-add]');
+    if(addBtn) addBtn.addEventListener('click', ()=> openYearlyTargetModal(moduleId, null));
+    el.querySelectorAll('[data-yt-edit]').forEach(btn=>{
+      btn.addEventListener('click', ()=> openYearlyTargetModal(btn.dataset.ytModule, btn.dataset.ytEdit));
+    });
+    el.querySelectorAll('[data-yt-del]').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        const mId = btn.dataset.ytModule, tId = btn.dataset.ytDel;
+        const c2 = yearlyTargetModuleConfig(mId);
+        const t = (state[c2.fieldKey]||[]).find(x=>x.id===tId);
+        if(!t) return;
+        const p = c2.partnerById(t.partnerId);
+        confirmModal(`Xoá mục tiêu năm ${t.year} của "${p?p.name:''}"? (Không xoá mốc CK đã gắn kèm nếu có — vào tab Chính sách CK để xoá riêng nếu cần)`, ()=>{
+          state[c2.fieldKey] = state[c2.fieldKey].filter(x=>x.id!==tId);
+          logActivity('delete', c2.logLabel, `Xoá mục tiêu năm ${t.year} của "${p?p.name:''}"`);
+          toast('Đã xoá mục tiêu năm');
+          renderAll();
+        });
+      });
+    });
+  }
+  el.querySelectorAll('[data-goto-policy]').forEach(tag=>{
+    tag.addEventListener('click', ()=>{ activeTab='policies'; renderAll(); });
+  });
+}
+
+function openYearlyTargetModal(moduleId, targetId){
+  const cfg = yearlyTargetModuleConfig(moduleId);
+  const existing = targetId ? (state[cfg.fieldKey]||[]).find(t=>t.id===targetId) : null;
+  const availablePartners = cfg.partners().filter(p=> existing ? p.id===existing.partnerId : !(state[cfg.fieldKey]||[]).some(t=>t.partnerId===p.id && String(t.year)===String(ytYear)));
+  if(!existing && availablePartners.length===0){ toast('Mọi '+cfg.partnerLabel+' đều đã có mục tiêu cho năm '+ytYear); return; }
+
+  openModal(existing?'Sửa mục tiêu năm':'Thêm mục tiêu năm', cfg.label+' · năm '+(existing?existing.year:ytYear), `
+    <div class="form-grid">
+      <div class="field"><label>${cfg.partnerLabel}</label>
+        <select id="yt_partner" ${existing?'disabled':''}>${availablePartners.map(p=>`<option value="${p.id}" ${existing&&existing.partnerId===p.id?'selected':''}>${escHtml(p.name)}</option>`).join('')}</select>
+      </div>
+      <div class="field"><label>Mục tiêu doanh số năm (VNĐ)</label><input id="yt_amount" class="field-money" type="text" inputmode="numeric" value="${existing?fmt(existing.targetAmount):''}"></div>
+      <div class="field" style="grid-column:1/-1"><label>Ghi chú</label><input id="yt_note" value="${existing?escAttr(existing.note||''):''}"></div>
+      ${cfg.supportsLinkedCK && !existing ? `
+      <div class="field" style="grid-column:1/-1">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="yt_link_ck" style="width:auto"> Gắn kèm chiết khấu (tự tạo 1 mốc CK theo YTD = đúng mục tiêu năm)</label>
+      </div>
+      <div class="field" id="yt_link_rate_wrap" style="display:none"><label>Tỷ lệ CK khi đạt mục tiêu (%)</label><input id="yt_link_rate" type="number" step="0.1" placeholder="VD: 10"></div>
+      ` : ''}
+      ${cfg.supportsLinkedCK && existing && existing.linkedPolicyId ? `<div class="helper" style="grid-column:1/-1">Mục tiêu này đã gắn kèm 1 mốc CK — vào tab "Chính sách CK" để sửa tỷ lệ hoặc gỡ liên kết.</div>` : ''}
+      <button class="btn btn-primary" id="yt_save_btn" style="grid-column:1/-1">${existing?'Lưu':'+ Thêm mục tiêu'}</button>
+    </div>
+  `, body=>{
+    attachMoneyFormatting(document.getElementById('yt_amount'));
+    const linkChk = document.getElementById('yt_link_ck');
+    if(linkChk){
+      linkChk.addEventListener('change', ()=>{
+        document.getElementById('yt_link_rate_wrap').style.display = linkChk.checked ? '' : 'none';
+      });
+    }
+    document.getElementById('yt_save_btn').addEventListener('click', ()=>{
+      const partnerId = existing ? existing.partnerId : document.getElementById('yt_partner').value;
+      if(!partnerId){ toast('Cần chọn '+cfg.partnerLabel); return; }
+      const year = existing ? existing.year : Number(ytYear);
+      const targetAmount = parseMoneyInput(document.getElementById('yt_amount').value);
+      if(!targetAmount || targetAmount<=0){ toast('Nhập mục tiêu doanh số năm hợp lệ'); return; }
+      const note = document.getElementById('yt_note').value.trim();
+      const p = cfg.partnerById(partnerId);
+      if(existing){
+        existing.targetAmount = targetAmount;
+        existing.note = note;
+        logActivity('update', cfg.logLabel, `Sửa mục tiêu năm ${existing.year} của "${p?p.name:''}" → ${fmt(targetAmount)}đ`);
+        toast('Đã lưu mục tiêu năm');
+      } else {
+        const t = {id:uid('yt'), partnerId, year, targetAmount, note, linkedPolicyId:null, createdBy: currentUserId, createdAt: todayISO()};
+        const wantLink = cfg.supportsLinkedCK && document.getElementById('yt_link_ck') && document.getElementById('yt_link_ck').checked;
+        if(wantLink){
+          const rate = (Number(document.getElementById('yt_link_rate').value)||0)/100;
+          const pol = {id:uid('p'), supplierId:partnerId, code:'MTN-'+year, type:'CK theo doanh số', cycle:'YTD', threshold:targetAmount, rate, bonusRate:0, startDate:`${year}-01-01`, endDate:`${year}-12-31`, method:'Hồi tố toàn bộ', condition:`Mục tiêu năm ${year}`, status:'Đã đàm phán', note:'Tự tạo từ Mục tiêu năm', unitScope:[]};
+          state.policies.push(pol);
+          t.linkedPolicyId = pol.id;
+        }
+        state[cfg.fieldKey].push(t);
+        logActivity('create', cfg.logLabel, `Thêm mục tiêu năm ${year} cho "${p?p.name:''}" → ${fmt(targetAmount)}đ${wantLink?' (đã gắn kèm CK)':''}`);
+        toast('Đã thêm mục tiêu năm'+(wantLink?' và mốc CK liên kết':''));
+      }
+      closeModal();
+      renderAll();
+    });
+  });
 }
 
 /* ---------------------------- Theo dõi mốc CK ---------------------------- */
@@ -9000,6 +9298,20 @@ function migrateContractsRequestsToRecordsV1(){
   // luôn tải đủ cả 3, tài khoản khác chỉ tải đúng module mình dùng — đây chính là phần "tách đồng bộ theo
   // module" giúp giảm băng thông cho tài khoản chỉ dùng 1-2 module.
   await syncBranchesForCurrentUser();
+  // Tự động đưa "Ngày báo cáo" (state.reportDate, nhánh NCC) về đúng hôm nay mỗi khi mở app, NẾU đang bị
+  // "kẹt" ở 1 ngày cũ hơn hôm nay — đây chính là nguyên nhân từng khiến các mốc CK có Ngày bắt đầu mới
+  // (VD 01/09/2026) bị lọc mất khỏi mọi phép tính dù doanh số đã lên đủ (baseTierPolicies() so sánh theo
+  // đúng field này). Chỉ bump lên khi CHẮC CHẮN đã có dữ liệu NCC thật trong tay (đã tải xong nhánh 'ncc'
+  // qua Firebase, hoặc đang ở tầng dự phòng không Firebase nên state đã đầy đủ ngay từ đầu) — tránh lỡ ghi
+  // đè bằng dữ liệu mẫu (seed) đang tạm nằm trong state lúc chưa tải xong. Vẫn cho sửa tay bình thường sau
+  // đó ở ô "Ngày báo cáo" (tab Theo dõi mốc CK) — chỉ áp lại đúng 1 lần mỗi lần mở app, không tự nhảy tiếp
+  // trong lúc đang dùng (để không phá ngày người dùng đang cố tình chọn xem lùi về quá khứ).
+  if(state.reportDate && state.reportDate < todayISO() && (fb.status!=='connected' || fb.loaded.ncc)){
+    const oldReportDate = state.reportDate;
+    state.reportDate = todayISO();
+    logActivity('update','Theo dõi mốc CK', `Tự động cập nhật Ngày báo cáo → ${state.reportDate} (trước đó ${oldReportDate}, do mở app ở ngày mới)`);
+    saveState();
+  }
   if(await migratePasswordsV1()) saveState();
   if(currentRole()==='Admin' && migrateActivityLogTrashSplitV1()) saveState(); // cần đủ cả 4 nhánh nên chỉ Admin chạy được đúng
   if(migrateContractsRequestsToRecordsV1()) saveState();
