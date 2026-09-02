@@ -53,7 +53,7 @@
   .shell{ display:flex; min-height:100vh; }
 
   .sidebar{
-    width:248px; flex:0 0 248px;
+    width:288px; flex:0 0 288px;
     background:var(--ink);
     color:#E8E6DE;
     display:flex; flex-direction:column;
@@ -81,15 +81,21 @@
   }
 
   .nav{ padding:14px 10px; flex:1; overflow-y:auto; }
-  .nav-group{ margin-bottom:2px; }
+  /* Mỗi khối module giờ có nền hơi khác 1 chút + bo góc + khoảng cách rõ ràng với khối kế tiếp, để mắt
+     phân vùng nhanh giữa các module (Tổng quan / NCC / Ngân hàng / Bảo hiểm / Hệ thống) mà không cần đọc
+     hết chữ — thay cho cách cũ chỉ có 1 đường kẻ mảnh phía trên mỗi khối. */
+  .nav-group{
+    margin-bottom:10px; padding:4px 0 6px; border-radius:10px;
+    background:rgba(255,255,255,0.022);
+  }
   .nav-group-items{
     margin-left:15px; padding-left:9px;
     border-left:1px solid rgba(255,255,255,0.08);
   }
   .nav-item{
     display:flex; align-items:center; gap:10px;
-    padding:9px 12px; border-radius:8px;
-    color:#C7CBDB; cursor:pointer; margin-bottom:2px;
+    padding:8px 12px; border-radius:8px;
+    color:#C7CBDB; cursor:pointer; margin-bottom:1px;
     font-size:13.5px; letter-spacing:0.01em;
     border:1px solid transparent;
     transition:background .12s ease, color .12s ease;
@@ -116,6 +122,18 @@
      tránh người dùng phải tự dò tìm trong danh sách (đặc biệt khi nó không nằm ở đầu danh sách). */
   @keyframes flashHighlight{ 0%{ background:var(--gold-soft); } 100%{ background:transparent; } }
   .flash-highlight{ animation: flashHighlight 1.8s ease-out; }
+  /* Nhấp nháy liên tục cho các dòng "Quá hạn"/"Sắp đến hạn" trong Lịch tái tục — vì bảng đã tự sắp lên đầu
+     theo số ngày còn lại (daysLeft tăng dần, quá hạn luôn âm nên luôn đứng trước), hiệu ứng này chỉ để
+     mắt bắt được ngay cả khi không nhìn thẳng vào bảng. Tôn trọng prefers-reduced-motion cho người dùng
+     nhạy cảm với hiệu ứng nhấp nháy. */
+  @keyframes renewalPulseOverdue{ 0%,100%{ background:transparent; } 50%{ background:var(--rust-soft); } }
+  @keyframes renewalPulseSoon{ 0%,100%{ background:transparent; } 50%{ background:var(--gold-soft); } }
+  tr.renewal-pulse-overdue{ animation: renewalPulseOverdue 1.6s ease-in-out infinite; }
+  tr.renewal-pulse-soon{ animation: renewalPulseSoon 1.9s ease-in-out infinite; }
+  @media (prefers-reduced-motion: reduce){
+    tr.renewal-pulse-overdue{ animation:none; background:var(--rust-soft); }
+    tr.renewal-pulse-soon{ animation:none; background:var(--gold-soft); }
+  }
   /* Spinner nhỏ dùng cho các trạng thái "đang xử lý" (upload, gửi email...) — cho người dùng thấy rõ hệ
      thống đang chạy chứ không phải bị đứng, nhất là khi mạng chậm và phải chờ lâu. */
   @keyframes miniSpin{ to{ transform:rotate(360deg); } }
@@ -141,15 +159,13 @@
   .info-toggle:hover{ background:#FBFAF3; color:var(--ink); }
   .nav-section{
     font-size:10.5px; text-transform:uppercase; letter-spacing:0.06em; font-weight:700;
-    color:#9BA3C4; margin:4px 2px 8px; padding:14px 10px 10px;
+    color:#9BA3C4; margin:0 2px 8px; padding:8px 10px 8px;
     display:flex; align-items:center; gap:8px;
     cursor:pointer; border-radius:8px; user-select:none;
-    border-top:1px solid rgba(255,255,255,0.1);
     transition:color .15s ease, background .15s ease;
     white-space:nowrap;
   }
   .nav-section .nav-section-label{ flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; }
-  .nav-group:first-child .nav-section{ border-top:none; padding-top:2px; margin-top:0; }
   .nav-section:hover{ color:#F3ECD9; background:rgba(255,255,255,0.04); }
   .nav-section .nav-section-caret{
     font-size:9px; line-height:1; color:#8891B0;
@@ -297,6 +313,16 @@
   table.data tbody tr:hover{ background:#FBFAF3; }
   table.data td.num, table.data th.num{ font-family:var(--font-tabular); font-variant-numeric:tabular-nums; text-align:right; }
   table.data td.wrap, table.data th.wrap{ white-space:normal; min-width:180px; }
+  /* Bảng "Lịch tái tục" — ít cột, mỗi cột thường chỉ vài chữ ngắn, nên nếu để mặc định width:100% + padding
+     như các bảng nhiều cột khác thì bị dàn quá thưa, nhìn trống trải. Giảm padding dòng/cột + không ép full
+     width để các cột tự co theo đúng nội dung, đỡ "loãng". */
+  #renewalTable{ width:auto; }
+  #renewalTable th, #renewalTable td{ padding:6px 16px 6px 0; }
+  #renewalTable th:first-child, #renewalTable td:first-child{ padding-left:0; }
+  #renewalTable th.wrap, #renewalTable td.wrap{ min-width:0; } /* bỏ min-width:180px mặc định để header 2 dòng + ô Biển số thật sự co gọn được */
+  /* Cột "Nguồn" (Qua khoản vay / BH độc lập) — chữ nhỏ hơn 1 chút + giãn letter-spacing để đọc vẫn rõ,
+     đồng thời không bao giờ tự xuống dòng dù cột bị co hẹp do các cột khác giành chỗ. */
+  #renewalTable td:first-child{ font-size:12.3px; letter-spacing:0.015em; white-space:nowrap; }
   /* Cố định 2 cột đầu (Ngân hàng, Gói vay) khi cuộn ngang bảng Chính sách CK NH — ÉP CỨNG chiều rộng
      (không dùng min-width/wrap co giãn) để mốc "left" của cột 2 luôn khớp chính xác với chiều rộng thật
      của cột 1, tránh lặp lại lỗi từng gặp khi ước lượng pixel không chính xác (dán cứng dòng tiêu đề). */
@@ -563,7 +589,7 @@
     .topbar{ padding:14px 16px; }
     .sidebar-toggle-btn{ display:inline-flex; }
     .sidebar{
-      position:fixed; inset:0 auto 0 0; z-index:600; width:280px;
+      position:fixed; inset:0 auto 0 0; z-index:600; width:292px;
       transform:translateX(-100%); transition:transform .22s ease;
       box-shadow:20px 0 40px rgba(0,0,0,0.25);
     }
@@ -3407,19 +3433,19 @@ const TABS = [
   {id:'dashboard', label:'Dashboard', section:'Tổng quan'},
   {id:'yearly_targets', label:'Mục tiêu năm', section:'Tổng quan', partnerVisible:true},
   {id:'monitor', label:'Theo dõi mốc CK', section:'Tổng quan', module:'ncc'},
-  {id:'suppliers', label:'Danh mục - Chính sách NCC', section:'NCC Dịch vụ Ô tô - Xe máy', module:'ncc'},
+  {id:'suppliers', label:'Danh mục - Chính sách', section:'NCC Dịch vụ Ô tô - Xe máy', module:'ncc'},
   {id:'policies', label:'Chính sách CK', section:'NCC Dịch vụ Ô tô - Xe máy', hidden:true, parent:'suppliers', module:'ncc', partnerVisible:true, partnerTopLevel:true},
   {id:'transactions', label:'Doanh số - Đối soát CK - Phân bổ', section:'NCC Dịch vụ Ô tô - Xe máy', module:'ncc', partnerVisible:true},
   {id:'allocation', label:'Phân bổ đơn vị', section:'NCC Dịch vụ Ô tô - Xe máy', hidden:true, parent:'transactions', module:'ncc', partnerVisible:true},
   {id:'reconcile', label:'Đối soát CK', section:'NCC Dịch vụ Ô tô - Xe máy', hidden:true, parent:'transactions', module:'ncc', partnerVisible:true},
   {id:'ncc_requests', label:'Yêu cầu / Trao đổi', section:'NCC Dịch vụ Ô tô - Xe máy', module:'ncc', partnerVisible:true},
-  {id:'nh_suppliers', label:'Danh mục - Chính sách NH', section:'Ngân hàng', module:'nh'},
+  {id:'nh_suppliers', label:'Danh mục - Chính sách', section:'Ngân hàng', module:'nh'},
   {id:'nh_policies', label:'Chính sách CK', section:'Ngân hàng', hidden:true, parent:'nh_suppliers', module:'nh', partnerVisible:true, partnerTopLevel:true},
   {id:'nh_transactions', label:'Doanh số - Đối soát CK - Phân bổ', section:'Ngân hàng', module:'nh', partnerVisible:true},
   {id:'nh_allocation', label:'Phân bổ đơn vị', section:'Ngân hàng', hidden:true, parent:'nh_transactions', module:'nh', partnerVisible:true},
   {id:'nh_reconcile', label:'Đối soát CK', section:'Ngân hàng', hidden:true, parent:'nh_transactions', module:'nh', partnerVisible:true},
   {id:'nh_requests', label:'Yêu cầu / Trao đổi', section:'Ngân hàng', module:'nh', partnerVisible:true},
-  {id:'bh_suppliers', label:'Danh mục - Biểu phí bảo hiểm', section:'Bảo hiểm', module:'bh'},
+  {id:'bh_suppliers', label:'Danh mục - Chính sách', section:'Bảo hiểm', module:'bh'},
   {id:'bh_policies', label:'Biểu phí bảo hiểm', section:'Bảo hiểm', hidden:true, parent:'bh_suppliers', module:'bh', partnerVisible:true, partnerTopLevel:true},
   {id:'bh_transactions', label:'Doanh số - Đối soát CK - Phân bổ', section:'Bảo hiểm', module:'bh', partnerVisible:true},
   {id:'bh_allocation', label:'Phân bổ đơn vị', section:'Bảo hiểm', hidden:true, parent:'bh_transactions', module:'bh', partnerVisible:true},
@@ -4234,15 +4260,12 @@ function renderYearlyTargets(c){
 
   c.innerHTML = `
     <div class="panel">
-      <div class="panel-head"><div><h2>Chọn năm</h2><div class="desc">Doanh số luỹ kế tính tới đúng Ngày báo cáo hiện tại (nếu chọn năm hiện tại) hoặc trọn năm (nếu chọn năm đã qua)</div></div>
-        <select id="yt_year" style="width:120px">${years.map(y=>`<option value="${y}" ${y===ytYear?'selected':''}>${y}</option>`).join('')}</select>
-      </div>
-      <div class="panel-body" style="padding-top:0">
-        <div class="field" style="max-width:320px">
-          <label>Cách tính "Dự kiến cả năm"</label>
-          <select id="yt_projection">${YT_PROJECTION_METHODS.map(m=>`<option value="${m.id}" ${m.id===ytProjectionMethod?'selected':''}>${m.label}</option>`).join('')}</select>
+      <div class="panel-head">
+        <div><h2>Bộ lọc</h2><div class="desc">Áp dụng cho mọi bảng bên dưới · năm đã qua luôn hiện đúng số thực tế, không dự phóng</div></div>
+        <div style="display:flex;gap:10px">
+          <div class="field" style="width:100px"><label>Năm</label><select id="yt_year">${years.map(y=>`<option value="${y}" ${y===ytYear?'selected':''}>${y}</option>`).join('')}</select></div>
+          <div class="field" style="width:220px"><label>Dự kiến cả năm theo</label><select id="yt_projection">${YT_PROJECTION_METHODS.map(m=>`<option value="${m.id}" ${m.id===ytProjectionMethod?'selected':''}>${m.label}</option>`).join('')}</select></div>
         </div>
-        <div class="helper">Áp dụng cho mọi thẻ đang hiện bên dưới. Năm đã qua (đóng sổ) luôn hiện đúng số thực tế, không dự phóng gì thêm dù chọn cách tính nào.</div>
       </div>
     </div>
     ${modules.map(m=>`<div id="ytBlock_${m.id}"></div>`).join('')}
@@ -4260,46 +4283,50 @@ function renderYearlyTargetBlock(el, moduleId, editable){
   const pf = partnerScopeFilter('partnerId');
   const targets = (state[cfg.fieldKey]||[]).filter(t=>String(t.year)===String(ytYear) && (!pf || pf(t)));
   const partnersWithoutTarget = cfg.partners().filter(p=> !targets.some(t=>t.partnerId===p.id));
+  const hasFallback = targets.some(t=> yearlyTargetCalc(cfg, t).fallbackUsed);
 
   el.innerHTML = `
     <div class="panel">
       <div class="panel-head"><div><h2>${escHtml(cfg.label)}</h2><div class="desc">${targets.length} mục tiêu năm ${escHtml(ytYear)}</div></div>
         ${editable && partnersWithoutTarget.length>0 ? `<button class="btn btn-primary" data-yt-add="${moduleId}">+ Thêm mục tiêu</button>` : ''}
       </div>
-      <div class="panel-body">
-        ${targets.length===0 ? `<div class="empty">Chưa có mục tiêu năm nào cho ${escHtml(cfg.partnerLabel)} trong năm ${escHtml(ytYear)}.${editable&&partnersWithoutTarget.length>0?' Bấm "+ Thêm mục tiêu" để bắt đầu.':''}</div>` : `
-        <div style="display:flex;flex-direction:column;gap:14px">
-          ${targets.map(t=>{
-            const p = cfg.partnerById(t.partnerId);
-            const calc = yearlyTargetCalc(cfg, t);
-            const pctShow = Math.min(100, Math.round(calc.pct*1000)/10);
-            const barColor = calc.statusClass==='ok'?'var(--forest)':calc.statusClass==='pending'?'var(--amber)':'var(--rust)';
-            const linkedPolicy = (cfg.supportsLinkedCK && t.linkedPolicyId) ? cfg.linkedPolicyById(t.linkedPolicyId) : null;
-            return `
-            <div style="border:1px solid var(--line);border-radius:10px;padding:14px 16px">
-              <div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap">
-                <div style="font-weight:600">${escHtml(p?p.name:'(đã xoá)')}</div>
-                <div style="display:flex;align-items:center;gap:8px">
-                  ${linkedPolicy ? `<span class="tag gold" title="Đã gắn kèm chính sách CK — bấm để mở tab Chính sách CK" style="cursor:pointer" data-goto-policy="1">CK: ${fmtPct(linkedPolicy.rate)}</span>` : ''}
-                  <span class="stamp ${calc.statusClass}">${calc.status}</span>
-                  ${editable ? `<button class="row-del" data-yt-edit="${t.id}" data-yt-module="${moduleId}" title="Sửa">✎</button>
-                  <button class="row-del" data-yt-del="${t.id}" data-yt-module="${moduleId}" title="Xoá">✕</button>` : ''}
-                </div>
+      ${targets.length===0 ? `<div class="panel-body"><div class="empty">Chưa có mục tiêu năm nào cho ${escHtml(cfg.partnerLabel)} trong năm ${escHtml(ytYear)}.${editable&&partnersWithoutTarget.length>0?' Bấm "+ Thêm mục tiêu" để bắt đầu.':''}</div></div>` : `
+      <div class="panel-body flush"><div class="tbl-wrap" style="max-height:360px;overflow-y:auto"><table class="data">
+        <thead><tr>
+          <th class="wrap">${escHtml(cfg.partnerLabel)}</th>
+          <th class="num">Mục tiêu</th>
+          <th class="num">Luỹ kế</th>
+          <th>Tiến độ</th>
+          <th class="num">Dự kiến cả năm</th>
+          <th>Trạng thái</th>
+          ${cfg.supportsLinkedCK?'<th>CK gắn kèm</th>':''}
+          ${editable?'<th></th>':''}
+        </tr></thead>
+        <tbody>${targets.map(t=>{
+          const p = cfg.partnerById(t.partnerId);
+          const calc = yearlyTargetCalc(cfg, t);
+          const pctShow = Math.min(100, Math.round(calc.pct*1000)/10);
+          const barColor = calc.statusClass==='ok'?'var(--forest)':calc.statusClass==='pending'?'var(--amber)':'var(--rust)';
+          const linkedPolicy = (cfg.supportsLinkedCK && t.linkedPolicyId) ? cfg.linkedPolicyById(t.linkedPolicyId) : null;
+          return `<tr>
+            <td class="wrap">${escHtml(p?p.name:'(đã xoá)')}${t.note?`<div class="meta-line">${escHtml(t.note)}</div>`:''}</td>
+            <td class="num">${fmt(t.targetAmount)}</td>
+            <td class="num">${fmt(calc.revenue)}</td>
+            <td>
+              <div style="display:flex;align-items:center;gap:6px">
+                <div style="width:52px;height:6px;border-radius:4px;background:var(--paper);overflow:hidden;flex:none"><div style="height:100%;width:${pctShow}%;background:${barColor}"></div></div>
+                <span style="font-size:12px;color:var(--slate)">${pctShow}%</span>
               </div>
-              <div style="display:flex;gap:18px;flex-wrap:wrap;margin-top:6px;font-size:13px;color:var(--slate)">
-                <div>Mục tiêu: <b style="color:var(--ink)">${fmt(t.targetAmount)}đ</b></div>
-                <div>Luỹ kế: <b style="color:var(--ink)">${fmt(calc.revenue)}đ</b></div>
-                <div>Dự kiến cả năm: <b style="color:var(--ink)">${fmt(calc.projected)}đ</b>${calc.fallbackUsed?' <span title="Thiếu dữ liệu cùng kỳ năm trước để so sánh — tạm dùng bình quân tuyến tính" style="color:var(--amber);cursor:help">*</span>':''}</div>
-                ${t.note ? `<div>Ghi chú: ${escHtml(t.note)}</div>` : ''}
-              </div>
-              <div style="margin-top:10px;height:10px;border-radius:6px;background:var(--paper);overflow:hidden">
-                <div style="height:100%;width:${pctShow}%;background:${barColor};border-radius:6px"></div>
-              </div>
-              <div style="margin-top:4px;font-size:12px;color:var(--slate)">${pctShow}% mục tiêu</div>
-            </div>`;
-          }).join('')}
-        </div>`}
-      </div>
+            </td>
+            <td class="num">${fmt(calc.projected)}${calc.fallbackUsed?' <span title="Thiếu dữ liệu cùng kỳ năm trước để so sánh — tạm dùng bình quân tuyến tính" style="color:var(--amber);cursor:help">*</span>':''}</td>
+            <td><span class="stamp ${calc.statusClass}">${calc.status}</span></td>
+            ${cfg.supportsLinkedCK?`<td>${linkedPolicy?`<span class="tag gold" title="Bấm để mở tab Chính sách CK" style="cursor:pointer" data-goto-policy="1">${fmtPct(linkedPolicy.rate)}</span>`:'—'}</td>`:''}
+            ${editable?`<td style="white-space:nowrap"><button class="row-del" data-yt-edit="${t.id}" data-yt-module="${moduleId}" title="Sửa">✎</button><button class="row-del" data-yt-del="${t.id}" data-yt-module="${moduleId}" title="Xoá">✕</button></td>`:''}
+          </tr>`;
+        }).join('')}</tbody>
+      </table></div></div>
+      ${hasFallback?`<div class="panel-body" style="padding-top:0"><div class="helper">* thiếu dữ liệu cùng kỳ năm trước, tạm dùng bình quân tuyến tính</div></div>`:''}
+      `}
     </div>`;
 
   if(editable){
@@ -7777,15 +7804,14 @@ function renderInsRenewal(c){
   const canManageLinks = currentRole()==='Admin' || currentRole()==='Quản lý';
   const alertDays = renewalAlertDays();
   const allRows = allRenewalRows();
-  setTitle('Lịch tái tục', allRows.length+' hồ sơ cần theo dõi — gồm cả hồ sơ vay (gói yêu cầu tái tục hằng năm) và bảo hiểm bán độc lập (không qua vay)');
+  setTitle('Lịch tái tục', allRows.length+' hồ sơ cần theo dõi');
   const overdueCount = allRows.filter(r=>r.status==='overdue').length;
   const dueSoonCount = allRows.filter(r=>r.status==='due_soon').length;
   const inProgressCount = allRows.filter(r=>r.status==='in_progress').length;
   c.innerHTML = `
-    ${hintBannerHTML('renewal_intro', 'Danh sách này gồm 2 nguồn: (1) hồ sơ vay thuộc gói yêu cầu mua lại bảo hiểm hằng năm, (2) mọi đơn bảo hiểm KHÔNG đi kèm khoản vay nào — mặc định đều cần theo dõi tái tục, chỉ cần đánh dấu "Không theo dõi" cho trường hợp ngoại lệ (hợp đồng nhiều năm, khách đã bán xe...). Nếu khớp sai, bấm "Sửa liên kết"/"Không theo dõi" ở cột cuối để chỉnh tay.')}
     <div class="panel">
       <div class="panel-head">
-        <div><h2>Bộ lọc</h2><div class="desc">Nguồn "Qua khoản vay": hồ sơ "Đã giải ngân" thuộc gói vay đã bật "Yêu cầu mua lại bảo hiểm hằng năm" ở Chính sách CK (Ngân hàng). Nguồn "Bảo hiểm độc lập": mọi đơn bảo hiểm Đã cấp đơn không gắn khoản vay nào — mặc định đều theo dõi. Liên kết/nhóm xe tự động theo biển số, dự phòng SĐT/tên khách hàng.</div></div>
+        <div><h2>Bộ lọc</h2></div>
         <div class="mini-stats-row">
           <div class="mini-stat"><div class="mini-stat-label">Quá hạn</div><div class="mini-stat-value" style="color:var(--rust)">${overdueCount}</div></div>
           <div class="mini-stat"><div class="mini-stat-label">Sắp đến hạn</div><div class="mini-stat-value" style="color:var(--amber)">${dueSoonCount}</div></div>
@@ -7817,14 +7843,15 @@ function renderInsRenewal(c){
           <button class="btn btn-ghost" id="irwfClearBtn">Xem tất cả</button>
           <button class="btn btn-ghost" id="irwExportBtn">⇩ Xuất Excel</button>
         </div>
+        ${collapsibleInfoHTML('renewal_filter_info', 'Danh sách gồm 2 nguồn: (1) hồ sơ vay thuộc gói yêu cầu mua lại bảo hiểm hằng năm — chỉ tính hồ sơ "Đã giải ngân" thuộc gói vay đã bật "Yêu cầu mua lại bảo hiểm hằng năm" ở Chính sách CK (Ngân hàng); (2) mọi đơn bảo hiểm "Đã cấp đơn" KHÔNG gắn khoản vay nào — mặc định đều theo dõi, đánh dấu "Không theo dõi" cho trường hợp ngoại lệ (hợp đồng nhiều năm, khách đã bán xe...). Liên kết/nhóm xe tự động theo biển số, dự phòng SĐT/tên khách hàng — nếu khớp sai, bấm "Sửa liên kết" ở cột cuối để chỉnh tay.')}
       </div>
     </div>
     <div class="panel">
-      <div class="panel-head"><div><h2>Danh sách hồ sơ cần theo dõi</h2><div class="desc">Sắp xếp theo mức độ khẩn cấp — Quá hạn lâu nhất lên trước, rồi tới Sắp đến hạn sớm nhất. Cột "Cách khớp" cho biết kết quả liên kết là suy đoán tự động hay đã xác nhận thủ công.</div></div></div>
+      <div class="panel-head"><div><h2>Danh sách hồ sơ cần theo dõi</h2><div class="desc">Quá hạn/Sắp đến hạn luôn nổi lên đầu và nhấp nháy để dễ nhận ra</div></div></div>
       <div class="panel-body flush"><div class="tbl-wrap"><table class="data" id="renewalTable"></table></div></div>
     </div>
   `;
-  wireHintDismiss(c);
+  wireInfoToggles(c);
   document.getElementById('irwf_unit').addEventListener('input', e=>{ insRenewalUnitFilter=e.target.value; drawRenewalTable(); });
   document.getElementById('irwf_bank').addEventListener('input', e=>{ insRenewalBankFilter=e.target.value; drawRenewalTable(); });
   document.getElementById('irwf_status').addEventListener('change', e=>{ insRenewalStatusFilter=e.target.value; drawRenewalTable(); });
@@ -7884,8 +7911,8 @@ function renderInsRenewal(c){
     }
     tbl.innerHTML = `
       <thead><tr>
-        <th class="wrap">Nguồn</th><th class="wrap">Khách hàng</th><th>Biển số</th>
-        <th>Lần cấp đơn BH gần nhất</th><th>Cách khớp</th><th>Mốc đến hạn tiếp theo</th><th class="num">Số ngày</th><th>Trạng thái</th><th></th>
+        <th class="wrap">Nguồn</th><th class="wrap">Khách hàng</th><th class="wrap" style="max-width:110px">Biển số</th>
+        <th class="wrap" style="max-width:100px">Lần cấp đơn BH gần nhất</th><th class="wrap" style="max-width:90px">Cách khớp</th><th class="wrap" style="max-width:95px">Mốc đến hạn tiếp theo</th><th class="num">Số ngày</th><th>Trạng thái</th><th></th>
       </tr></thead>
       <tbody>${rows.map(r=>{
         const isBank = r.source==='bank';
@@ -7897,15 +7924,15 @@ function renderInsRenewal(c){
         // Gộp "Nguồn" + "Ngân hàng/Gói vay" + "Ngày giải ngân" thành 1 cột duy nhất — vì phần lớn hồ sơ giờ
         // là "Bảo hiểm độc lập" (không có khoản vay), để 2 cột riêng sẽ toàn dấu "—" lãng phí chỗ, rối mắt.
         const sourceCell = isBank
-          ? `<div style="font-weight:600">🏦 ${b?escHtml(b.name):'<em>(đã xoá)</em>'}</div><div class="meta-line">${escHtml(r.t.product||DEFAULT_BANK_PRODUCT)} · Giải ngân ${r.t.date}</div>`
-          : `<span class="meta-line" title="Không có khoản vay nào theo dõi xe này — tự theo dõi trực tiếp từ Doanh số Bảo hiểm">📄 Bảo hiểm độc lập</span>`;
+          ? `<div style="font-weight:600;white-space:nowrap">🏦 ${b?escHtml(b.name):'<em>(đã xoá)</em>'}</div><div class="meta-line" style="white-space:nowrap">${escHtml(r.t.product||DEFAULT_BANK_PRODUCT)} · Giải ngân ${r.t.date}</div>`
+          : `<span class="meta-line" style="white-space:nowrap" title="Không có khoản vay nào theo dõi xe này — tự theo dõi trực tiếp từ Doanh số Bảo hiểm">📄 BH độc lập</span>`;
         const actionBtn = isBank
           ? (canManageLinks ? `<button class="btn btn-ghost" data-editlink="${r.t.id}" style="font-size:11.5px;padding:4px 8px;white-space:nowrap">Sửa liên kết</button>` : '')
           : (canManageLinks ? `<button class="btn btn-ghost" data-exempt="${r.t.id}" style="font-size:11.5px;padding:4px 8px;white-space:nowrap" title="Dùng khi hợp đồng nhiều năm hoặc khách đã bán xe/huỷ — sẽ không hiện lại trong Lịch tái tục nữa">🚫 Không theo dõi</button>` : '');
-        return `<tr>
+        return `<tr class="${r.status==='overdue'?'renewal-pulse-overdue':r.status==='due_soon'?'renewal-pulse-soon':''}">
           <td class="wrap">${sourceCell}</td>
           <td class="wrap"><b>${escHtml(r.t.customer||'(chưa có tên KH)')}</b><div class="meta-line">${escHtml(r.t.phone||'')} · ${escHtml(r.t.unit)}</div></td>
-          <td>${escHtml(r.t.vehicle||'—')}</td>
+          <td class="wrap" style="max-width:150px;word-break:break-all" title="${escAttr(r.t.vehicle||'')}">${escHtml(r.t.vehicle||'—')}</td>
           <td>${lastInsCell}</td>
           <td class="meta-line">${escHtml(matchMethodLabel(r.matchMethod))}</td>
           <td>${r.nextDue.toISOString().slice(0,10)}</td>
