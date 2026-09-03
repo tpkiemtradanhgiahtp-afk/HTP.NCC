@@ -6733,12 +6733,18 @@ let insRenewalStatusFilter = ''; // '' = tất cả, 'overdue', 'due_soon', 'ok'
 
 // Hoa hồng chỉ tính khi hợp đồng đã "Đã cấp đơn", theo đúng tỷ lệ BHVC/BHDS của NCC đó
 // (khác Ngân hàng: hoa hồng bảo hiểm không đổi theo tháng, chỉ đổi theo loại sản phẩm).
+// premiumAmount đang lưu là phí bảo hiểm ĐÃ CÓ VAT 10% — hoa hồng phải tính trên phí TRƯỚC VAT, nên
+// luôn quy đổi ngược lại (chia 1.1) trước khi nhân tỷ lệ %, KHÔNG nhân thẳng lên phí đã có VAT.
+const INS_VAT_RATE = 0.10;
+function insPremiumBeforeVat(premiumAmount){
+  return (Number(premiumAmount)||0) / (1 + INS_VAT_RATE);
+}
 function insTxCommission(t){
   if(t.status!=='Đã cấp đơn') return 0;
   const ins = insurerById(t.insurerId);
   if(!ins) return 0;
   const rate = t.product==='BHDS' ? ins.bhds : ins.bhvc;
-  return (Number(t.premiumAmount)||0) * (Number(rate)||0);
+  return insPremiumBeforeVat(t.premiumAmount) * (Number(rate)||0);
 }
 function insPremiumSum(insurerId, from, to, unit){
   let total=0;
