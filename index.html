@@ -296,6 +296,13 @@
 
   /* ---------- Tables ---------- */
   .tbl-wrap{ overflow-x:auto; }
+  /* Bảng Sổ chứng từ/hợp đồng/hồ sơ vay — có thể rất dài theo thời gian. Thay vì để cả trang cuộn dài vô tận,
+     giới hạn chiều cao và cho bảng tự cuộn dọc RIÊNG bên trong khung của chính nó, kèm tiêu đề cột dán cứng.
+     Dùng position:sticky trong PHẠM VI khung cuộn riêng này (không phải cuộn trang) nên không lặp lại lỗi đã
+     từng gặp ở table.data th (nhiều bảng cùng dán cứng theo cuộn TRANG khiến tiêu đề đè lên nhau) — mỗi bảng
+     .tbl-wrap-tall có khung cuộn độc lập của riêng nó. */
+  .tbl-wrap-tall{ max-height:64vh; overflow:auto; }
+  .tbl-wrap-tall table.data thead th{ position:sticky; top:0; z-index:3; }
   table.data{ width:100%; border-collapse:collapse; font-size:12.8px; }
   table.data th{
     text-align:left; font-size:10.8px; text-transform:uppercase; letter-spacing:0.06em;
@@ -1666,6 +1673,42 @@ function wireInfoToggles(container){
     });
   });
 }
+
+/* ---------------------------- Panel thu gọn được (Bộ lọc / Ghi nhận doanh số...) ----------------------------
+   Các khối "Bộ lọc" và "Ghi nhận..." ở đầu mỗi trang Doanh số (NCC/Ngân hàng/Bảo hiểm) khá dài, chiếm nhiều
+   diện tích màn hình, đẩy bảng Sổ chứng từ/hợp đồng/hồ sơ vay (nội dung chính, xem thường xuyên nhất) xuống
+   quá thấp. panelToggleHeadHTML() vẽ 1 panel-head có thể bấm để thu gọn/mở rộng phần thân — nội dung phần
+   thân vẫn luôn ở trong DOM (chỉ ẩn bằng display:none) nên mọi input/nút bên trong vẫn hoạt động bình
+   thường kể cả khi đang thu gọn, không cần sửa lại phần logic wiring các trường bên trong.
+   Trạng thái đóng/mở nhớ theo id trong biến panelOpenState suốt phiên dùng app (không mất khi vẽ lại trang
+   do đổi bộ lọc/thêm dữ liệu...), chỉ đổi khi người dùng bấm. */
+function panelIsOpen(id, defaultOpen){
+  if(!(id in panelOpenState)) panelOpenState[id] = !!defaultOpen;
+  return panelOpenState[id];
+}
+function panelToggleHeadHTML(id, title, desc, rightHTML, defaultOpen, actionLabel){
+  const open = panelIsOpen(id, defaultOpen);
+  const label = actionLabel || 'mở rộng';
+  const stateText = open ? 'Thu gọn' : `Bấm để ${label}`;
+  return `<div class="panel-head" data-panel-toggle="${escAttr(id)}" style="cursor:pointer;user-select:none" title="${open?'Thu gọn':'Bấm để '+label}">
+    <div><h2>${title} <span style="font-size:11.5px;color:var(--gold);font-weight:600;margin-left:6px;letter-spacing:0.01em">${open?'▾':'▸'} ${stateText}</span></h2>${desc?`<div class="desc">${desc}</div>`:''}</div>
+    ${rightHTML||''}
+  </div>`;
+}
+function panelBodyOpenAttr(id, defaultOpen){
+  return panelIsOpen(id, defaultOpen) ? '' : 'style="display:none"';
+}
+function wirePanelToggles(container){
+  container.querySelectorAll('[data-panel-toggle]').forEach(head=>{
+    head.addEventListener('click', (e)=>{
+      if(e.target.closest('input,select,textarea,button,a,label')) return; // không toggle khi bấm vào ô lọc/nút nằm ngay trên panel-head (VD mini-stats, badge đơn vị)
+      const id = head.dataset.panelToggle;
+      panelOpenState[id] = !panelIsOpen(id, false);
+      renderAll();
+    });
+  });
+}
+
 
 /* ---------------------------- Modal dùng chung (dùng cho Đính kèm hợp đồng và các popup sau này) ----------------------------
    openModal(title, desc, bodyHtml, onMount): chèn 1 overlay full-màn-hình vào <body>, đóng bằng nút X, click nền, hoặc phím Esc.
@@ -3211,6 +3254,22 @@ function ensureUnit(rawName){
 function unitDatalistHTML(id){
   return `<datalist id="${id}">${state.units.map(u=>`<option value="${escAttr(u)}">`).join('')}</datalist>`;
 }
+/* Trả về MẢNG đơn vị phụ trách của 1 tài khoản — tương thích ngược với cấu hình cũ (acc.unit
+   là 1 chuỗi đơn) lẫn cấu hình mới (acc.units là mảng, dùng khi 1 tài khoản được phân bổ xem
+   nhiều hơn 1 đơn vị cùng lúc). Luôn dùng hàm này để đọc thay vì đọc thẳng acc.unit/acc.units. */
+function accountUnits(acc){
+  if(!acc) return [];
+  if(Array.isArray(acc.units) && acc.units.length) return acc.units.filter(Boolean);
+  return acc.unit ? [acc.unit] : [];
+}
+/* Gán lại danh sách đơn vị phụ trách cho 1 tài khoản. Luôn đồng bộ ngược acc.unit = đơn vị đầu
+   tiên trong danh sách, để những chỗ code cũ còn đọc thẳng acc.unit (hiển thị, xuất Excel, khoá
+   đơn vị khi Nhân viên chỉ có đúng 1 đơn vị...) vẫn chạy đúng như trước — không phá cấu hình cũ. */
+function setAccountUnits(acc, arr){
+  const list = Array.from(new Set((arr||[]).map(x=>ensureUnit(x)).filter(Boolean)));
+  acc.units = list;
+  acc.unit = list[0] || '';
+}
 function supplierDatalistHTML(id){
   return `<datalist id="${id}">${state.suppliers.map(s=>`<option value="${escAttr(s.name)}">`).join('')}</datalist>`;
 }
@@ -3458,6 +3517,7 @@ const TABS = [
   {id:'trash', label:'Thùng rác', section:'Hệ thống', roles:['Admin']},
 ];
 let activeTab = 'dashboard';
+let panelOpenState = {}; // { [id]: true nếu khối "Bộ lọc"/"Ghi nhận..." đang MỞ } — nhớ trạng thái trong lúc dùng app, mặc định thu gọn để nhường chỗ cho bảng Sổ chứng từ/hợp đồng/hồ sơ vay
 let txUnitFilter = '';
 let txSupplierFilter = '';
 let reconExpanded = new Set();
@@ -3663,7 +3723,8 @@ function renderUserChip(){
   const u = currentUser();
   if(!u){ chip.innerHTML=''; menu.innerHTML=''; menu.classList.remove('open'); return; }
   const initials = u.name.trim().split(/\s+/).slice(-1)[0].slice(0,1).toUpperCase();
-  chip.innerHTML = `<span class="user-avatar">${escHtml(initials)}</span><span>${escHtml(u.name)}${u.unit?' <span class="role-tag">· '+escHtml(u.unit)+'</span>':''}</span><span class="role-badge ${roleBadgeClass(u.role)}">${escHtml(u.role)}</span>`;
+  const chipUnits = accountUnits(u);
+  chip.innerHTML = `<span class="user-avatar">${escHtml(initials)}</span><span>${escHtml(u.name)}${chipUnits.length?' <span class="role-tag">· '+escHtml(chipUnits.join(' + '))+'</span>':''}</span><span class="role-badge ${roleBadgeClass(u.role)}">${escHtml(u.role)}</span>`;
   chip.title = 'Bấm để xem tuỳ chọn tài khoản';
   menu.innerHTML = `
     <button type="button" id="menuChangePw">🔑 Đổi mật khẩu</button>
@@ -4849,20 +4910,23 @@ function renderTransactions(c){
   setTitle('Doanh số', state.transactions.length+' chứng từ — mỗi dòng là 1 hoá đơn/chứng từ theo đơn vị & NCC');
   const editable = canEdit('transactions'); // Admin, Quản lý, Nhân viên đều được ghi nhận doanh số
   const me = currentUser();
-  const lockedUnit = (me && me.role==='Nhân viên' && me.unit) ? me.unit : null;
+  const lockedUnits = (me && me.role==='Nhân viên') ? accountUnits(me) : [];
+  const lockedUnit = lockedUnits.length===1 ? lockedUnits[0] : null; // chỉ 1 đơn vị -> giữ nguyên hành vi khoá cũ
+  const lockedMulti = lockedUnits.length>1; // được phân bổ xem nhiều đơn vị -> chọn trong phạm vi các đơn vị đó
   const supplierOptions = state.suppliers.map(s=>`<option value="${s.id}">${escHtml(s.name)}</option>`).join('');
   if(lockedUnit) txUnitFilter = lockedUnit; // NV chỉ nên thấy đúng đơn vị mình phụ trách theo mặc định
+  else if(lockedMulti && txUnitFilter && !lockedUnits.includes(txUnitFilter)) txUnitFilter = '';
   c.innerHTML = `
     <div class="panel">
-      <div class="panel-head"><div><h2>Bộ lọc</h2><div class="desc">Xem theo đúng Đơn vị và/hoặc NCC — áp dụng cho cả bảng Sổ chứng từ bên dưới, không ảnh hưởng gì tới việc ghi nhận mới</div></div>
-        <div class="mini-stats-row" id="txSummaryStats"></div>
-      </div>
-      <div class="panel-body">
+      ${panelToggleHeadHTML('txFilterPanel', 'Bộ lọc', 'Xem theo đúng Đơn vị và/hoặc NCC — áp dụng cho cả bảng Sổ chứng từ bên dưới, không ảnh hưởng gì tới việc ghi nhận mới', `<div class="mini-stats-row" id="txSummaryStats"></div>`, false, 'lọc')}
+      <div class="panel-body" ${panelBodyOpenAttr('txFilterPanel', false)}>
         <div class="form-grid">
           <div class="field">
             <label>Đơn vị</label>
             ${lockedUnit
               ? `<input id="txf_unit" value="${escAttr(lockedUnit)}" disabled>`
+              : lockedMulti
+              ? `<select id="txf_unit"><option value="">Cả ${lockedUnits.length} đơn vị của bạn</option>${lockedUnits.map(u=>`<option value="${escAttr(u)}" ${txUnitFilter===u?'selected':''}>${escAttr(u)}</option>`).join('')}</select>`
               : `<input id="txf_unit" list="txf_unit_list" placeholder="Tất cả đơn vị..." value="${escAttr(txUnitFilter)}">${unitDatalistHTML('txf_unit_list')}`}
           </div>
           <div class="field"><label>NCC</label><input id="txf_supplier" list="txf_supplier_list" placeholder="Tất cả NCC..." value="${escAttr(txSupplierFilter)}">${supplierDatalistHTML('txf_supplier_list')}</div>
@@ -4872,16 +4936,16 @@ function renderTransactions(c){
     </div>
     ${editable ? `
     <div class="panel">
-      <div class="panel-head"><div><h2>Ghi nhận doanh số</h2></div>
-      ${lockedUnit ? `<span class="tag gold">Đơn vị của bạn: ${escHtml(lockedUnit)}</span>` : ''}
-      </div>
-      <div class="panel-body">
+      ${panelToggleHeadHTML('txEntryPanel', 'Ghi nhận doanh số', '', (lockedUnit ? `<span class="tag gold">Đơn vị của bạn: ${escHtml(lockedUnit)}</span>` : lockedMulti ? `<span class="tag gold">Đơn vị của bạn: ${escHtml(lockedUnits.join(' + '))}</span>` : ''), false, 'nhập')}
+      <div class="panel-body" ${panelBodyOpenAttr('txEntryPanel', false)}>
         <div class="form-grid">
           <div class="field"><label>Ngày</label><input id="tf_date" type="date" value="${todayISO()}"></div>
           <div class="field">
             <label>Đơn vị</label>
             ${lockedUnit
               ? `<input id="tf_unit" value="${escAttr(lockedUnit)}" disabled>`
+              : lockedMulti
+              ? `<select id="tf_unit">${lockedUnits.map(u=>`<option value="${escAttr(u)}">${escAttr(u)}</option>`).join('')}</select>`
               : `<input id="tf_unit" list="tf_unit_list" placeholder="Gõ tên đơn vị thực tế..." value="${escAttr(txUnitFilter)}">${unitDatalistHTML('tf_unit_list')}`}
           </div>
           <div class="field"><label>NCC</label><input id="tf_supplier" list="tf_supplier_list" placeholder="Gõ tên NCC..." value="${escAttr(txSupplierFilter)}">${supplierDatalistHTML('tf_supplier_list')}</div>
@@ -4892,7 +4956,7 @@ function renderTransactions(c){
           ${invoiceUploadFieldHTML('tf')}
           <button class="btn btn-primary" id="addTxBtn">+ Ghi nhận</button>
         </div>
-        ${lockedUnit ? `<div class="helper">Tài khoản của bạn được gán phụ trách <b>${escHtml(lockedUnit)}</b> (đặt ở tab Quản trị tài khoản) nên đơn vị đã tự khoá để tránh nhập nhầm. Cần đổi đơn vị? Liên hệ Admin/Quản lý.</div>` : `<div class="helper">Gõ tên đơn vị mới nếu chưa có trong danh sách — hệ thống sẽ tự thêm vào.</div>`}
+        ${lockedUnit ? `<div class="helper">Tài khoản của bạn được gán phụ trách <b>${escHtml(lockedUnit)}</b> (đặt ở tab Quản trị tài khoản) nên đơn vị đã tự khoá để tránh nhập nhầm. Cần đổi đơn vị? Liên hệ Admin/Quản lý.</div>` : lockedMulti ? `<div class="helper">Tài khoản của bạn được phân bổ phụ trách nhiều đơn vị: <b>${escHtml(lockedUnits.join(', '))}</b> (đặt ở tab Quản trị tài khoản) — chọn đúng đơn vị cho chứng từ này ở ô trên.</div>` : `<div class="helper">Gõ tên đơn vị mới nếu chưa có trong danh sách — hệ thống sẽ tự thêm vào.</div>`}
       </div>
     </div>` : lockedNote('Tài khoản của bạn chưa được cấp quyền ghi nhận doanh số.')}
     <div class="panel">
@@ -4904,11 +4968,12 @@ function renderTransactions(c){
           <button class="btn btn-ghost" id="txExportBtn">⬇ Xuất Excel</button>
         </div>
       </div>
-      <div class="panel-body flush"><div class="tbl-wrap"><table class="data" id="txTable"></table></div></div>
+      <div class="panel-body flush"><div class="tbl-wrap tbl-wrap-tall"><table class="data" id="txTable"></table></div></div>
     </div>
   `;
+  wirePanelToggles(c);
   const unitFFilter = document.getElementById('txf_unit');
-  if(unitFFilter && !lockedUnit) unitFFilter.addEventListener('input', ()=>{ txUnitFilter = unitFFilter.value; renderTxTable(editable); });
+  if(unitFFilter && !lockedUnit) unitFFilter.addEventListener(lockedMulti?'change':'input', ()=>{ txUnitFilter = unitFFilter.value; renderTxTable(editable); });
   document.getElementById('txf_supplier').addEventListener('input', ()=>{ txSupplierFilter = document.getElementById('txf_supplier').value; renderTxTable(editable); });
   document.getElementById('txfClearBtn').addEventListener('click', ()=>{
     txSupplierFilter = '';
@@ -4929,7 +4994,7 @@ function renderTransactions(c){
     const returns = parseMoneyInput(document.getElementById('tf_return').value);
     if(returns>gross){ toast('Trả hàng/Điều chỉnh không được lớn hơn Doanh số trước VAT'); return; }
     const s = supplierById(supplierId);
-    const unit = lockedUnit || ensureUnit(document.getElementById('tf_unit').value);
+    const unit = lockedUnit || (lockedMulti ? document.getElementById('tf_unit').value : ensureUnit(document.getElementById('tf_unit').value));
     if(!unit){ toast('Nhập tên đơn vị trước'); return; }
     const txDate = document.getElementById('tf_date').value || todayISO();
     if(currentRole()!=='Admin'){
@@ -4980,9 +5045,12 @@ function renderTransactions(c){
 function getFilteredTx(){
   const unitFilter = (txUnitFilter||'').trim().toLowerCase();
   const supFilter = (txSupplierFilter||'').trim().toLowerCase();
+  const me = currentUser();
+  const lockedUnits = (me && me.role==='Nhân viên') ? accountUnits(me) : [];
   const pf = partnerScopeFilter('supplierId');
   const all = (pf ? state.transactions.filter(pf) : state.transactions).slice().sort((a,b)=> b.date.localeCompare(a.date));
   return all.filter(t=>{
+    if(lockedUnits.length && !lockedUnits.includes(t.unit)) return false; // Nhân viên chỉ thấy đúng (các) đơn vị được phân bổ, dù bộ lọc trên màn hình là gì
     if(unitFilter && !(t.unit||'').trim().toLowerCase().includes(unitFilter)) return false;
     if(supFilter){
       const s = supplierById(t.supplierId);
@@ -5071,7 +5139,7 @@ function renderAllocation(c){
   const partnerAcc = isPartnerAccount(currentUser()) ? currentUser() : null;
   setTitle('Phân bổ đơn vị', (partnerAcc?'Doanh số của bạn theo từng đơn vị':'Đóng góp doanh số của từng đơn vị cho từng NCC')+(globalYearFilter?' — '+periodFilterDescText():' — cộng dồn toàn thời gian'));
   const unitOwners = {};
-  state.units.forEach(u=>{ unitOwners[u] = state.accounts.filter(a=>a.unit===u).map(a=>a.name); });
+  state.units.forEach(u=>{ unitOwners[u] = state.accounts.filter(a=>accountUnits(a).includes(u)).map(a=>a.name); });
   const unassignedCount = state.units.filter(u=>unitOwners[u].length===0).length;
   const canManageUnits = canEdit('settings');
   c.innerHTML = `
@@ -5892,21 +5960,24 @@ function renderBankPolicies(c){
 /* ---------------------------- Ngân hàng · Doanh số (hồ sơ vay/giải ngân) ---------------------------- */
 function renderBankTransactions(c){
   const u = currentUser();
-  const lockedUnit = (u && u.role==='Nhân viên' && u.unit) ? u.unit : '';
+  const lockedUnits = (u && u.role==='Nhân viên') ? accountUnits(u) : [];
+  const lockedUnit = lockedUnits.length===1 ? lockedUnits[0] : '';
+  const lockedMulti = lockedUnits.length>1;
   if(lockedUnit) bankTxUnitFilter = lockedUnit;
+  else if(lockedMulti && bankTxUnitFilter && !lockedUnits.includes(bankTxUnitFilter)) bankTxUnitFilter = '';
   setTitle('Doanh số', state.bankTransactions.length+' hồ sơ vay — hoa hồng tự tính theo chính sách đúng tháng giải ngân');
   const editable = canEdit('nh_transactions');
   c.innerHTML = `
     <div class="panel">
-      <div class="panel-head"><div><h2>Bộ lọc</h2><div class="desc">Xem theo đúng Đơn vị và/hoặc Ngân hàng — áp dụng cho Sổ hồ sơ vay bên dưới, không ảnh hưởng gì tới việc ghi nhận mới</div></div>
-        <div class="mini-stats-row" id="btxSummaryStats"></div>
-      </div>
-      <div class="panel-body">
+      ${panelToggleHeadHTML('btxFilterPanel', 'Bộ lọc', 'Xem theo đúng Đơn vị và/hoặc Ngân hàng — áp dụng cho Sổ hồ sơ vay bên dưới, không ảnh hưởng gì tới việc ghi nhận mới', `<div class="mini-stats-row" id="btxSummaryStats"></div>`, false, 'lọc')}
+      <div class="panel-body" ${panelBodyOpenAttr('btxFilterPanel', false)}>
         <div class="form-grid">
           <div class="field">
             <label>Đơn vị</label>
             ${lockedUnit
               ? `<input id="btxf_unit" value="${escAttr(lockedUnit)}" disabled>`
+              : lockedMulti
+              ? `<select id="btxf_unit"><option value="">Cả ${lockedUnits.length} đơn vị của bạn</option>${lockedUnits.map(x=>`<option value="${escAttr(x)}" ${bankTxUnitFilter===x?'selected':''}>${escAttr(x)}</option>`).join('')}</select>`
               : `<input id="btxf_unit" list="btxf_unit_list" placeholder="Tất cả đơn vị..." value="${escAttr(bankTxUnitFilter)}">${unitDatalistHTML('btxf_unit_list')}`}
           </div>
           <div class="field"><label>Ngân hàng</label><input id="btxf_bank" list="btxf_bank_list" placeholder="Tất cả ngân hàng..." value="${escAttr(bankTxBankFilter)}">
@@ -5918,13 +5989,15 @@ function renderBankTransactions(c){
     </div>
     ${editable ? `
     <div class="panel">
-      <div class="panel-head"><div><h2>Ghi nhận hồ sơ vay</h2></div></div>
-      <div class="panel-body">
+      ${panelToggleHeadHTML('btxEntryPanel', 'Ghi nhận hồ sơ vay', '', (lockedMulti ? `<span class="tag gold">Đơn vị của bạn: ${escHtml(lockedUnits.join(' + '))}</span>` : ''), false, 'nhập')}
+      <div class="panel-body" ${panelBodyOpenAttr('btxEntryPanel', false)}>
         <div class="form-grid">
           <div class="field"><label>Ngày</label><input id="btf_date" type="date" value="${todayISO()}"></div>
           <div class="field"><label>Đơn vị</label>
             ${lockedUnit
               ? `<input id="btf_unit" value="${escAttr(lockedUnit)}" disabled>`
+              : lockedMulti
+              ? `<select id="btf_unit">${lockedUnits.map(x=>`<option value="${escAttr(x)}">${escAttr(x)}</option>`).join('')}</select>`
               : `<input id="btf_unit" list="btf_unit_list" placeholder="Tên đơn vị">${unitDatalistHTML('btf_unit_list')}`}
           </div>
           <div class="field"><label>Ngân hàng</label><input id="btf_bank" list="btf_bank_list" placeholder="Chọn ngân hàng">
@@ -5951,11 +6024,12 @@ function renderBankTransactions(c){
         <div><h2>Sổ hồ sơ vay</h2><div class="desc" id="btxFilterNote"></div></div>
         <button class="btn btn-ghost" id="btxExportBtn">⬇ Xuất Excel</button>
       </div>
-      <div class="panel-body flush"><div class="tbl-wrap"><table class="data" id="btxTable"></table></div></div>
+      <div class="panel-body flush"><div class="tbl-wrap tbl-wrap-tall"><table class="data" id="btxTable"></table></div></div>
     </div>
   `;
+  wirePanelToggles(c);
   const unitFFilter = document.getElementById('btxf_unit');
-  if(unitFFilter && !lockedUnit) unitFFilter.addEventListener('input', ()=>{ bankTxUnitFilter = unitFFilter.value; renderBankTxTable(editable); });
+  if(unitFFilter && !lockedUnit) unitFFilter.addEventListener(lockedMulti?'change':'input', ()=>{ bankTxUnitFilter = unitFFilter.value; renderBankTxTable(editable); });
   document.getElementById('btxf_bank').addEventListener('input', ()=>{ bankTxBankFilter = document.getElementById('btxf_bank').value; renderBankTxTable(editable); });
   document.getElementById('btxfClearBtn').addEventListener('click', ()=>{
     bankTxBankFilter = '';
@@ -5979,7 +6053,7 @@ function renderBankTransactions(c){
       if(!bank){ toast(bankName.trim() ? `Không tìm thấy ngân hàng "${bankName.trim()}" — chọn đúng tên có trong danh sách gợi ý` : 'Cần chọn ngân hàng trước'); return; }
       const amount = parseMoneyInput(document.getElementById('btf_amount').value);
       if(amount<=0){ toast('Nhập số tiền vay'); return; }
-      const unit = lockedUnit || ensureUnit(document.getElementById('btf_unit').value);
+      const unit = lockedUnit || (lockedMulti ? document.getElementById('btf_unit').value : ensureUnit(document.getElementById('btf_unit').value));
       if(!unit){ toast('Nhập tên đơn vị trước'); return; }
       const status = document.getElementById('btf_status').value;
       const btxDate = document.getElementById('btf_date').value || todayISO();
@@ -6033,9 +6107,12 @@ function renderBankTransactions(c){
 function getFilteredBankTx(){
   const unitFilter = (bankTxUnitFilter||'').trim().toLowerCase();
   const bankFilter = (bankTxBankFilter||'').trim().toLowerCase();
+  const me = currentUser();
+  const lockedUnits = (me && me.role==='Nhân viên') ? accountUnits(me) : [];
   const pf = partnerScopeFilter('bankId');
   const all = (pf ? state.bankTransactions.filter(pf) : state.bankTransactions).slice().sort((a,b)=> b.date.localeCompare(a.date));
   return all.filter(t=>{
+    if(lockedUnits.length && !lockedUnits.includes(t.unit)) return false;
     if(unitFilter && !(t.unit||'').trim().toLowerCase().includes(unitFilter)) return false;
     if(bankFilter){ const b = bankById(t.bankId); if(!b || !b.name.trim().toLowerCase().includes(bankFilter)) return false; }
     if(!periodFilterMatches(t.date)) return false;
@@ -6158,7 +6235,7 @@ function renderBankAllocation(c){
   const partnerAcc = isPartnerAccount(currentUser()) ? currentUser() : null;
   setTitle('Phân bổ đơn vị', (partnerAcc?'Số tiền giải ngân của bạn theo từng đơn vị':'Đóng góp số tiền vay giải ngân của từng đơn vị cho từng ngân hàng')+(globalYearFilter?' — '+periodFilterDescText():' — cộng dồn toàn thời gian'));
   const unitOwners = {};
-  state.units.forEach(u=>{ unitOwners[u] = state.accounts.filter(a=>a.unit===u).map(a=>a.name); });
+  state.units.forEach(u=>{ unitOwners[u] = state.accounts.filter(a=>accountUnits(a).includes(u)).map(a=>a.name); });
   const tbl0 = `<div class="panel"><div class="panel-head"><div><h2>${partnerAcc?'Số tiền giải ngân theo Đơn vị':'Ma trận Ngân hàng × Đơn vị (số tiền giải ngân)'}</h2>
     <div class="desc">${state.units.length} đơn vị hiện có · chỉ tính hồ sơ trạng thái "Đã giải ngân"${globalYearFilter?' · đang lọc theo '+escHtml(periodFilterDescText()):''}</div></div></div>
     <div class="panel-body flush"><div class="matrix-scroll"><table class="data matrix-fixed" id="bankAllocTable"></table></div></div></div>`;
@@ -7052,21 +7129,24 @@ function renewalAlertBadgeHTML(){
 
 function renderInsTransactions(c){
   const u = currentUser();
-  const lockedUnit = (u && u.role==='Nhân viên' && u.unit) ? u.unit : '';
+  const lockedUnits = (u && u.role==='Nhân viên') ? accountUnits(u) : [];
+  const lockedUnit = lockedUnits.length===1 ? lockedUnits[0] : '';
+  const lockedMulti = lockedUnits.length>1;
   if(lockedUnit) insTxUnitFilter = lockedUnit;
+  else if(lockedMulti && insTxUnitFilter && !lockedUnits.includes(insTxUnitFilter)) insTxUnitFilter = '';
   setTitle('Doanh số', state.insTransactions.length+' hợp đồng bảo hiểm — hoa hồng tự tính theo BHVC/BHDS của đúng NCC');
   const editable = canEdit('bh_transactions');
   c.innerHTML = `
     <div class="panel">
-      <div class="panel-head"><div><h2>Bộ lọc</h2><div class="desc">Xem theo đúng Đơn vị và/hoặc NCC bảo hiểm — áp dụng cho Sổ hợp đồng bên dưới, không ảnh hưởng gì tới việc ghi nhận mới</div></div>
-        <div class="mini-stats-row" id="itxSummaryStats"></div>
-      </div>
-      <div class="panel-body">
+      ${panelToggleHeadHTML('itxFilterPanel', 'Bộ lọc', 'Xem theo đúng Đơn vị và/hoặc NCC bảo hiểm — áp dụng cho Sổ hợp đồng bên dưới, không ảnh hưởng gì tới việc ghi nhận mới', `<div class="mini-stats-row" id="itxSummaryStats"></div>`, false, 'lọc')}
+      <div class="panel-body" ${panelBodyOpenAttr('itxFilterPanel', false)}>
         <div class="form-grid">
           <div class="field">
             <label>Đơn vị</label>
             ${lockedUnit
               ? `<input id="itxf_unit" value="${escAttr(lockedUnit)}" disabled>`
+              : lockedMulti
+              ? `<select id="itxf_unit"><option value="">Cả ${lockedUnits.length} đơn vị của bạn</option>${lockedUnits.map(x=>`<option value="${escAttr(x)}" ${insTxUnitFilter===x?'selected':''}>${escAttr(x)}</option>`).join('')}</select>`
               : `<input id="itxf_unit" list="itxf_unit_list" placeholder="Tất cả đơn vị..." value="${escAttr(insTxUnitFilter)}">${unitDatalistHTML('itxf_unit_list')}`}
           </div>
           <div class="field"><label>NCC bảo hiểm</label><input id="itxf_ins" list="itxf_ins_list" placeholder="Tất cả NCC bảo hiểm..." value="${escAttr(insTxInsurerFilter)}">
@@ -7078,13 +7158,15 @@ function renderInsTransactions(c){
     </div>
     ${editable ? `
     <div class="panel">
-      <div class="panel-head"><div><h2>Ghi nhận hợp đồng bảo hiểm</h2></div></div>
-      <div class="panel-body">
+      ${panelToggleHeadHTML('itxEntryPanel', 'Ghi nhận hợp đồng bảo hiểm', '', (lockedMulti ? `<span class="tag gold">Đơn vị của bạn: ${escHtml(lockedUnits.join(' + '))}</span>` : ''), false, 'nhập')}
+      <div class="panel-body" ${panelBodyOpenAttr('itxEntryPanel', false)}>
         <div class="form-grid">
           <div class="field"><label>Ngày</label><input id="itf_date" type="date" value="${todayISO()}"></div>
           <div class="field"><label>Đơn vị</label>
             ${lockedUnit
               ? `<input id="itf_unit" value="${escAttr(lockedUnit)}" disabled>`
+              : lockedMulti
+              ? `<select id="itf_unit">${lockedUnits.map(x=>`<option value="${escAttr(x)}">${escAttr(x)}</option>`).join('')}</select>`
               : `<input id="itf_unit" list="itf_unit_list" placeholder="Tên đơn vị">${unitDatalistHTML('itf_unit_list')}`}
           </div>
           <div class="field"><label>NCC bảo hiểm</label><input id="itf_ins" list="itf_ins_list" placeholder="Chọn NCC bảo hiểm">
@@ -7109,11 +7191,12 @@ function renderInsTransactions(c){
         <div><h2>Sổ hợp đồng bảo hiểm</h2><div class="desc" id="itxFilterNote"></div></div>
         <button class="btn btn-ghost" id="itxExportBtn">⬇ Xuất Excel</button>
       </div>
-      <div class="panel-body flush"><div class="tbl-wrap"><table class="data" id="itxTable"></table></div></div>
+      <div class="panel-body flush"><div class="tbl-wrap tbl-wrap-tall"><table class="data" id="itxTable"></table></div></div>
     </div>
   `;
+  wirePanelToggles(c);
   const unitFFilter = document.getElementById('itxf_unit');
-  if(unitFFilter && !lockedUnit) unitFFilter.addEventListener('input', ()=>{ insTxUnitFilter = unitFFilter.value; renderInsTxTable(editable); });
+  if(unitFFilter && !lockedUnit) unitFFilter.addEventListener(lockedMulti?'change':'input', ()=>{ insTxUnitFilter = unitFFilter.value; renderInsTxTable(editable); });
   document.getElementById('itxf_ins').addEventListener('input', ()=>{ insTxInsurerFilter = document.getElementById('itxf_ins').value; renderInsTxTable(editable); });
   document.getElementById('itxfClearBtn').addEventListener('click', ()=>{
     insTxInsurerFilter = '';
@@ -7129,7 +7212,7 @@ function renderInsTransactions(c){
       if(!ins){ toast(insName.trim() ? `Không tìm thấy NCC "${insName.trim()}" — chọn đúng tên có trong danh sách gợi ý` : 'Cần chọn NCC bảo hiểm trước'); return; }
       const amount = parseMoneyInput(document.getElementById('itf_amount').value);
       if(amount<=0){ toast('Nhập phí bảo hiểm thu'); return; }
-      const unit = lockedUnit || ensureUnit(document.getElementById('itf_unit').value);
+      const unit = lockedUnit || (lockedMulti ? document.getElementById('itf_unit').value : ensureUnit(document.getElementById('itf_unit').value));
       if(!unit){ toast('Nhập tên đơn vị trước'); return; }
       const status = document.getElementById('itf_status').value;
       const itxDate = document.getElementById('itf_date').value || todayISO();
@@ -7183,9 +7266,12 @@ function renderInsTransactions(c){
 function getFilteredInsTx(){
   const unitFilter = (insTxUnitFilter||'').trim().toLowerCase();
   const insFilter = (insTxInsurerFilter||'').trim().toLowerCase();
+  const me = currentUser();
+  const lockedUnits = (me && me.role==='Nhân viên') ? accountUnits(me) : [];
   const pf = partnerScopeFilter('insurerId');
   const all = (pf ? state.insTransactions.filter(pf) : state.insTransactions).slice().sort((a,b)=> b.date.localeCompare(a.date));
   return all.filter(t=>{
+    if(lockedUnits.length && !lockedUnits.includes(t.unit)) return false;
     if(unitFilter && !(t.unit||'').trim().toLowerCase().includes(unitFilter)) return false;
     if(insFilter){ const ins = insurerById(t.insurerId); if(!ins || !ins.name.trim().toLowerCase().includes(insFilter)) return false; }
     if(!periodFilterMatches(t.date)) return false;
@@ -7804,8 +7890,11 @@ function renewalStatusStampHTML(status){
 }
 function renderInsRenewal(c){
   const u = currentUser();
-  const lockedUnit = (u && u.role==='Nhân viên' && u.unit) ? u.unit : '';
+  const lockedUnits = (u && u.role==='Nhân viên') ? accountUnits(u) : [];
+  const lockedUnit = lockedUnits.length===1 ? lockedUnits[0] : '';
+  const lockedMulti = lockedUnits.length>1;
   if(lockedUnit) insRenewalUnitFilter = lockedUnit;
+  else if(lockedMulti && insRenewalUnitFilter && !lockedUnits.includes(insRenewalUnitFilter)) insRenewalUnitFilter = '';
   const isAdmin = currentRole()==='Admin';
   const canManageLinks = currentRole()==='Admin' || currentRole()==='Quản lý';
   const alertDays = renewalAlertDays();
@@ -7831,6 +7920,8 @@ function renderInsRenewal(c){
             <label>Đơn vị</label>
             ${lockedUnit
               ? `<input id="irwf_unit" value="${escAttr(lockedUnit)}" disabled>`
+              : lockedMulti
+              ? `<select id="irwf_unit"><option value="">Cả ${lockedUnits.length} đơn vị của bạn</option>${lockedUnits.map(x=>`<option value="${escAttr(x)}" ${insRenewalUnitFilter===x?'selected':''}>${escAttr(x)}</option>`).join('')}</select>`
               : `<input id="irwf_unit" list="irwf_unit_list" placeholder="Tất cả đơn vị..." value="${escAttr(insRenewalUnitFilter)}">${unitDatalistHTML('irwf_unit_list')}`}
           </div>
           <div class="field"><label>Ngân hàng</label><input id="irwf_bank" list="irwf_bank_list" placeholder="Tất cả ngân hàng..." value="${escAttr(insRenewalBankFilter)}">
@@ -7858,7 +7949,7 @@ function renderInsRenewal(c){
     </div>
   `;
   wireInfoToggles(c);
-  document.getElementById('irwf_unit').addEventListener('input', e=>{ insRenewalUnitFilter=e.target.value; drawRenewalTable(); });
+  document.getElementById('irwf_unit').addEventListener(lockedMulti?'change':'input', e=>{ insRenewalUnitFilter=e.target.value; drawRenewalTable(); });
   document.getElementById('irwf_bank').addEventListener('input', e=>{ insRenewalBankFilter=e.target.value; drawRenewalTable(); });
   document.getElementById('irwf_status').addEventListener('change', e=>{ insRenewalStatusFilter=e.target.value; drawRenewalTable(); });
   document.getElementById('irwfClearBtn').addEventListener('click', ()=>{
@@ -7895,6 +7986,7 @@ function renderInsRenewal(c){
 
   function currentRenewalRows(){
     return allRows.filter(r=>{
+      if(lockedUnits.length && !lockedUnits.includes(r.t.unit)) return false;
       if(insRenewalUnitFilter && r.t.unit.toLowerCase()!==insRenewalUnitFilter.trim().toLowerCase()) return false;
       if(insRenewalBankFilter){
         const b = bankById(r.t.bankId);
@@ -8054,14 +8146,14 @@ function renderComingSoon(c, t){
 
 /* ---------------------------- Cài đặt ---------------------------- */
 function unitUsage(u){
-  const accountsUsing = state.accounts.filter(a=>a.unit===u).length;
+  const accountsUsing = state.accounts.filter(a=>accountUnits(a).includes(u)).length;
   const txUsing = state.transactions.filter(t=>t.unit===u).length;
   return {accountsUsing, txUsing, total: accountsUsing+txUsing};
 }
 function deleteUnit(u){
   state.units = state.units.filter(x=>x!==u);
-  // gỡ gán khỏi các tài khoản đang phụ trách đơn vị này (không xoá tài khoản, chỉ gỡ liên kết)
-  state.accounts.forEach(a=>{ if(a.unit===u) a.unit=''; });
+  // gỡ gán khỏi các tài khoản đang phụ trách đơn vị này (không xoá tài khoản, chỉ gỡ liên kết) — hoạt động đúng cả khi tài khoản đang phụ trách nhiều đơn vị (chỉ gỡ đúng đơn vị bị xoá, giữ nguyên các đơn vị còn lại)
+  state.accounts.forEach(a=>{ if(accountUnits(a).includes(u)) setAccountUnits(a, accountUnits(a).filter(x=>x!==u)); });
   logActivity('delete','Cài đặt', `Xoá đơn vị "${u}" khỏi danh sách (gỡ liên kết khỏi các tài khoản đang phụ trách)`);
 }
 /* ---------------------------- Lưu trữ & dọn dữ liệu cũ (Cài đặt, chỉ Admin) ----------------------------
@@ -8691,6 +8783,7 @@ function renderTrash(c){
 }
 
 let accountsSelected = new Set(); // chọn tạm để xoá hàng loạt — reset mỗi lần mở lại trang Quản trị tài khoản
+let unitPickerOpenIds = new Set(); // các dòng tài khoản đang mở khung tick chọn đơn vị phụ trách — không reset khi vẽ lại trang, chỉ đóng khi bấm "Xong"
 // Bấm 1 ô trong bảng "Phân quyền theo vai trò" -> bật/tắt role đó cho TẤT CẢ key gộp trong dòng, đồng thời
 // (áp dụng ngay, không cần nút Lưu riêng — nhất quán với cách các cài đặt khác trong app hoạt động).
 function togglePermForRole(keys, role, grant){
@@ -8759,10 +8852,12 @@ function renderAccounts(c){
           <div class="field" id="af_role_field"><label>Vai trò</label>
             <select id="af_role">${ROLES.filter(r=>r!=='Đối tác').map(r=>`<option>${r}</option>`).join('')}</select>
           </div>
-          <div class="field" id="af_unit_field">
+          <div class="field" id="af_unit_field" style="grid-column:1/-1">
             <label>Đơn vị phụ trách</label>
             <input id="af_unit" list="af_unit_list" placeholder="Gõ tên đơn vị thực tế...">
             ${unitDatalistHTML('af_unit_list')}
+            <div class="helper" style="margin-top:6px">Đây vẫn là đơn vị chính như cũ — nếu chỉ gõ 1 đơn vị ở đây, tài khoản hoạt động y hệt trước giờ. Cần cho tài khoản này xem thêm đơn vị khác? Tick thêm bên dưới (tuỳ chọn).</div>
+            <div id="af_extra_units_box" style="display:flex;flex-wrap:wrap;gap:10px 16px;margin-top:8px"></div>
           </div>
           <div class="field">
             <label>Mật khẩu (tuỳ chọn)</label>
@@ -8859,6 +8954,15 @@ function renderAccounts(c){
   kindSel.addEventListener('change', applyKindUI);
   partnerModuleSel.addEventListener('change', refreshPartnerEntityOptions);
   applyKindUI();
+  function renderAfExtraUnits(){
+    const box = document.getElementById('af_extra_units_box');
+    if(!box) return;
+    box.innerHTML = state.units.length
+      ? state.units.map(u=>`<label style="display:flex;align-items:center;gap:6px;font-weight:400;cursor:pointer;font-size:12.5px">
+          <input type="checkbox" class="af_extra_unit" value="${escAttr(u)}"> ${escHtml(u)}</label>`).join('')
+      : `<span class="helper">Chưa có đơn vị nào trong hệ thống — gõ đơn vị chính ở ô trên trước.</span>`;
+  }
+  renderAfExtraUnits();
 
   document.getElementById('addAccountBtn').addEventListener('click', async ()=>{
     const name = document.getElementById('af_name').value.trim();
@@ -8875,7 +8979,7 @@ function renderAccounts(c){
       const partnerType = partnerModuleSel.value;
       const partnerId = partnerEntitySel.value;
       if(!partnerId){ toast('Chưa có đối tác nào trong module này để gán — thêm NCC/Ngân hàng/Bảo hiểm trước'); return; }
-      const acc = {id:uid('u'), name, username, role:'Đối tác', unit:'', modules:[partnerType], partnerType, partnerId, email, createdAt: todayISO()};
+      const acc = {id:uid('u'), name, username, role:'Đối tác', unit:'', units:[], modules:[partnerType], partnerType, partnerId, email, createdAt: todayISO()};
       await setAccountPassword(acc, password);
       state.accounts.push(acc);
       const modInfo = MODULES.find(m=>m.id===partnerType);
@@ -8886,14 +8990,17 @@ function renderAccounts(c){
       return;
     }
     const role = document.getElementById('af_role').value;
-    const unit = ensureUnit(document.getElementById('af_unit').value);
+    const primaryUnit = document.getElementById('af_unit').value.trim();
+    const extraUnits = Array.from(document.querySelectorAll('.af_extra_unit:checked')).map(el=>el.value);
     const modules = Array.from(document.querySelectorAll('.af_module:checked')).map(el=>el.value);
-    const acc = {id:uid('u'), name, username, role, unit, modules, email, createdAt: todayISO()};
+    const acc = {id:uid('u'), name, username, role, unit:'', units:[], modules, email, createdAt: todayISO()};
+    setAccountUnits(acc, [primaryUnit, ...extraUnits]);
     await setAccountPassword(acc, password);
     state.accounts.push(acc);
     const modLabel = MODULES.filter(m=>modules.includes(m.id)).map(m=>m.label).join(', ') || '(không module nào)';
-    logActivity('create','Tài khoản', `Thêm tài khoản "${name}" (đăng nhập: ${username}; ${role}${unit?', '+unit:''}${password?', có mật khẩu':''}; module: ${modLabel})`);
-    toast('Đã thêm tài khoản'+(unit?` — đơn vị "${unit}"`:''));
+    const unitLabel = accountUnits(acc).join(' + ');
+    logActivity('create','Tài khoản', `Thêm tài khoản "${name}" (đăng nhập: ${username}; ${role}${unitLabel?', '+unitLabel:''}${password?', có mật khẩu':''}; module: ${modLabel})`);
+    toast('Đã thêm tài khoản'+(unitLabel?` — đơn vị "${unitLabel}"`:''));
     renderAll();
   });
 
@@ -8907,9 +9014,23 @@ function renderAccounts(c){
         <td><input class="cell-edit" data-field="username" data-id="${a.id}" value="${escAttr(a.username||'')}" placeholder="— Chưa đặt (dùng Tên) —" style="min-width:130px"></td>
         <td><input class="cell-edit" type="email" data-field="email" data-id="${a.id}" value="${escAttr(a.email||'')}" placeholder="— Không có —" style="min-width:150px"></td>
         <td><select class="cell-edit" data-field="role" data-id="${a.id}">${ROLES.filter(r=>r!=='Đối tác'||a.role==='Đối tác').map(r=>`<option ${a.role===r?'selected':''}>${r}</option>`).join('')}</select></td>
-        <td>
-          <input class="cell-edit" data-field="unit" data-id="${a.id}" list="rowunit_${a.id}" value="${escAttr(a.unit||'')}" placeholder="— Không gán —">
-          ${unitDatalistHTML('rowunit_'+a.id)}
+        <td style="min-width:170px">
+          ${a.role==='Đối tác' ? `<span class="helper">— Không áp dụng (Đối tác) —</span>` : unitPickerOpenIds.has(a.id) ? `
+          <div style="display:flex;flex-direction:column;gap:3px;font-size:11.5px;white-space:nowrap">
+            ${state.units.length ? state.units.map(u=>`<label style="display:flex;align-items:center;gap:5px;cursor:pointer">
+              <input type="checkbox" class="unit-toggle" data-acc="${a.id}" data-unit="${escAttr(u)}" ${accountUnits(a).includes(u)?'checked':''}> ${escHtml(u)}
+            </label>`).join('') : `<span class="helper">Chưa có đơn vị nào — thêm ở ô "Thêm tài khoản" phía trên hoặc tab Cài đặt</span>`}
+          </div>
+          <div style="display:flex;gap:4px;margin-top:6px">
+            <input class="cell-edit" data-newunit-id="${a.id}" list="rowunit_${a.id}" placeholder="+ Đơn vị mới..." style="min-width:110px;font-size:11.5px">
+            ${unitDatalistHTML('rowunit_'+a.id)}
+          </div>
+          <div class="helper" style="margin-top:4px">Tick 1 hoặc nhiều đơn vị — tick 2+ để tài khoản này xem được cả 2 đơn vị.</div>
+          <button type="button" class="row-del" data-unitpicker-close="${a.id}" style="margin-top:6px;padding:2px 8px;color:var(--forest)">✓ Xong</button>` : `
+          <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+            <span>${accountUnits(a).length ? escHtml(accountUnits(a).join(' + ')) : `<em style="color:var(--slate);font-style:normal">— Không gán —</em>`}</span>
+            <button type="button" class="row-del" data-unitpicker-open="${a.id}" title="Sửa đơn vị phụ trách">✎</button>
+          </div>`}
         </td>
         <td>
           ${a.role==='Đối tác' ? `
@@ -8997,6 +9118,45 @@ function renderAccounts(c){
       renderAll();
     });
   });
+  tbl.querySelectorAll('[data-unitpicker-open]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      unitPickerOpenIds.add(btn.dataset.unitpickerOpen);
+      renderAll();
+    });
+  });
+  tbl.querySelectorAll('[data-unitpicker-close]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      unitPickerOpenIds.delete(btn.dataset.unitpickerClose);
+      renderAll();
+    });
+  });
+  tbl.querySelectorAll('.unit-toggle').forEach(cb=>{
+    cb.addEventListener('change', ()=>{
+      const acc = state.accounts.find(a=>a.id===cb.dataset.acc);
+      if(!acc) return;
+      let units = accountUnits(acc).slice();
+      if(cb.checked){ if(!units.includes(cb.dataset.unit)) units.push(cb.dataset.unit); }
+      else { units = units.filter(x=>x!==cb.dataset.unit); }
+      const before = accountUnits(acc).join(' + ') || '(chưa gán)';
+      setAccountUnits(acc, units);
+      const after = accountUnits(acc).join(' + ') || '(chưa gán)';
+      logActivity('update','Tài khoản', `Sửa tài khoản "${acc.name}" (đơn vị phụ trách: "${before}" → "${after}")`);
+      renderAll();
+    });
+  });
+  tbl.querySelectorAll('[data-newunit-id]').forEach(input=>{
+    input.addEventListener('change', ()=>{
+      const acc = state.accounts.find(a=>a.id===input.dataset.newunitId);
+      const name = input.value.trim();
+      if(!acc || !name) return;
+      const before = accountUnits(acc).join(' + ') || '(chưa gán)';
+      setAccountUnits(acc, [...accountUnits(acc), name]);
+      const after = accountUnits(acc).join(' + ') || '(chưa gán)';
+      logActivity('update','Tài khoản', `Sửa tài khoản "${acc.name}" (đơn vị phụ trách: "${before}" → "${after}")`);
+      toast(`Đã gán thêm đơn vị "${name}" cho "${acc.name}"`);
+      renderAll();
+    });
+  });
   tbl.querySelectorAll('.partner-entity-select').forEach(sel=>{
     sel.addEventListener('change', ()=>{
       const acc = state.accounts.find(a=>a.id===sel.dataset.acc);
@@ -9069,7 +9229,7 @@ function renderAccounts(c){
     });
   });
 
-  const assignedUnits = new Set(state.accounts.map(a=>a.unit).filter(Boolean));
+  const assignedUnits = new Set(state.accounts.flatMap(a=>accountUnits(a)));
   const unassigned = state.units.filter(u=>!assignedUnits.has(u));
   const box = document.getElementById('unassignedUnitsBox');
   box.innerHTML = state.units.length===0
