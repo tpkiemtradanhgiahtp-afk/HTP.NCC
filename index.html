@@ -2527,6 +2527,7 @@ function openPolicyTargetsModal(p, editable){
   const bodyHtml = units.length===0 ? `
     <div class="empty" style="padding:20px 0;"><div class="big">Chưa có đơn vị nào</div>Thêm đơn vị ở tab Cài đặt trước khi phân bổ chỉ tiêu.</div>
   ` : `
+    ${editable ? '' : lockedNote('Bạn đang xem ở chế độ chỉ đọc — không sửa được số phân bổ ở đây.')}
     <div class="contract-list" style="margin-bottom:14px;">
       ${units.map(u=>{
         const actual = allTimeRevenue(p.supplierId, u);
@@ -2632,10 +2633,11 @@ function openUnitScopeModal(p, editable){
   const bodyHtml = units.length===0 ? `
     <div class="empty" style="padding:20px 0;"><div class="big">Chưa có đơn vị nào</div>Thêm đơn vị ở tab Cài đặt trước khi gán nhóm.</div>
   ` : `
+    ${editable ? '' : lockedNote('Bạn đang xem ở chế độ chỉ đọc — không tick/sửa được nhóm áp dụng ở đây.')}
     <div class="helper" style="margin-bottom:12px">${helperText}</div>
-    <div style="display:flex; flex-wrap:wrap; gap:8px 14px; padding:10px; border:1px solid var(--line); border-radius:7px;">
+    <div style="display:flex; flex-wrap:wrap; gap:8px 14px; padding:10px; border:1px solid var(--line); border-radius:7px; ${editable?'':'opacity:0.6'}">
       ${units.map(u=>`
-        <label style="display:flex; align-items:center; gap:6px; font-size:12.5px; font-weight:400; cursor:${editable?'pointer':'default'};">
+        <label style="display:flex; align-items:center; gap:6px; font-size:12.5px; font-weight:400; cursor:${editable?'pointer':'not-allowed'};">
           <input type="checkbox" class="scope-unit-chk" value="${escAttr(u)}" style="width:auto;" ${scope.includes(u)?'checked':''} ${editable?'':'disabled'}>${escAttr(u)}
         </label>`).join('')}
     </div>
