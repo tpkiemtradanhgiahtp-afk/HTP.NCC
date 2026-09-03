@@ -567,13 +567,17 @@
   .matrix-scroll table.data thead tr:not(:first-child) th{ z-index:4; }
   .matrix-scroll table.data thead tr:not(:first-child) th:first-child{ z-index:5; }
   /* Tiêu đề/tên dài trong ma trận NCC/Ngân hàng/Bảo hiểm × Đơn vị: giới hạn chiều rộng, xuống 2 dòng có ellipsis,
-     đầy đủ tên xem qua tooltip (title) khi rê chuột — tránh bảng bị kéo quá rộng làm mất phần hiển thị. */
+     đầy đủ tên xem qua tooltip (title) khi rê chuột — tránh bảng bị kéo quá rộng làm mất phần hiển thị.
+     max-width chỉ nên đủ LỚN để không ép chữ xuống dòng oan uổng khi bảng có ít cột đơn vị (VD tài khoản Đối
+     tác chỉ có đúng 1 dòng NCC) — mốc 128px cũ quá chật khiến cả bảng bị "co lại" giữa trang dù panel còn
+     rất nhiều khoảng trống thừa bên phải; nới lên 220px để cột tự giãn lấp khoảng trống đó khi có ít cột,
+     đồng thời vẫn còn min-width + ellipsis 2 dòng để không phá layout khi có NHIỀU đơn vị/tên rất dài. */
   .matrix-scroll table.data th.unit-col{
-    max-width:128px; min-width:100px; white-space:normal; line-height:1.35; font-size:10px;
+    max-width:220px; min-width:100px; white-space:normal; line-height:1.35; font-size:10px;
     vertical-align:bottom; text-align:center;
   }
   .matrix-scroll table.data th.unit-col .unit-col-inner{
-    display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; text-overflow:ellipsis;
+    display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; text-overflow:ellipsis;
   }
   /* Cột tên NCC/Ngân hàng/Hãng bảo hiểm (cột đầu, cố định khi cuộn ngang): rộng rãi hơn và
      xuống dòng đầy đủ (không ellipsis) để không bao giờ bị cắt mất tên — chấp nhận hàng cao hơn
@@ -5243,16 +5247,11 @@ function renderAllocation(c){
     return {s, perUnit, total, share, topUnit: total>0?state.units[topIdx]:'—', targetPolicy};
   });
   tbl.innerHTML = `
-    ${matrixColgroupHTML(state.units.length, [8, 11, 13, 16])}
+    ${matrixColgroupHTML(state.units.length, partnerAcc ? [20, 20] : [8, 11, 13, 16])}
     <thead>
     <tr>
       <th>NCC</th>${state.units.map(u=>matrixUnitHeaderCell(u)).join('')}
       <th class="num">Tổng</th>${partnerAcc?'':'<th class="num">Tỷ trọng lớn nhất</th>'}<th>Đơn vị chính</th>${partnerAcc?'':'<th>Gợi ý</th>'}
-    </tr>
-    <tr style="background:#fff">
-      <th style="font-weight:400;color:var(--slate);font-size:10px">Người phụ trách</th>
-      ${state.units.map(u=>`<th class="num unit-col" style="font-weight:400;color:var(--slate);font-size:10px;text-transform:none" title="${escAttr(unitOwners[u].join(', '))}"><span class="unit-col-inner">${escHtml(unitOwners[u][0]||'—')}</span></th>`).join('')}
-      <th></th>${partnerAcc?'':'<th></th>'}<th></th>${partnerAcc?'':'<th></th>'}
     </tr>
     </thead>
     <tbody>${rows.map(r=>`
