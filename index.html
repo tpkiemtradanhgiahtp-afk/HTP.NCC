@@ -3297,6 +3297,35 @@ function sumRevenue(supplierId, from, to, unitFilter, excludeUnits){
 }
 function allTimeRevenue(supplierId, unit){ return sumRevenue(supplierId, null, null, unit); }
 
+/* Ước tính nhanh số CK cho 1 danh sách chứng từ NCC đang hiển thị (VD: đúng theo Bộ lọc Đơn vị/NCC ở
+   tab Doanh số) — gom theo từng NCC, áp đúng tỷ lệ mốc/phương pháp tính hiện hành (currentTier/
+   incrementalDiscount, y hệt cơ chế Đối soát CK dùng) lên đúng tổng doanh số ĐANG HIỂN THỊ của NCC đó.
+   LƯU Ý: đây là số ước tính nhanh trên đúng danh sách đang lọc — có thể lệch với số CHÍNH THỨC ở tab
+   "Đối soát CK" của từng NCC, vì Đối soát CK còn tính thêm Thưởng thêm, tôn trọng đúng khoảng Từ ngày–
+   Đến ngày của cả kỳ (không phải bộ lọc tuỳ ý ở đây) và tách riêng theo từng Nhóm áp dụng nếu NCC có
+   chia nhóm mốc theo đơn vị. Số ở đây chỉ để tham khảo nhanh, không dùng để chốt kỳ đối soát. */
+function estimatedCkForTxList(list){
+  const bySupplier = {};
+  list.forEach(t=>{
+    const net = (Number(t.gross)||0) - (Number(t.returns)||0);
+    bySupplier[t.supplierId] = (bySupplier[t.supplierId]||0) + net;
+  });
+  const ref = toDate(state.reportDate) || new Date();
+  let total = 0;
+  Object.keys(bySupplier).forEach(supplierId=>{
+    const rev = bySupplier[supplierId];
+    if(rev<=0) return;
+    const method = calcMethodOf(supplierId, ref);
+    if(method==='Chỉ phần vượt mốc'){
+      total += incrementalDiscount(supplierId, rev, ref);
+    } else {
+      const tier = currentTier(supplierId, rev, ref);
+      total += tier ? rev*tier.rate : 0;
+    }
+  });
+  return total;
+}
+
 /* ---------------------------- Nhóm áp dụng mốc CK theo đơn vị (tuỳ chọn, mặc định KHÔNG dùng) ----------------------------
    Bình thường 1 NCC chỉ có 1 đường mốc CK duy nhất, tính trên TỔNG doanh số mọi đơn vị — hành vi này giữ
    NGUYÊN VẸN cho mọi NCC không dùng tính năng này (p.unitScope để trống = mặc định).
@@ -5037,8 +5066,10 @@ function renderTransactions(c){
   if(sumBox){
     const list = getFilteredTx();
     const totalNet = list.reduce((s,t)=>s+(Number(t.gross)||0)-(Number(t.returns)||0), 0);
+    const estCk = estimatedCkForTxList(list);
     sumBox.innerHTML = `
       <div class="mini-stat"><div class="mini-stat-label">Tổng doanh số tính CK</div><div class="mini-stat-value">${fmt(totalNet)}đ</div></div>
+      <div class="mini-stat"><div class="mini-stat-label">Ước tính CK<span title="Ước tính nhanh theo đúng tỷ lệ mốc hiện hành, trên đúng danh sách đang lọc — số chính thức xem ở tab Đối soát CK" style="cursor:help">ⓘ</span></div><div class="mini-stat-value">${fmt(estCk)}đ</div></div>
       <div class="mini-stat"><div class="mini-stat-label">Số chứng từ</div><div class="mini-stat-value">${list.length}</div></div>`;
   }
 }
@@ -6099,8 +6130,10 @@ function renderBankTransactions(c){
   if(sumBox){
     const list = getFilteredBankTx();
     const totalLoan = list.reduce((s,t)=>s+(Number(t.loanAmount)||0), 0);
+    const totalComm = list.reduce((s,t)=>s+bankTxCommission(t), 0);
     sumBox.innerHTML = `
       <div class="mini-stat"><div class="mini-stat-label">Tổng số tiền vay</div><div class="mini-stat-value">${fmt(totalLoan)}đ</div></div>
+      <div class="mini-stat"><div class="mini-stat-label">Hoa hồng<span title="Chỉ tính hồ sơ trạng thái Đã giải ngân, theo đúng chính sách của ngân hàng đó" style="cursor:help">ⓘ</span></div><div class="mini-stat-value">${fmt(totalComm)}đ</div></div>
       <div class="mini-stat"><div class="mini-stat-label">Số hồ sơ</div><div class="mini-stat-value">${list.length}</div></div>`;
   }
 }
@@ -7258,8 +7291,10 @@ function renderInsTransactions(c){
   if(sumBox){
     const list = getFilteredInsTx();
     const totalPremium = list.reduce((s,t)=>s+(Number(t.premiumAmount)||0), 0);
+    const totalComm = list.reduce((s,t)=>s+insTxCommission(t), 0);
     sumBox.innerHTML = `
       <div class="mini-stat"><div class="mini-stat-label">Tổng phí bảo hiểm thu</div><div class="mini-stat-value">${fmt(totalPremium)}đ</div></div>
+      <div class="mini-stat"><div class="mini-stat-label">Hoa hồng<span title="Chỉ tính hợp đồng trạng thái Đã cấp đơn, theo đúng tỷ lệ BHVC/BHDS của NCC đó" style="cursor:help">ⓘ</span></div><div class="mini-stat-value">${fmt(totalComm)}đ</div></div>
       <div class="mini-stat"><div class="mini-stat-label">Số hợp đồng</div><div class="mini-stat-value">${list.length}</div></div>`;
   }
 }
