@@ -974,7 +974,7 @@ const BRANCH_RECORD_FIELDS = {
 const BRANCH_META_FIELDS = {
   ncc:    ['nextSupplierNo','monitoring','reportDate'],
   nh:     ['nextBankNo'],
-  bh:     ['insAllocAlertThreshold','nextInsNo','insRenewalAlertDays','insAllocMonthLocks'],
+  bh:     ['insAllocAlertThreshold','nextInsNo','insRenewalAlertDays','insRenewalAutoSnoozeDays','insAllocMonthLocks'],
   shared: ['units','driveUploadUrl','driveUploadSecret','emailNotifyEnabled','editPerms'],
 };
 // Toàn bộ field của 1 nhánh (gộp cả 2 loại trên) — dùng ở những chỗ chỉ cần biết "nhánh này có field gì"
@@ -1011,6 +1011,66 @@ async function exportToExcel(filename, sheets){
     });
     window.XLSX.writeFile(wb, filename);
   }catch(e){ console.error('Xuất Excel thất bại', e); toast('Xuất Excel thất bại — kiểm tra kết nối mạng rồi thử lại'); }
+}
+// Đọc 1 file Excel người dùng chọn -> trả về mảng object (mỗi phần tử = 1 dòng dữ liệu, key = đúng tên cột
+// ở hàng tiêu đề, dòng trống ở giữa file bị bỏ qua). cellDates:true để Excel tự trả Date thay vì số serial
+// khi ô đó được định dạng ngày tháng — parseImportDate() bên dưới xử lý tiếp mọi kiểu còn lại.
+async function readExcelRows(file){
+  await ensureXLSX();
+  const buf = await file.arrayBuffer();
+  const wb = window.XLSX.read(buf, {type:'array', cellDates:true});
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  if(!ws) return [];
+  return window.XLSX.utils.sheet_to_json(ws, {defval:''}).filter(row=>
+    Object.values(row).some(v=> String(v).trim()!==''));
+}
+// Chuẩn hoá 1 ô "ngày" đọc từ Excel về dạng 'YYYY-MM-DD' — chấp nhận Date (Excel định dạng ngày sẵn), số
+// serial ngày Excel (ô bị lưu dạng số thô), hoặc chuỗi kiểu YYYY-MM-DD / DD/MM/YYYY / DD-MM-YYYY người dùng
+// gõ tay. Trả về '' nếu không đọc được, để nơi gọi tự quyết định báo lỗi hay dùng ngày mặc định.
+function parseImportDate(val){
+  if(val==null || val==='') return '';
+  if(val instanceof Date && !isNaN(val)) return val.toISOString().slice(0,10);
+  if(typeof val === 'number'){
+    if(window.XLSX && window.XLSX.SSF){
+      const d = window.XLSX.SSF.parse_date_code(val);
+      if(d) return `${String(d.y).padStart(4,'0')}-${String(d.m).padStart(2,'0')}-${String(d.d).padStart(2,'0')}`;
+    }
+    return '';
+  }
+  const s = String(val).trim();
+  let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if(m) return `${m[1]}-${m[2].padStart(2,'0')}-${m[3].padStart(2,'0')}`;
+  m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if(m) return `${m[3]}-${m[1].padStart(2,'0')}-${m[2].padStart(2,'0')}`;
+  m = s.match(/^(\d{1,2})-(\d{1,2})-(\d{4})/);
+  if(m) return `${m[3]}-${m[1].padStart(2,'0')}-${m[2].padStart(2,'0')}`;
+  return '';
+}
+// Hiện modal xem trước kết quả đọc file Excel trước khi thực sự ghi vào dữ liệu — luôn bắt xác nhận tay,
+// tuyệt đối không tự động ghi thẳng, vì đây là thao tác ghi HÀNG LOẠT khó undo từng dòng nếu sai sót.
+// summaryRows: mảng object phẳng để hiển thị bảng xem trước (giới hạn hiển thị, nhưng import đủ toàn bộ).
+// errors: mảng chuỗi mô tả các dòng bị bỏ qua (thiếu dữ liệu / không khớp danh mục...).
+function openImportPreviewModal(title, summaryRows, errors, onConfirm){
+  const previewCols = summaryRows.length ? Object.keys(summaryRows[0]) : [];
+  const body = `
+    <div class="helper" style="margin-bottom:10px">
+      Đọc được <b>${summaryRows.length}</b> dòng hợp lệ sẽ được thêm mới${errors.length ? `, <b style="color:var(--rust)">${errors.length} dòng bị bỏ qua</b> (xem chi tiết bên dưới)` : ''}.
+      Đây là thao tác ghi hàng loạt — kiểm tra kỹ bảng xem trước rồi mới bấm xác nhận.
+    </div>
+    ${summaryRows.length ? `<div class="tbl-wrap tbl-wrap-tall" style="max-height:320px"><table class="data">
+      <thead><tr>${previewCols.map(k=>`<th class="wrap">${escHtml(k)}</th>`).join('')}</tr></thead>
+      <tbody>${summaryRows.slice(0,200).map(r=>`<tr>${previewCols.map(k=>`<td class="wrap">${escHtml(String(r[k]??''))}</td>`).join('')}</tr>`).join('')}</tbody>
+    </table></div>${summaryRows.length>200 ? `<div class="helper">... và ${summaryRows.length-200} dòng khác (vẫn được nhập đủ khi xác nhận)</div>` : ''}` : ''}
+    ${errors.length ? `<div class="helper" style="margin-top:10px;color:var(--rust)">Dòng bị bỏ qua:<br>${errors.slice(0,50).map(e=>escHtml(e)).join('<br>')}${errors.length>50?`<br>... và ${errors.length-50} lỗi khác`:''}</div>` : ''}
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+      <button class="btn btn-ghost" id="importCancelBtn">Huỷ</button>
+      <button class="btn btn-primary" id="importConfirmBtn" ${summaryRows.length?'':'disabled'}>+ Xác nhận nhập ${summaryRows.length} hồ sơ</button>
+    </div>`;
+  openModal(title, '', body, (bodyEl)=>{
+    bodyEl.querySelector('#importCancelBtn').addEventListener('click', closeModal);
+    const okBtn = bodyEl.querySelector('#importConfirmBtn');
+    if(okBtn) okBtn.addEventListener('click', ()=>{ closeModal(); onConfirm(); });
+  });
 }
 async function ensureFirebaseSDK(){
   if(window.firebase && window.firebase.database) return;
@@ -2811,6 +2871,7 @@ function seedState(){
     insMonthlyRevenue: [], // {id, insurerId, month:'YYYY-MM', serviceAmount, note, updatedBy, updatedAt} — DT dịch vụ/sửa chữa nhập tay theo hãng theo tháng
     insAllocAlertThreshold: 0.05, // ngưỡng cảnh báo chênh lệch (Thực tế − Đề xuất tỷ lệ bán), dạng phân số — chỉ Admin sửa được
     insRenewalAlertDays: 45, // hồ sơ còn ≤ số ngày này tới mốc tái tục -> tính là "Sắp đến hạn" — chỉ Admin sửa được
+    insRenewalAutoSnoozeDays: 15, // quá hạn quá số ngày này mà chưa tái tục -> tự dời mốc sang đúng 1 năm sau, không cần Admin tự tay Tạm ẩn — chỉ Admin sửa được
     insAllocMonthLocks: {}, // {'YYYY-MM': {locked, lockedBy, lockedAt}} — Admin "chốt" tỷ lệ phân bổ theo tháng, xem isInsAllocMonthLocked()
     nextInsNo: insurers.length+1,
     driveUploadUrl: '', // URL Web App của Google Apps Script dùng để upload ảnh/PDF hợp đồng lên Drive — chỉ Admin sửa (Cài đặt)
@@ -6054,7 +6115,10 @@ function renderBankTransactions(c){
     <div class="panel">
       <div class="panel-head">
         <div><h2>Sổ hồ sơ vay</h2><div class="desc" id="btxFilterNote"></div></div>
-        <button class="btn btn-ghost" id="btxExportBtn">⬇ Xuất Excel</button>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          ${editable ? `<label class="btn btn-ghost" style="cursor:pointer">⬆ Nhập Excel<input id="btxImportFile" type="file" accept=".xlsx,.xls" style="display:none"></label>` : ''}
+          <button class="btn btn-ghost" id="btxExportBtn">⬇ Xuất Excel</button>
+        </div>
       </div>
       <div class="panel-body flush"><div class="tbl-wrap tbl-wrap-tall"><table class="data" id="btxTable"></table></div></div>
     </div>
@@ -6126,6 +6190,62 @@ function renderBankTransactions(c){
     });
     exportToExcel('DoanhSo_NganHang_'+todayISO()+'.xlsx', [{name:'Doanh số NH', rows}]);
   });
+  if(editable){
+    document.getElementById('btxImportFile').addEventListener('change', async (e)=>{
+      const file = e.target.files[0];
+      e.target.value = '';
+      if(!file) return;
+      let rawRows;
+      try{ rawRows = await readExcelRows(file); }
+      catch(err){ console.error(err); toast('Không đọc được file — kiểm tra đúng định dạng .xlsx/.xls'); return; }
+      if(rawRows.length===0){ toast('File không có dữ liệu'); return; }
+      const toInsert = []; const errors = []; const previewRows = [];
+      rawRows.forEach((row, idx)=>{
+        const line = `Dòng ${idx+2}`;
+        const bankName = String(row['Ngân hàng']||'').trim();
+        const bank = state.banks.find(x=>x.name.trim().toLowerCase()===bankName.toLowerCase());
+        if(!bank){ errors.push(`${line}: không tìm thấy ngân hàng "${bankName}"`); return; }
+        const amount = parseMoneyInput(row['Số tiền vay']);
+        if(amount<=0){ errors.push(`${line}: thiếu hoặc sai "Số tiền vay"`); return; }
+        let unit;
+        if(lockedUnit) unit = lockedUnit;
+        else if(lockedMulti){
+          const raw = String(row['Đơn vị']||'').trim();
+          unit = lockedUnits.find(x=>x.toLowerCase()===raw.toLowerCase());
+          if(!unit){ errors.push(`${line}: "Đơn vị" phải là 1 trong: ${lockedUnits.join(', ')}`); return; }
+        } else {
+          unit = ensureUnit(row['Đơn vị']);
+          if(!unit){ errors.push(`${line}: thiếu "Đơn vị"`); return; }
+        }
+        const date = parseImportDate(row['Ngày']) || todayISO();
+        const statusRaw = String(row['Trạng thái']||'').trim();
+        const status = BANK_TX_STATUSES.find(s=>s.toLowerCase()===statusRaw.toLowerCase()) || 'Đang xử lý';
+        const product = String(row['Gói vay']||'').trim() || DEFAULT_BANK_PRODUCT;
+        if(currentRole()!=='Admin'){
+          const lockR = lockingReconOf({bankId:bank.id, date}, state.bankReconciliations, 'bankId');
+          if(lockR){ errors.push(`${line}: ngày ${date} thuộc kỳ đối soát "${lockR.period}" đã chốt với ${bank.name} — chỉ Admin nhập được`); return; }
+        }
+        const rec = {
+          id: uid('bt'), date, unit, bankId: bank.id, product,
+          customer: String(row['Khách hàng']||'').trim(),
+          phone: String(row['SĐT']||'').trim(),
+          vehicle: formatVehicleField(row['Biển số/xe']),
+          refCode: String(row['Mã hồ sơ NH']||'').trim(),
+          loanAmount: amount, status, note: '',
+          invoiceLink: '', createdBy: currentUserId, createdAt: new Date().toISOString(),
+        };
+        toInsert.push(rec);
+        previewRows.push({'Ngày':date,'Đơn vị':unit,'Ngân hàng':bank.name,'Gói vay':product,'Khách hàng':rec.customer,'Biển số/xe':rec.vehicle,'Số tiền vay':fmt(amount)+'đ','Trạng thái':status});
+      });
+      openImportPreviewModal('Xem trước nhập Excel — Doanh số Ngân hàng', previewRows, errors, ()=>{
+        toInsert.forEach(rec=> state.bankTransactions.push(rec));
+        logActivity('create','Doanh số (NH)', `Nhập Excel: thêm ${toInsert.length} hồ sơ vay`);
+        saveState();
+        toast(`Đã nhập ${toInsert.length} hồ sơ vay`);
+        renderAll();
+      });
+    });
+  }
   renderBankTxTable(editable);
   const sumBox = document.getElementById('btxSummaryStats');
   if(sumBox){
@@ -6840,7 +6960,7 @@ let insTxInsurerFilter = '';
 let insReconExpanded = new Set();
 let insRenewalUnitFilter = '';
 let insRenewalBankFilter = '';
-let insRenewalStatusFilter = ''; // '' = tất cả, 'overdue', 'due_soon', 'ok'
+let insRenewalStatusFilter = ''; // '' = tất cả, 'overdue', 'due_soon', 'in_progress', 'ok', 'snoozed'
 
 // Hoa hồng chỉ tính khi hợp đồng đã "Đã cấp đơn", theo đúng tỷ lệ BHVC/BHDS của NCC đó
 // (khác Ngân hàng: hoa hồng bảo hiểm không đổi theo tháng, chỉ đổi theo loại sản phẩm).
@@ -7010,8 +7130,31 @@ function insReconCalc(r){
    bankTransactions.renewalLink (tuỳ chọn, mặc định không có = tự động khớp theo biển số/SĐT/tên):
      - id của 1 insTransactions cụ thể -> ép khớp đúng hợp đồng đó (Admin/Quản lý gán tay khi tự động sai)
      - 'NONE' -> đã xác nhận thủ công là CHƯA có hợp đồng nào phù hợp, không tự khớp nữa (tránh khớp nhầm
-       liên tục hiện ra rồi bị người dùng bỏ qua) */
+       liên tục hiện ra rồi bị người dùng bỏ qua)
+
+   .renewalExempt (dùng chung cho cả bankTransactions lẫn insTransactions): Admin đánh dấu tay để hồ sơ
+   không hiện lại trong Lịch tái tục nữa (VD hợp đồng nhiều năm, khách đã bán xe/huỷ). Có thể gán qua nút
+   "🚫 Không theo dõi" ở từng dòng, hoặc chọn checkbox nhiều dòng rồi bấm "Bỏ theo dõi mục đã chọn"/"Bỏ theo
+   dõi toàn bộ" ở đầu bảng (chỉ Admin thấy các nút này). Bỏ đánh dấu bằng cách sửa trực tiếp ở Doanh số
+   Ngân hàng/Bảo hiểm. */
 function renewalAlertDays(){ return Number(state.insRenewalAlertDays ?? 45) || 45; }
+// Số ngày quá hạn tối đa trước khi hệ thống TỰ ĐỘNG coi là "khách không tái tục lần này", tự dời mốc sang
+// đúng 1 năm sau (không cần Admin tự tay bấm Tạm ẩn cho từng hồ sơ) — mặc định 15 ngày, Admin chỉnh được.
+function renewalAutoSnoozeDays(){ return Number(state.insRenewalAutoSnoozeDays ?? 15) || 15; }
+// Từ mốc đến hạn gốc (originalDue), tự dời từng năm 1 cho tới khi số ngày quá hạn không vượt quá
+// autoSnoozeDays — mô phỏng việc mỗi năm nhắc lại 1 lần dù khách chưa từng tái tục lại. Trả về mốc đến hạn
+// "hiệu lực" hiện tại (cycleDue) + số chu kỳ đã lỡ (missedCycles, >0 nghĩa là đã từng quá hạn quá lâu mà
+// không tái tục, giúp nhân viên phân biệt với khách hàng mới chưa từng đến hạn lần nào).
+function rollForwardRenewalCycle(originalDue, today, autoSnoozeDays){
+  let cycleDue = originalDue;
+  let missedCycles = 0;
+  while(Math.round((today-cycleDue)/86400000) > autoSnoozeDays && missedCycles<50){
+    cycleDue = new Date(cycleDue);
+    cycleDue.setFullYear(cycleDue.getFullYear()+1);
+    missedCycles++;
+  }
+  return {cycleDue, missedCycles};
+}
 // Trường "Xe (biển số / mẫu xe)" là 1 ô tự do gộp cả biển số lẫn mẫu xe (VD "29A-123.45 · Honda SH") —
 // phải tách lấy đúng phần biển số (trước dấu "·") trước khi so khớp, nếu không 2 hồ sơ cùng biển số nhưng
 // ghi khác nhau ("có ghi mẫu xe" vs "không ghi") sẽ bị coi là khác nhau và không bao giờ khớp được.
@@ -7084,6 +7227,7 @@ function addYearsToDate(dateStr, n){
 // hằng năm (chính sách hiện hành không bật cờ này -> không thuộc diện theo dõi).
 function renewalRowFor(t){
   if(t.status!=='Đã giải ngân') return null;
+  if(t.renewalExempt) return null; // Admin đã bỏ theo dõi tái tục cho hồ sơ này (qua checkbox ở Lịch tái tục)
   const policy = activeBankPolicy(t.bankId, t.date, t.product);
   if(!policy || !policy.annualRenewalRequired) return null;
   const {matches, method} = computeRenewalMatches(t);
@@ -7092,9 +7236,11 @@ function renewalRowFor(t){
   const pendingMatches = sorted.filter(m=>m.status!=='Đã cấp đơn');
   const lastIssued = issuedMatches[0] || null;
   const anchorDate = lastIssued ? lastIssued.date : t.date;
-  const nextDue = addYearsToDate(anchorDate, 1);
-  if(!nextDue) return null;
+  const originalDue = addYearsToDate(anchorDate, 1);
+  if(!originalDue) return null;
   const today = new Date(); today.setHours(0,0,0,0);
+  const {cycleDue, missedCycles} = rollForwardRenewalCycle(originalDue, today, renewalAutoSnoozeDays());
+  const nextDue = cycleDue;
   const daysLeft = Math.round((nextDue-today)/86400000);
   const threshold = renewalAlertDays();
   let status = daysLeft<0 ? 'overdue' : (daysLeft<=threshold ? 'due_soon' : 'ok');
@@ -7102,7 +7248,12 @@ function renewalRowFor(t){
   // đang xử lý, không nên xếp chung với "chưa ai động vào" dù kỹ thuật vẫn coi là chưa cấp đơn chính thức.
   const hasPendingForCycle = pendingMatches.some(m=> m.date>=anchorDate);
   if(status!=='ok' && hasPendingForCycle) status = 'in_progress';
-  return {source:'bank', t, policy, lastIssued, pendingMatches, anchorDate, nextDue, daysLeft, status, matchMethod:method};
+  // Tạm ẩn thủ công (snooze): ưu tiên cao hơn auto-rollover ở trên — dùng khi Admin/Quản lý muốn hẹn 1 ngày
+  // CỤ THỂ khác với lịch tự động (VD khách hẹn "gọi lại sau 6 tháng" thay vì đúng 1 năm sau). Hồ sơ vẫn nằm
+  // trong danh sách theo dõi, quá ngày hẹn tự động hiện cảnh báo lại (không cần dọn field khi hết hạn).
+  const snoozeUntil = t.renewalSnoozeUntil || '';
+  if(snoozeUntil && snoozeUntil>todayISO()) status = 'snoozed';
+  return {source:'bank', t, policy, lastIssued, pendingMatches, anchorDate, nextDue, daysLeft, status, matchMethod:method, snoozeUntil, contactLog:t.renewalContactLog||[], missedCycles};
 }
 /* ---------------------------- Lịch tái tục · nguồn "Bảo hiểm độc lập" (không qua khoản vay) ----------------------------
    Mặc định MỌI đơn bảo hiểm "Đã cấp đơn" đều cần theo dõi tái tục (đúng thực tế nghiệp vụ hiện tại — không
@@ -7135,15 +7286,19 @@ function standaloneRenewalRows(){
     const lastIssued = sorted[0];
     const pendingMatches = txs.filter(t=>t.status!=='Đã cấp đơn' && t.status!=='Huỷ');
     const anchorDate = lastIssued.date;
-    const nextDue = addYearsToDate(anchorDate, 1);
-    if(!nextDue) return;
+    const originalDue = addYearsToDate(anchorDate, 1);
+    if(!originalDue) return;
     const today = new Date(); today.setHours(0,0,0,0);
+    const {cycleDue, missedCycles} = rollForwardRenewalCycle(originalDue, today, renewalAutoSnoozeDays());
+    const nextDue = cycleDue;
     const daysLeft = Math.round((nextDue-today)/86400000);
     const threshold = renewalAlertDays();
     let status = daysLeft<0 ? 'overdue' : (daysLeft<=threshold ? 'due_soon' : 'ok');
     const hasPendingForCycle = pendingMatches.some(m=> m.date>=anchorDate);
     if(status!=='ok' && hasPendingForCycle) status = 'in_progress';
-    rows.push({source:'standalone', t:lastIssued, lastIssued, pendingMatches, anchorDate, nextDue, daysLeft, status, matchMethod: key.split(':')[0]});
+    const snoozeUntil = lastIssued.renewalSnoozeUntil || '';
+    if(snoozeUntil && snoozeUntil>todayISO()) status = 'snoozed';
+    rows.push({source:'standalone', t:lastIssued, lastIssued, pendingMatches, anchorDate, nextDue, daysLeft, status, matchMethod: key.split(':')[0], snoozeUntil, contactLog:lastIssued.renewalContactLog||[], missedCycles});
   });
   return rows;
 }
@@ -7223,7 +7378,10 @@ function renderInsTransactions(c){
     <div class="panel">
       <div class="panel-head">
         <div><h2>Sổ hợp đồng bảo hiểm</h2><div class="desc" id="itxFilterNote"></div></div>
-        <button class="btn btn-ghost" id="itxExportBtn">⬇ Xuất Excel</button>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          ${editable ? `<label class="btn btn-ghost" style="cursor:pointer">⬆ Nhập Excel<input id="itxImportFile" type="file" accept=".xlsx,.xls" style="display:none"></label>` : ''}
+          <button class="btn btn-ghost" id="itxExportBtn">⬇ Xuất Excel</button>
+        </div>
       </div>
       <div class="panel-body flush"><div class="tbl-wrap tbl-wrap-tall"><table class="data" id="itxTable"></table></div></div>
     </div>
@@ -7287,6 +7445,63 @@ function renderInsTransactions(c){
     });
     exportToExcel('DoanhSo_BaoHiem_'+todayISO()+'.xlsx', [{name:'Doanh số Bảo hiểm', rows}]);
   });
+  if(editable){
+    document.getElementById('itxImportFile').addEventListener('change', async (e)=>{
+      const file = e.target.files[0];
+      e.target.value = '';
+      if(!file) return;
+      let rawRows;
+      try{ rawRows = await readExcelRows(file); }
+      catch(err){ console.error(err); toast('Không đọc được file — kiểm tra đúng định dạng .xlsx/.xls'); return; }
+      if(rawRows.length===0){ toast('File không có dữ liệu'); return; }
+      const toInsert = []; const errors = []; const previewRows = [];
+      rawRows.forEach((row, idx)=>{
+        const line = `Dòng ${idx+2}`; // +2 vì hàng 1 là tiêu đề, Excel đếm từ 1
+        const insName = String(row['NCC bảo hiểm']||'').trim();
+        const ins = state.insurers.find(x=>x.name.trim().toLowerCase()===insName.toLowerCase());
+        if(!ins){ errors.push(`${line}: không tìm thấy NCC bảo hiểm "${insName}"`); return; }
+        const product = String(row['Sản phẩm']||'').trim().toUpperCase();
+        if(!INS_PRODUCTS.includes(product)){ errors.push(`${line}: Sản phẩm phải là ${INS_PRODUCTS.join(' hoặc ')} (đang ghi "${row['Sản phẩm']}")`); return; }
+        const amount = parseMoneyInput(row['Phí bảo hiểm thu']);
+        if(amount<=0){ errors.push(`${line}: thiếu hoặc sai "Phí bảo hiểm thu"`); return; }
+        let unit;
+        if(lockedUnit) unit = lockedUnit;
+        else if(lockedMulti){
+          const raw = String(row['Đơn vị']||'').trim();
+          unit = lockedUnits.find(x=>x.toLowerCase()===raw.toLowerCase());
+          if(!unit){ errors.push(`${line}: "Đơn vị" phải là 1 trong: ${lockedUnits.join(', ')}`); return; }
+        } else {
+          unit = ensureUnit(row['Đơn vị']);
+          if(!unit){ errors.push(`${line}: thiếu "Đơn vị"`); return; }
+        }
+        const date = parseImportDate(row['Ngày']) || todayISO();
+        const statusRaw = String(row['Trạng thái']||'').trim();
+        const status = INS_TX_STATUSES.find(s=>s.toLowerCase()===statusRaw.toLowerCase()) || 'Đang xử lý';
+        if(currentRole()!=='Admin'){
+          const lockR = lockingReconOf({insurerId:ins.id, date}, state.insReconciliations, 'insurerId');
+          if(lockR){ errors.push(`${line}: ngày ${date} thuộc kỳ đối soát "${lockR.period}" đã chốt với ${ins.name} — chỉ Admin nhập được`); return; }
+        }
+        const rec = {
+          id: uid('it'), date, unit, insurerId: ins.id, product,
+          customer: String(row['Khách hàng']||'').trim(),
+          phone: String(row['SĐT']||'').trim(),
+          vehicle: formatVehicleField(row['Biển số/xe']),
+          policyNo: String(row['Số đơn']||'').trim(),
+          premiumAmount: amount, status, note: '',
+          invoiceLink: '', createdBy: currentUserId, createdAt: new Date().toISOString(),
+        };
+        toInsert.push(rec);
+        previewRows.push({'Ngày':date,'Đơn vị':unit,'NCC bảo hiểm':ins.name,'Sản phẩm':product,'Khách hàng':rec.customer,'Biển số/xe':rec.vehicle,'Phí bảo hiểm thu':fmt(amount)+'đ','Trạng thái':status});
+      });
+      openImportPreviewModal('Xem trước nhập Excel — Doanh số Bảo hiểm', previewRows, errors, ()=>{
+        toInsert.forEach(rec=> state.insTransactions.push(rec));
+        logActivity('create','Doanh số (Bảo hiểm)', `Nhập Excel: thêm ${toInsert.length} hợp đồng bảo hiểm`);
+        saveState();
+        toast(`Đã nhập ${toInsert.length} hợp đồng bảo hiểm`);
+        renderAll();
+      });
+    });
+  }
   renderInsTxTable(editable);
   const sumBox = document.getElementById('itxSummaryStats');
   if(sumBox){
@@ -7918,11 +8133,12 @@ function renderInsReconTable(editable){
 // đến hạn còn xa (kể cả với hồ sơ mới giải ngân chưa từng mua bảo hiểm lần nào), không có nghĩa là ĐÃ có
 // người mua — gọi là "đã khai thác" trong trường hợp đó là sai bản chất, dễ khiến người xem hiểu nhầm.
 function renewalStatusLabel(status){
-  return ({overdue:'Quá hạn chưa khai thác', due_soon:'Sắp đến hạn', in_progress:'Đang xử lý tái tục', ok:'Chưa tới hạn'})[status] || status;
+  return ({overdue:'Quá hạn chưa khai thác', due_soon:'Sắp đến hạn', in_progress:'Đang xử lý tái tục', ok:'Chưa tới hạn', snoozed:'🔕 Tạm ẩn'})[status] || status;
 }
-function renewalStatusStampHTML(status){
-  const cls = ({overdue:'warn', due_soon:'pending', in_progress:'muted', ok:'ok'})[status] || 'muted';
-  return `<span class="stamp ${cls}">${renewalStatusLabel(status)}</span>`;
+function renewalStatusStampHTML(status, snoozeUntil){
+  const cls = ({overdue:'warn', due_soon:'pending', in_progress:'muted', ok:'ok', snoozed:'muted'})[status] || 'muted';
+  const label = status==='snoozed' && snoozeUntil ? `🔕 Tạm ẩn tới ${new Date(snoozeUntil+'T00:00:00').toLocaleDateString('vi-VN')}` : renewalStatusLabel(status);
+  return `<span class="stamp ${cls}">${label}</span>`;
 }
 function renderInsRenewal(c){
   const u = currentUser();
@@ -7934,23 +8150,24 @@ function renderInsRenewal(c){
   const isAdmin = currentRole()==='Admin';
   const canManageLinks = currentRole()==='Admin' || currentRole()==='Quản lý';
   const alertDays = renewalAlertDays();
+  const autoSnoozeDays = renewalAutoSnoozeDays();
   const allRows = allRenewalRows();
   setTitle('Lịch tái tục', allRows.length+' hồ sơ cần theo dõi');
   const overdueCount = allRows.filter(r=>r.status==='overdue').length;
   const dueSoonCount = allRows.filter(r=>r.status==='due_soon').length;
   const inProgressCount = allRows.filter(r=>r.status==='in_progress').length;
+  const snoozedCount = allRows.filter(r=>r.status==='snoozed').length;
   c.innerHTML = `
     <div class="panel">
-      <div class="panel-head">
-        <div><h2>Bộ lọc</h2></div>
+      ${panelToggleHeadHTML('irwFilterPanel', 'Bộ lọc', '', `
         <div class="mini-stats-row">
           <div class="mini-stat"><div class="mini-stat-label">Quá hạn</div><div class="mini-stat-value" style="color:var(--rust)">${overdueCount}</div></div>
           <div class="mini-stat"><div class="mini-stat-label">Sắp đến hạn</div><div class="mini-stat-value" style="color:var(--amber)">${dueSoonCount}</div></div>
           <div class="mini-stat"><div class="mini-stat-label">Đang xử lý</div><div class="mini-stat-value" style="color:var(--slate)">${inProgressCount}</div></div>
+          <div class="mini-stat"><div class="mini-stat-label">Tạm ẩn</div><div class="mini-stat-value" style="color:var(--slate)">${snoozedCount}</div></div>
           <div class="mini-stat"><div class="mini-stat-label">Tổng theo dõi</div><div class="mini-stat-value">${allRows.length}</div></div>
-        </div>
-      </div>
-      <div class="panel-body">
+        </div>`, false, 'lọc')}
+      <div class="panel-body" ${panelBodyOpenAttr('irwFilterPanel', false)}>
         <div class="form-grid">
           <div class="field">
             <label>Đơn vị</label>
@@ -7970,21 +8187,30 @@ function renderInsRenewal(c){
               <option value="due_soon" ${insRenewalStatusFilter==='due_soon'?'selected':''}>Sắp đến hạn</option>
               <option value="in_progress" ${insRenewalStatusFilter==='in_progress'?'selected':''}>Đang xử lý tái tục</option>
               <option value="ok" ${insRenewalStatusFilter==='ok'?'selected':''}>Chưa tới hạn</option>
+              <option value="snoozed" ${insRenewalStatusFilter==='snoozed'?'selected':''}>🔕 Tạm ẩn</option>
             </select>
           </div>
           ${isAdmin ? `<div class="field" style="max-width:170px"><label>Ngưỡng "Sắp đến hạn" (ngày)</label><input id="irwAlertDaysInput" type="number" min="0" step="1" value="${alertDays}"></div>` : ''}
+          ${isAdmin ? `<div class="field" style="max-width:190px"><label>Tự động ẩn sau quá hạn (ngày)</label><input id="irwAutoSnoozeDaysInput" type="number" min="0" step="1" value="${autoSnoozeDays}" title="Quá hạn quá số ngày này mà khách chưa tái tục -> hệ thống tự dời mốc sang đúng 1 năm sau, không cần bấm Tạm ẩn tay"></div>` : ''}
           <button class="btn btn-ghost" id="irwfClearBtn">Xem tất cả</button>
           <button class="btn btn-ghost" id="irwExportBtn">⇩ Xuất Excel</button>
         </div>
-        ${collapsibleInfoHTML('renewal_filter_info', 'Danh sách gồm 2 nguồn: (1) hồ sơ vay thuộc gói yêu cầu mua lại bảo hiểm hằng năm — chỉ tính hồ sơ "Đã giải ngân" thuộc gói vay đã bật "Yêu cầu mua lại bảo hiểm hằng năm" ở Chính sách CK (Ngân hàng); (2) mọi đơn bảo hiểm "Đã cấp đơn" KHÔNG gắn khoản vay nào — mặc định đều theo dõi, đánh dấu "Không theo dõi" cho trường hợp ngoại lệ (hợp đồng nhiều năm, khách đã bán xe...). Liên kết/nhóm xe tự động theo biển số, dự phòng SĐT/tên khách hàng — nếu khớp sai, bấm "Sửa liên kết" ở cột cuối để chỉnh tay.')}
+        ${collapsibleInfoHTML('renewal_filter_info', 'Danh sách gồm 2 nguồn: (1) hồ sơ vay thuộc gói yêu cầu mua lại bảo hiểm hằng năm — chỉ tính hồ sơ "Đã giải ngân" thuộc gói vay đã bật "Yêu cầu mua lại bảo hiểm hằng năm" ở Chính sách CK (Ngân hàng); (2) mọi đơn bảo hiểm "Đã cấp đơn" KHÔNG gắn khoản vay nào — mặc định đều theo dõi, đánh dấu "Không theo dõi" cho trường hợp ngoại lệ (hợp đồng nhiều năm, khách đã bán xe...). Liên kết/nhóm xe tự động theo biển số, dự phòng SĐT/tên khách hàng — nếu khớp sai, bấm "Sửa liên kết" ở cột cuối để chỉnh tay. Nếu khách không tái tục, hồ sơ vẫn cảnh báo "Quá hạn" trong đúng số ngày ở ô "Tự động ẩn sau quá hạn" (mặc định 15 ngày) — quá mốc đó, hệ thống TỰ dời mốc đến hạn sang đúng 1 năm sau, không cần Admin tự tay Tạm ẩn, rồi tự cảnh báo lại đúng theo ngưỡng "Sắp đến hạn" ở trên khi tới đúng chu kỳ mới. Nút "📋 Theo dõi" ở mỗi dòng dùng để ghi nhật ký liên hệ, hoặc hẹn tay 1 ngày khác nếu không muốn theo lịch tự động này.')}
       </div>
     </div>
     <div class="panel">
-      <div class="panel-head"><div><h2>Danh sách hồ sơ cần theo dõi</h2><div class="desc">Quá hạn/Sắp đến hạn luôn nổi lên đầu và nhấp nháy để dễ nhận ra</div></div></div>
+      <div class="panel-head">
+        <div><h2>Danh sách hồ sơ cần theo dõi</h2><div class="desc">Quá hạn/Sắp đến hạn luôn nổi lên đầu và nhấp nháy để dễ nhận ra</div></div>
+        ${isAdmin ? `<div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-ghost" id="renewalDeleteSelectedBtn" disabled>🗑 Bỏ theo dõi mục đã chọn (<span id="renewalSelectedCount">0</span>)</button>
+          <button class="btn btn-ghost" id="renewalDeleteAllBtn">🗑 Bỏ theo dõi toàn bộ</button>
+        </div>` : ''}
+      </div>
       <div class="panel-body flush"><div class="tbl-wrap"><table class="data" id="renewalTable"></table></div></div>
     </div>
   `;
   wireInfoToggles(c);
+  wirePanelToggles(c);
   document.getElementById('irwf_unit').addEventListener(lockedMulti?'change':'input', e=>{ insRenewalUnitFilter=e.target.value; drawRenewalTable(); });
   document.getElementById('irwf_bank').addEventListener('input', e=>{ insRenewalBankFilter=e.target.value; drawRenewalTable(); });
   document.getElementById('irwf_status').addEventListener('change', e=>{ insRenewalStatusFilter=e.target.value; drawRenewalTable(); });
@@ -7999,6 +8225,14 @@ function renderInsRenewal(c){
       state.insRenewalAlertDays = days;
       e.target.value = days;
       logActivity('update','Cài đặt (Bảo hiểm)', `Đổi ngưỡng "Sắp đến hạn" tái tục bảo hiểm → ${days} ngày`);
+      saveState();
+      renderAll();
+    });
+    document.getElementById('irwAutoSnoozeDaysInput').addEventListener('change', (e)=>{
+      const days = Math.max(0, Number(e.target.value)||0);
+      state.insRenewalAutoSnoozeDays = days;
+      e.target.value = days;
+      logActivity('update','Cài đặt (Bảo hiểm)', `Đổi ngưỡng tự động ẩn sau quá hạn tái tục bảo hiểm → ${days} ngày`);
       saveState();
       renderAll();
     });
@@ -8020,6 +8254,144 @@ function renderInsRenewal(c){
   });
   drawRenewalTable();
 
+  // Đánh dấu 1 dòng Lịch tái tục là "không theo dõi nữa" — dùng chung cho cả 2 nguồn (khoản vay / bảo
+  // hiểm độc lập), gán renewalExempt lên đúng bản ghi gốc (bankTransactions hoặc insTransactions).
+  function exemptRenewalRow(r){
+    if(r.source==='bank'){
+      const t = state.bankTransactions.find(x=>x.id===r.t.id);
+      if(!t) return;
+      t.renewalExempt = true;
+      logActivity('update','Doanh số (NH)', `${t.customer||''} (${t.vehicle||''}) — Đánh dấu không theo dõi tái tục`);
+    } else {
+      const insTx = state.insTransactions.find(x=>x.id===r.t.id);
+      if(!insTx) return;
+      insTx.renewalExempt = true;
+      logActivity('update','Doanh số (Bảo hiểm)', `${insTx.customer||''} (${insTx.vehicle||''}) — Đánh dấu không theo dõi tái tục`);
+    }
+  }
+  // Bản ghi gốc (bankTransactions hoặc insTransactions) đứng sau 1 dòng Lịch tái tục — dùng để gán trực
+  // tiếp renewalSnoozeUntil/renewalContactLog, tách biệt hoàn toàn với renewalExempt (bỏ theo dõi vĩnh viễn).
+  function renewalUnderlyingRecord(r){
+    return r.source==='bank'
+      ? state.bankTransactions.find(x=>x.id===r.t.id)
+      : state.insTransactions.find(x=>x.id===r.t.id);
+  }
+  // Modal "📋 Theo dõi": (1) Nhật ký liên hệ tư vấn lại — chỉ ghi lịch sử, KHÔNG đổi cách tính hạn, hồ sơ
+  // vẫn cảnh báo bình thường; (2) Tạm ẩn cảnh báo tới 1 ngày hẹn trước — dùng khi khách chưa tái tục lần
+  // này nhưng vẫn cần bám tiếp năm sau: hồ sơ vẫn nằm trong danh sách theo dõi (khác hẳn "Không theo dõi"
+  // vốn ẩn vĩnh viễn), chỉ tạm ngưng nhấp nháy/đếm vào Quá hạn-Sắp đến hạn, tự động hiện cảnh báo lại đúng
+  // ngày hẹn mà không cần ai nhớ để bật lại tay.
+  function openRenewalTrackingModal(r){
+    const rec = renewalUnderlyingRecord(r);
+    if(!rec) return;
+    const logType = r.source==='bank' ? 'Doanh số (NH)' : 'Doanh số (Bảo hiểm)';
+    const renderBody = ()=>{
+      const log = (rec.renewalContactLog||[]).slice().sort((a,b)=> b.date.localeCompare(a.date));
+      const snoozeUntil = rec.renewalSnoozeUntil||'';
+      const isSnoozedNow = snoozeUntil && snoozeUntil>todayISO();
+      return `
+        <div style="margin-bottom:18px">
+          <div style="font-weight:600;margin-bottom:8px">Lịch sử liên hệ tư vấn</div>
+          ${log.length ? log.map(l=>`
+            <div style="padding:8px 0;border-bottom:1px solid var(--line)">
+              <div style="font-weight:600">${new Date(l.date+'T00:00:00').toLocaleDateString('vi-VN')} <span class="meta-line" style="font-weight:400">— ${escHtml(l.by||'')}</span></div>
+              <div class="meta-line">${escHtml(l.note||'')}</div>
+            </div>`).join('') : `<div class="helper">Chưa có lịch sử liên hệ nào.</div>`}
+          <div class="form-grid" style="margin-top:10px">
+            <div class="field"><label>Ngày liên hệ</label><input id="rtmLogDate" type="date" value="${todayISO()}"></div>
+            <div class="field" style="grid-column:1/-1"><label>Nội dung / kết quả</label><input id="rtmLogNote" placeholder="VD: Đã gọi tư vấn, khách chưa quyết định, hẹn gọi lại năm sau"></div>
+            <button class="btn btn-ghost" id="rtmAddLogBtn">+ Ghi nhận liên hệ</button>
+          </div>
+        </div>
+        <div style="border-top:1px solid var(--line);padding-top:14px">
+          <div style="font-weight:600;margin-bottom:8px">Tạm ẩn cảnh báo</div>
+          ${isSnoozedNow
+            ? `<div class="helper">Đang tạm ẩn tới <b>${new Date(snoozeUntil+'T00:00:00').toLocaleDateString('vi-VN')}</b> — sẽ tự động hiện cảnh báo lại đúng ngày đó, không cần làm gì thêm.</div>
+               <button class="btn btn-ghost" id="rtmClearSnoozeBtn" style="margin-top:8px">Huỷ tạm ẩn — hiện cảnh báo lại ngay</button>`
+            : `<div class="helper">Hệ thống đã <b>tự động</b> tạm ẩn cảnh báo cho mọi hồ sơ quá hạn quá ${renewalAutoSnoozeDays()} ngày (chỉnh ở ô "Tự động ẩn sau quá hạn" trong Bộ lọc), rồi tự dời mốc sang đúng 1 năm sau — không cần bấm gì ở đây cho trường hợp thông thường. Chỉ dùng nút dưới đây nếu muốn hẹn 1 ngày CỤ THỂ khác với lịch tự động (VD khách hẹn "gọi lại sau 6 tháng").</div>
+               <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;align-items:center">
+                 <button class="btn btn-ghost" data-snooze-preset="3">+3 tháng</button>
+                 <button class="btn btn-ghost" data-snooze-preset="6">+6 tháng</button>
+                 <button class="btn btn-ghost" data-snooze-preset="12">+1 năm</button>
+                 <input id="rtmSnoozeDate" type="date" min="${todayISO()}">
+                 <button class="btn btn-primary" id="rtmSnoozeBtn">Tạm ẩn tới ngày này</button>
+               </div>`}
+        </div>`;
+    };
+    openModal('Theo dõi tái tục — '+(rec.customer||'(chưa có tên KH)'), rec.vehicle||'', renderBody(), (bodyEl)=>{
+      const wire = ()=>{
+        const addBtn = bodyEl.querySelector('#rtmAddLogBtn');
+        if(addBtn) addBtn.addEventListener('click', ()=>{
+          const date = bodyEl.querySelector('#rtmLogDate').value || todayISO();
+          const note = bodyEl.querySelector('#rtmLogNote').value.trim();
+          if(!note){ toast('Nhập nội dung liên hệ'); return; }
+          if(!rec.renewalContactLog) rec.renewalContactLog = [];
+          rec.renewalContactLog.push({date, note, by:(currentUser()&&currentUser().name)||'', at:new Date().toISOString()});
+          logActivity('update', logType, `${rec.customer||''} — Ghi nhận liên hệ tái tục: ${note}`);
+          saveState();
+          bodyEl.innerHTML = renderBody();
+          wire();
+        });
+        bodyEl.querySelectorAll('[data-snooze-preset]').forEach(b=> b.addEventListener('click', ()=>{
+          const months = Number(b.dataset.snoozePreset);
+          const d = new Date(); d.setMonth(d.getMonth()+months);
+          const dateInput = bodyEl.querySelector('#rtmSnoozeDate');
+          if(dateInput) dateInput.value = d.toISOString().slice(0,10);
+        }));
+        const snoozeBtn = bodyEl.querySelector('#rtmSnoozeBtn');
+        if(snoozeBtn) snoozeBtn.addEventListener('click', ()=>{
+          const dateInput = bodyEl.querySelector('#rtmSnoozeDate');
+          const val = dateInput ? dateInput.value : '';
+          if(!val){ toast('Chọn ngày muốn hiện cảnh báo lại'); return; }
+          rec.renewalSnoozeUntil = val;
+          logActivity('update', logType, `${rec.customer||''} — Tạm ẩn cảnh báo tái tục tới ${val}`);
+          saveState();
+          toast('Đã tạm ẩn cảnh báo tới '+new Date(val+'T00:00:00').toLocaleDateString('vi-VN'));
+          closeModal();
+          renderAll();
+        });
+        const clearBtn = bodyEl.querySelector('#rtmClearSnoozeBtn');
+        if(clearBtn) clearBtn.addEventListener('click', ()=>{
+          rec.renewalSnoozeUntil = '';
+          logActivity('update', logType, `${rec.customer||''} — Huỷ tạm ẩn cảnh báo tái tục`);
+          saveState();
+          toast('Đã huỷ tạm ẩn — cảnh báo hiện lại ngay');
+          closeModal();
+          renderAll();
+        });
+      };
+      wire();
+    });
+  }
+  if(isAdmin){
+    document.getElementById('renewalDeleteSelectedBtn').addEventListener('click', ()=>{
+      const tbl = document.getElementById('renewalTable');
+      if(!tbl) return;
+      const picked = Array.from(tbl.querySelectorAll('.renewal-chk:checked')).map(x=>({id:x.dataset.id, source:x.dataset.source}));
+      if(picked.length===0) return;
+      confirmModal(`Bỏ theo dõi tái tục cho ${picked.length} hồ sơ đã chọn?\n\nCác hồ sơ này sẽ không hiện lại trong Lịch tái tục nữa — có thể bật lại bằng cách sửa trực tiếp ở Doanh số Ngân hàng/Bảo hiểm nếu cần.`, ()=>{
+        const rowsNow = currentRenewalRows();
+        picked.forEach(({id,source})=>{
+          const r = rowsNow.find(x=>x.t.id===id && x.source===source);
+          if(r) exemptRenewalRow(r);
+        });
+        saveState();
+        toast(`Đã bỏ theo dõi ${picked.length} hồ sơ`);
+        renderAll();
+      }, {danger:true});
+    });
+    document.getElementById('renewalDeleteAllBtn').addEventListener('click', ()=>{
+      const rowsNow = currentRenewalRows();
+      if(rowsNow.length===0){ toast('Không có hồ sơ nào để bỏ theo dõi'); return; }
+      confirmModal(`Bỏ theo dõi tái tục cho TOÀN BỘ ${rowsNow.length} hồ sơ đang hiển thị theo bộ lọc hiện tại?\n\nCác hồ sơ này sẽ không hiện lại trong Lịch tái tục nữa — có thể bật lại bằng cách sửa trực tiếp ở Doanh số Ngân hàng/Bảo hiểm nếu cần.`, ()=>{
+        rowsNow.forEach(r=> exemptRenewalRow(r));
+        saveState();
+        toast(`Đã bỏ theo dõi toàn bộ ${rowsNow.length} hồ sơ`);
+        renderAll();
+      }, {danger:true});
+    });
+  }
+
   function currentRenewalRows(){
     return allRows.filter(r=>{
       if(lockedUnits.length && !lockedUnits.includes(r.t.unit)) return false;
@@ -8030,7 +8402,11 @@ function renderInsRenewal(c){
       }
       if(insRenewalStatusFilter && r.status!==insRenewalStatusFilter) return false;
       return true;
-    }).sort((a,b)=> a.daysLeft-b.daysLeft);
+    }).sort((a,b)=>{
+      const aSn = a.status==='snoozed'?1:0, bSn = b.status==='snoozed'?1:0;
+      if(aSn!==bSn) return aSn-bSn; // tạm ẩn luôn xuống cuối, không lẫn với hồ sơ đang thực sự cần chú ý
+      return a.daysLeft-b.daysLeft;
+    });
   }
   function drawRenewalTable(){
     const tbl = document.getElementById('renewalTable');
@@ -8045,6 +8421,7 @@ function renderInsRenewal(c){
     }
     tbl.innerHTML = `
       <thead><tr>
+        ${isAdmin ? `<th style="width:32px"><input type="checkbox" id="renewalSelectAll" title="Chọn tất cả"></th>` : ''}
         <th class="wrap">Nguồn</th><th class="wrap">Khách hàng</th><th class="wrap" style="max-width:110px">Biển số</th>
         <th class="wrap" style="max-width:100px">Lần cấp đơn BH gần nhất</th><th class="wrap" style="max-width:90px">Cách khớp</th><th class="wrap" style="max-width:95px">Mốc đến hạn tiếp theo</th><th class="num">Số ngày</th><th>Trạng thái</th><th></th>
       </tr></thead>
@@ -8063,16 +8440,19 @@ function renderInsRenewal(c){
         const actionBtn = isBank
           ? (canManageLinks ? `<button class="btn btn-ghost" data-editlink="${r.t.id}" style="font-size:11.5px;padding:4px 8px;white-space:nowrap">Sửa liên kết</button>` : '')
           : (canManageLinks ? `<button class="btn btn-ghost" data-exempt="${r.t.id}" style="font-size:11.5px;padding:4px 8px;white-space:nowrap" title="Dùng khi hợp đồng nhiều năm hoặc khách đã bán xe/huỷ — sẽ không hiện lại trong Lịch tái tục nữa">🚫 Không theo dõi</button>` : '');
-        return `<tr class="${r.status==='overdue'?'renewal-pulse-overdue':r.status==='due_soon'?'renewal-pulse-soon':''}">
+        const trackBtn = canManageLinks ? `<button class="btn btn-ghost" data-tracking="${escAttr(r.t.id)}" data-tracking-source="${r.source}" style="font-size:11.5px;padding:4px 8px;white-space:nowrap;margin-top:4px" title="Ghi nhận liên hệ tư vấn lại, hoặc tạm ẩn cảnh báo tới 1 ngày hẹn trước">📋 Theo dõi${r.contactLog.length?` (${r.contactLog.length})`:''}</button>` : '';
+        const isPulsing = r.status==='overdue' || r.status==='due_soon'; // tạm ẩn/đang xử lý/chưa tới hạn không nhấp nháy
+        return `<tr class="${isPulsing?(r.status==='overdue'?'renewal-pulse-overdue':'renewal-pulse-soon'):''}">
+          ${isAdmin ? `<td><input type="checkbox" class="renewal-chk" data-id="${escAttr(r.t.id)}" data-source="${r.source}"></td>` : ''}
           <td class="wrap">${sourceCell}</td>
-          <td class="wrap"><b>${escHtml(r.t.customer||'(chưa có tên KH)')}</b><div class="meta-line">${escHtml(r.t.phone||'')} · ${escHtml(r.t.unit)}</div></td>
+          <td class="wrap"><b>${escHtml(r.t.customer||'(chưa có tên KH)')}</b>${r.missedCycles>0?` <span class="tag" style="color:var(--rust)" title="Đã ${r.missedCycles} lần quá hạn quá lâu mà khách không tái tục, hệ thống tự dời mốc sang năm sau">⏳ Lỡ ${r.missedCycles} lần</span>`:''}<div class="meta-line">${escHtml(r.t.phone||'')} · ${escHtml(r.t.unit)}</div></td>
           <td class="wrap" style="max-width:150px;word-break:break-all" title="${escAttr(r.t.vehicle||'')}">${escHtml(r.t.vehicle||'—')}</td>
           <td>${lastInsCell}</td>
           <td class="meta-line">${escHtml(matchMethodLabel(r.matchMethod))}</td>
           <td>${r.nextDue.toISOString().slice(0,10)}</td>
           <td class="num" style="font-weight:600;${r.status==='overdue'?'color:var(--rust)':r.status==='due_soon'?'color:var(--amber)':''}">${daysTxt}</td>
-          <td>${renewalStatusStampHTML(r.status)}</td>
-          <td>${actionBtn}</td>
+          <td>${renewalStatusStampHTML(r.status, r.snoozeUntil)}</td>
+          <td><div style="display:flex;flex-direction:column;align-items:flex-start">${actionBtn}${trackBtn}</div></td>
         </tr>`;
       }).join('')}</tbody>`;
     if(canManageLinks){
@@ -8092,6 +8472,33 @@ function renderInsRenewal(c){
           }, {danger:false});
         });
       });
+      tbl.querySelectorAll('[data-tracking]').forEach(btn=>{
+        btn.addEventListener('click', ()=>{
+          const rowsNow = currentRenewalRows();
+          const r = rowsNow.find(x=>x.t.id===btn.dataset.tracking && x.source===btn.dataset.trackingSource);
+          if(r) openRenewalTrackingModal(r);
+        });
+      });
+    }
+    // Checkbox chọn dòng (chỉ Admin) — chỉ để bật/tắt nút "Bỏ theo dõi mục đã chọn", việc xoá thật sự
+    // do 2 nút ở panel-head xử lý (đọc lại danh sách đã chọn tại thời điểm bấm, không lưu state riêng).
+    if(isAdmin){
+      const selAllChk = tbl.querySelector('#renewalSelectAll');
+      const rowChks = ()=> Array.from(tbl.querySelectorAll('.renewal-chk'));
+      const updateSelectedUI = ()=>{
+        const checked = rowChks().filter(x=>x.checked);
+        const btn = document.getElementById('renewalDeleteSelectedBtn');
+        const cnt = document.getElementById('renewalSelectedCount');
+        if(cnt) cnt.textContent = checked.length;
+        if(btn) btn.disabled = checked.length===0;
+        if(selAllChk) selAllChk.checked = rowChks().length>0 && checked.length===rowChks().length;
+      };
+      if(selAllChk) selAllChk.addEventListener('change', ()=>{
+        rowChks().forEach(chk=> chk.checked = selAllChk.checked);
+        updateSelectedUI();
+      });
+      rowChks().forEach(chk=> chk.addEventListener('change', updateSelectedUI));
+      updateSelectedUI();
     }
   }
 }
