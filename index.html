@@ -8148,7 +8148,12 @@ function renderInsRenewal(c){
   if(lockedUnit) insRenewalUnitFilter = lockedUnit;
   else if(lockedMulti && insRenewalUnitFilter && !lockedUnits.includes(insRenewalUnitFilter)) insRenewalUnitFilter = '';
   const isAdmin = currentRole()==='Admin';
-  const canManageLinks = currentRole()==='Admin' || currentRole()==='Quản lý';
+  const canManageLinks = currentRole()==='Admin' || currentRole()==='Quản lý'; // "Sửa liên kết" — việc kỹ thuật, vẫn chỉ Admin/Quản lý
+  // "Không theo dõi" và "📋 Theo dõi" (nhật ký liên hệ/tạm ẩn) dùng LẠI đúng quyền sửa Doanh số đã cấu hình
+  // sẵn ở "Cài đặt → Phân quyền chỉnh sửa" — Nhân viên nào được sửa Doanh số NH/BH thì cũng thao tác được
+  // trên hồ sơ tái tục tương ứng nguồn đó, không cần thêm 1 lớp phân quyền riêng.
+  const canTrackBh = canManageLinks || canEdit('bh_transactions');
+  const canTrackNh = canManageLinks || canEdit('nh_transactions');
   const alertDays = renewalAlertDays();
   const autoSnoozeDays = renewalAutoSnoozeDays();
   const allRows = allRenewalRows();
@@ -8437,10 +8442,11 @@ function renderInsRenewal(c){
         const sourceCell = isBank
           ? `<div style="font-weight:600;white-space:nowrap">🏦 ${b?escHtml(b.name):'<em>(đã xoá)</em>'}</div><div class="meta-line" style="white-space:nowrap">${escHtml(r.t.product||DEFAULT_BANK_PRODUCT)} · Giải ngân ${r.t.date}</div>`
           : `<span class="meta-line" style="white-space:nowrap" title="Không có khoản vay nào theo dõi xe này — tự theo dõi trực tiếp từ Doanh số Bảo hiểm">📄 BH độc lập</span>`;
+        const canTrackThisRow = isBank ? canTrackNh : canTrackBh;
         const actionBtn = isBank
           ? (canManageLinks ? `<button class="btn btn-ghost" data-editlink="${r.t.id}" style="font-size:11.5px;padding:4px 8px;white-space:nowrap">Sửa liên kết</button>` : '')
-          : (canManageLinks ? `<button class="btn btn-ghost" data-exempt="${r.t.id}" style="font-size:11.5px;padding:4px 8px;white-space:nowrap" title="Dùng khi hợp đồng nhiều năm hoặc khách đã bán xe/huỷ — sẽ không hiện lại trong Lịch tái tục nữa">🚫 Không theo dõi</button>` : '');
-        const trackBtn = canManageLinks ? `<button class="btn btn-ghost" data-tracking="${escAttr(r.t.id)}" data-tracking-source="${r.source}" style="font-size:11.5px;padding:4px 8px;white-space:nowrap;margin-top:4px" title="Ghi nhận liên hệ tư vấn lại, hoặc tạm ẩn cảnh báo tới 1 ngày hẹn trước">📋 Theo dõi${r.contactLog.length?` (${r.contactLog.length})`:''}</button>` : '';
+          : (canTrackThisRow ? `<button class="btn btn-ghost" data-exempt="${r.t.id}" style="font-size:11.5px;padding:4px 8px;white-space:nowrap" title="Dùng khi hợp đồng nhiều năm hoặc khách đã bán xe/huỷ — sẽ không hiện lại trong Lịch tái tục nữa">🚫 Không theo dõi</button>` : '');
+        const trackBtn = canTrackThisRow ? `<button class="btn btn-ghost" data-tracking="${escAttr(r.t.id)}" data-tracking-source="${r.source}" style="font-size:11.5px;padding:4px 8px;white-space:nowrap;margin-top:4px" title="Ghi nhận liên hệ tư vấn lại, hoặc tạm ẩn cảnh báo tới 1 ngày hẹn trước">📋 Theo dõi${r.contactLog.length?` (${r.contactLog.length})`:''}</button>` : '';
         const isPulsing = r.status==='overdue' || r.status==='due_soon'; // tạm ẩn/đang xử lý/chưa tới hạn không nhấp nháy
         return `<tr class="${isPulsing?(r.status==='overdue'?'renewal-pulse-overdue':'renewal-pulse-soon'):''}">
           ${isAdmin ? `<td><input type="checkbox" class="renewal-chk" data-id="${escAttr(r.t.id)}" data-source="${r.source}"></td>` : ''}
@@ -8459,27 +8465,29 @@ function renderInsRenewal(c){
       tbl.querySelectorAll('[data-editlink]').forEach(btn=>{
         btn.addEventListener('click', ()=> openRenewalLinkModal(btn.dataset.editlink));
       });
-      tbl.querySelectorAll('[data-exempt]').forEach(btn=>{
-        btn.addEventListener('click', ()=>{
-          const insTx = state.insTransactions.find(x=>x.id===btn.dataset.exempt);
-          if(!insTx) return;
-          confirmModal(`Đánh dấu "Không theo dõi tái tục" cho hợp đồng của "${insTx.customer||'(chưa có tên KH)'}" (${insTx.vehicle||'—'})?\n\nDùng khi: hợp đồng bảo hiểm nhiều năm, hoặc khách đã bán xe/huỷ hợp đồng. Hồ sơ này sẽ không hiện lại trong Lịch tái tục nữa — có thể bật lại bằng cách sửa trực tiếp ở Doanh số Bảo hiểm nếu cần.`, ()=>{
-            insTx.renewalExempt = true;
-            logActivity('update','Doanh số (Bảo hiểm)', `${insTx.customer||''} (${insTx.vehicle||''}) — Đánh dấu không theo dõi tái tục`);
-            saveState();
-            toast('Đã đánh dấu không theo dõi tái tục');
-            renderAll();
-          }, {danger:false});
-        });
-      });
-      tbl.querySelectorAll('[data-tracking]').forEach(btn=>{
-        btn.addEventListener('click', ()=>{
-          const rowsNow = currentRenewalRows();
-          const r = rowsNow.find(x=>x.t.id===btn.dataset.tracking && x.source===btn.dataset.trackingSource);
-          if(r) openRenewalTrackingModal(r);
-        });
-      });
     }
+    // Wiring cho "Không theo dõi" + "📋 Theo dõi": querySelectorAll rỗng vô hại nếu nút không được vẽ ra do
+    // thiếu quyền (canTrackBh/canTrackNh) — không cần bọc thêm điều kiện role ở đây.
+    tbl.querySelectorAll('[data-exempt]').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        const insTx = state.insTransactions.find(x=>x.id===btn.dataset.exempt);
+        if(!insTx) return;
+        confirmModal(`Đánh dấu "Không theo dõi tái tục" cho hợp đồng của "${insTx.customer||'(chưa có tên KH)'}" (${insTx.vehicle||'—'})?\n\nDùng khi: hợp đồng bảo hiểm nhiều năm, hoặc khách đã bán xe/huỷ hợp đồng. Hồ sơ này sẽ không hiện lại trong Lịch tái tục nữa — có thể bật lại bằng cách sửa trực tiếp ở Doanh số Bảo hiểm nếu cần.`, ()=>{
+          insTx.renewalExempt = true;
+          logActivity('update','Doanh số (Bảo hiểm)', `${insTx.customer||''} (${insTx.vehicle||''}) — Đánh dấu không theo dõi tái tục`);
+          saveState();
+          toast('Đã đánh dấu không theo dõi tái tục');
+          renderAll();
+        }, {danger:false});
+      });
+    });
+    tbl.querySelectorAll('[data-tracking]').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        const rowsNow = currentRenewalRows();
+        const r = rowsNow.find(x=>x.t.id===btn.dataset.tracking && x.source===btn.dataset.trackingSource);
+        if(r) openRenewalTrackingModal(r);
+      });
+    });
     // Checkbox chọn dòng (chỉ Admin) — chỉ để bật/tắt nút "Bỏ theo dõi mục đã chọn", việc xoá thật sự
     // do 2 nút ở panel-head xử lý (đọc lại danh sách đã chọn tại thời điểm bấm, không lưu state riêng).
     if(isAdmin){
