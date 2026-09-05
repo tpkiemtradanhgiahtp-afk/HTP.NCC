@@ -1055,9 +1055,9 @@ function parseImportDate(val){
   let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
   if(m) return `${m[1]}-${m[2].padStart(2,'0')}-${m[3].padStart(2,'0')}`;
   m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
-  if(m) return `${m[3]}-${m[1].padStart(2,'0')}-${m[2].padStart(2,'0')}`;
+  if(m) return `${m[3]}-${m[2].padStart(2,'0')}-${m[1].padStart(2,'0')}`; // m[1]=ngày, m[2]=tháng, m[3]=năm -> YYYY-MM-DD
   m = s.match(/^(\d{1,2})-(\d{1,2})-(\d{4})/);
-  if(m) return `${m[3]}-${m[1].padStart(2,'0')}-${m[2].padStart(2,'0')}`;
+  if(m) return `${m[3]}-${m[2].padStart(2,'0')}-${m[1].padStart(2,'0')}`; // m[1]=ngày, m[2]=tháng, m[3]=năm -> YYYY-MM-DD
   return '';
 }
 // Hiện modal xem trước kết quả đọc file Excel trước khi thực sự ghi vào dữ liệu — luôn bắt xác nhận tay,
@@ -6248,7 +6248,7 @@ function renderBankTransactions(c){
           if(!unit){ errors.push(`${line}: thiếu "Đơn vị"`); return; }
         }
         const date = parseImportDate(row['Ngày']);
-        if(!date){ errors.push(`${line}: không đọc được "Ngày" (giá trị đang ghi: "${row['Ngày']}") — sửa lại đúng định dạng rồi nhập lại dòng này, KHÔNG tự gán ngày hôm nay để tránh sai lệch báo cáo theo tháng`); return; }
+        if(!date || !isValidDateStr(date)){ errors.push(`${line}: không đọc được "Ngày" hợp lệ (giá trị đang ghi: "${row['Ngày']}"${date?` -> đọc ra ${date}`:''}") — sửa lại đúng định dạng rồi nhập lại dòng này, KHÔNG tự gán ngày hôm nay để tránh sai lệch báo cáo theo tháng`); return; }
         const statusRaw = String(row['Trạng thái']||'').trim();
         const status = BANK_TX_STATUSES.find(s=>s.toLowerCase()===statusRaw.toLowerCase()) || 'Đang xử lý';
         const product = String(row['Gói vay']||'').trim() || DEFAULT_BANK_PRODUCT;
@@ -7606,7 +7606,7 @@ function renderInsTransactions(c){
           if(!unit){ errors.push(`${line}: thiếu "Đơn vị"`); return; }
         }
         const date = parseImportDate(row['Ngày']);
-        if(!date){ errors.push(`${line}: không đọc được "Ngày" (giá trị đang ghi: "${row['Ngày']}") — sửa lại đúng định dạng rồi nhập lại dòng này, KHÔNG tự gán ngày hôm nay để tránh sai lệch báo cáo theo tháng`); return; }
+        if(!date || !isValidDateStr(date)){ errors.push(`${line}: không đọc được "Ngày" hợp lệ (giá trị đang ghi: "${row['Ngày']}"${date?` -> đọc ra ${date}`:''}") — sửa lại đúng định dạng rồi nhập lại dòng này, KHÔNG tự gán ngày hôm nay để tránh sai lệch báo cáo theo tháng`); return; }
         const statusRaw = String(row['Trạng thái']||'').trim();
         const status = INS_TX_STATUSES.find(s=>s.toLowerCase()===statusRaw.toLowerCase()) || 'Đang xử lý';
         if(currentRole()!=='Admin'){
