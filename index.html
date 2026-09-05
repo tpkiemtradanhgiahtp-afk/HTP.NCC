@@ -4205,7 +4205,7 @@ function renderDashboard(c){
       const owed = bhReconList.filter(r=>r.insurerId===ins.id).reduce((s,r)=>s+insReconCalc(r).stillOwed, 0);
       return {ins, owed};
     }).filter(x=>x.owed>0).sort((a,b)=>b.owed-a.owed).slice(0,10);
-    const bhTrend = dashMonthlySums(state.insTransactions, 'date', t=> t.status==='Đã cấp đơn' ? (Number(t.premiumAmount)||0) : 0, dashMonthKeys);
+    const bhTrend = dashMonthlySums(state.insTransactions, 'date', t=> t.status==='Đã cấp đơn' ? insTxTotalPremium(t) : 0, dashMonthKeys);
     blocks += `
       <div class="section-head-row">
         <div class="section-divider">Bảo hiểm</div>
@@ -7084,16 +7084,31 @@ let insRenewalStatusFilter = 'attention'; // 'attention' (mặc định, gộp o
 // (khác Ngân hàng: hoa hồng bảo hiểm không đổi theo tháng, chỉ đổi theo loại sản phẩm).
 // premiumAmount đang lưu là phí bảo hiểm ĐÃ CÓ VAT 10% — hoa hồng phải tính trên phí TRƯỚC VAT, nên
 // luôn quy đổi ngược lại (chia 1.1) trước khi nhân tỷ lệ %, KHÔNG nhân thẳng lên phí đã có VAT.
+//
+// Riêng BHDS: đa số NCC bảo hiểm KHÔNG tính VAT cho "Phí người ngồi trên xe" (bảo hiểm tai nạn người
+// ngồi trên xe, thường bán kèm ngay trong cùng 1 hợp đồng BHDS) — nên khoản này phải cộng THẲNG vào phần
+// đã quy đổi trước VAT, KHÔNG được chia 1.1 chung với phí bảo hiểm dân sự (nếu chia chung sẽ làm hoa hồng
+// bị tính thiếu ~9% trên đúng phần phí người ngồi trên xe). premiumAmount cho BHDS vẫn là phí bảo hiểm dân
+// sự chính (có VAT như thường lệ) — passengerAmount là khoản CỘNG THÊM riêng, chỉ áp dụng cho BHDS.
 const INS_VAT_RATE = 0.10;
 function insPremiumBeforeVat(premiumAmount){
   return (Number(premiumAmount)||0) / (1 + INS_VAT_RATE);
+}
+// Tổng phí bảo hiểm THU của 1 hợp đồng (để báo cáo doanh thu) — với BHDS thì cộng thêm phí người ngồi
+// trên xe (khoản thu thật từ khách, chỉ khác cách tính VAT cho hoa hồng, không phải khác ở doanh thu).
+function insTxTotalPremium(t){
+  const base = Number(t.premiumAmount)||0;
+  return t.product==='BHDS' ? base + (Number(t.passengerAmount)||0) : base;
 }
 function insTxCommission(t){
   if(t.status!=='Đã cấp đơn') return 0;
   const ins = insurerById(t.insurerId);
   if(!ins) return 0;
   const rate = t.product==='BHDS' ? ins.bhds : ins.bhvc;
-  return insPremiumBeforeVat(t.premiumAmount) * (Number(rate)||0);
+  const base = t.product==='BHDS'
+    ? insPremiumBeforeVat(t.premiumAmount) + (Number(t.passengerAmount)||0) // phí người ngồi trên xe KHÔNG chia VAT
+    : insPremiumBeforeVat(t.premiumAmount);
+  return base * (Number(rate)||0);
 }
 function insPremiumSum(insurerId, from, to, unit){
   let total=0;
@@ -7103,7 +7118,7 @@ function insPremiumSum(insurerId, from, to, unit){
     const d = toDate(t.date);
     if(from && d<from) continue;
     if(to && d>to) continue;
-    total += Number(t.premiumAmount)||0;
+    total += insTxTotalPremium(t);
   }
   return total;
 }
@@ -7489,12 +7504,13 @@ function renderInsTransactions(c){
           <div class="field"><label>Xe (biển số / mẫu xe)</label><input id="itf_vehicle" placeholder="VD: 29A-123.45 · Honda SH"></div>
           <div class="field"><label>Số đơn bảo hiểm</label><input id="itf_policyno" placeholder="Số hợp đồng / giấy CN bảo hiểm"></div>
           <div class="field"><label>Phí bảo hiểm thu (VNĐ)</label><input id="itf_amount" class="field-money" type="text" inputmode="numeric" placeholder="0"></div>
+          <div class="field" id="itf_passenger_wrap" style="display:none"><label>Phí người ngồi trên xe (VNĐ) <span class="info-tip" title="Riêng cho BHDS — hầu hết NCC KHÔNG tính VAT cho khoản này nên phải tách ra tính hoa hồng riêng, không chia chung 1,1 với phí bảo hiểm dân sự">i</span></label><input id="itf_passenger" class="field-money" type="text" inputmode="numeric" placeholder="0 (để trống nếu không bán kèm)"></div>
           <div class="field"><label>Trạng thái</label><select id="itf_status">${INS_TX_STATUSES.map(s=>`<option ${s==='Đang xử lý'?'selected':''}>${s}</option>`).join('')}</select></div>
           <div class="field" style="grid-column:1/-1"><label>Ghi chú</label><input id="itf_note" placeholder="Ghi chú khác..."></div>
           ${invoiceUploadFieldHTML('itf')}
           <button class="btn btn-primary" id="addInsTxBtn">+ Ghi nhận hợp đồng</button>
         </div>
-        <div class="helper">Chỉ hợp đồng trạng thái <b>"Đã cấp đơn"</b> mới được tính Hoa hồng, theo đúng tỷ lệ BHVC/BHDS của NCC đó — xem/sửa tỷ lệ ở tab "Danh mục NCC".</div>
+        <div class="helper">Chỉ hợp đồng trạng thái <b>"Đã cấp đơn"</b> mới được tính Hoa hồng, theo đúng tỷ lệ BHVC/BHDS của NCC đó — xem/sửa tỷ lệ ở tab "Danh mục NCC". Với BHDS, "Phí người ngồi trên xe" (nếu có bán kèm) được tính hoa hồng riêng, không trừ VAT như phí bảo hiểm dân sự chính.</div>
       </div>
     </div>` : lockedNote('Bạn đang xem ở chế độ chỉ đọc — chỉ Admin/Quản lý/Nhân viên mới ghi nhận hợp đồng.')}
     <div class="panel">
@@ -7531,6 +7547,12 @@ function renderInsTransactions(c){
   });
   if(editable){
     attachMoneyFormatting(document.getElementById('itf_amount'));
+    attachMoneyFormatting(document.getElementById('itf_passenger'));
+    const itfProductSel = document.getElementById('itf_product');
+    const itfPassengerWrap = document.getElementById('itf_passenger_wrap');
+    const syncPassengerVisibility = ()=>{ itfPassengerWrap.style.display = itfProductSel.value==='BHDS' ? '' : 'none'; };
+    syncPassengerVisibility();
+    itfProductSel.addEventListener('change', syncPassengerVisibility);
     wireInvoiceUploadField('itf', ()=> 'Doanh số BH · '+(document.getElementById('itf_ins').value||'').trim());
     document.getElementById('addInsTxBtn').addEventListener('click', ()=>{
       const insName = document.getElementById('itf_ins').value;
@@ -7538,6 +7560,8 @@ function renderInsTransactions(c){
       if(!ins){ toast(insName.trim() ? `Không tìm thấy NCC "${insName.trim()}" — chọn đúng tên có trong danh sách gợi ý` : 'Cần chọn NCC bảo hiểm trước'); return; }
       const amount = parseMoneyInput(document.getElementById('itf_amount').value);
       if(amount<=0){ toast('Nhập phí bảo hiểm thu'); return; }
+      const product = itfProductSel.value;
+      const passengerAmount = product==='BHDS' ? parseMoneyInput(document.getElementById('itf_passenger').value) : 0;
       const unit = lockedUnit || (lockedMulti ? document.getElementById('itf_unit').value : ensureUnit(document.getElementById('itf_unit').value));
       if(!unit){ toast('Nhập tên đơn vị trước'); return; }
       const status = document.getElementById('itf_status').value;
@@ -7548,20 +7572,20 @@ function renderInsTransactions(c){
       }
       state.insTransactions.push({
         id: uid('it'), date: itxDate,
-        unit, insurerId: ins.id, product: document.getElementById('itf_product').value,
+        unit, insurerId: ins.id, product,
         customer: document.getElementById('itf_customer').value.trim(),
         phone: document.getElementById('itf_phone').value.trim(),
         vehicle: formatVehicleField(document.getElementById('itf_vehicle').value),
         policyNo: document.getElementById('itf_policyno').value.trim(),
-        premiumAmount: amount, status, note: document.getElementById('itf_note').value.trim(),
+        premiumAmount: amount, passengerAmount, status, note: document.getElementById('itf_note').value.trim(),
         invoiceLink: document.getElementById('itf_invoice').value.trim(),
         createdBy: currentUserId, createdAt: new Date().toISOString(),
       });
-      document.getElementById('itf_amount').value=''; document.getElementById('itf_customer').value='';
+      document.getElementById('itf_amount').value=''; document.getElementById('itf_passenger').value=''; document.getElementById('itf_customer').value='';
       document.getElementById('itf_phone').value=''; document.getElementById('itf_vehicle').value='';
       document.getElementById('itf_policyno').value=''; document.getElementById('itf_note').value='';
       resetInvoiceUploadField('itf');
-      logActivity('create','Doanh số (Bảo hiểm)', `${unit} → ${ins.name}: ${fmt(amount)}đ (${status})`);
+      logActivity('create','Doanh số (Bảo hiểm)', `${unit} → ${ins.name}: ${fmt(amount)}đ${passengerAmount>0?` + ${fmt(passengerAmount)}đ (người ngồi trên xe)`:''} (${status})`);
       toast('Đã ghi nhận hợp đồng bảo hiểm');
       insTxUnitFilter = unit; insTxInsurerFilter = ins.name;
       renderAll();
@@ -7574,7 +7598,7 @@ function renderInsTransactions(c){
       return {
         'Ngày': t.date, 'Đơn vị': t.unit, 'NCC bảo hiểm': ins?ins.name:'(đã xoá)', 'Sản phẩm': t.product||'',
         'Số đơn': t.policyNo||'', 'Khách hàng': t.customer||'', 'SĐT': t.phone||'', 'Biển số/xe': t.vehicle||'',
-        'Phí bảo hiểm thu': Number(t.premiumAmount)||0, 'Trạng thái': t.status||'',
+        'Phí bảo hiểm thu': Number(t.premiumAmount)||0, 'Phí người ngồi trên xe': Number(t.passengerAmount)||0, 'Trạng thái': t.status||'',
       };
     });
     exportToExcel('DoanhSo_BaoHiem_'+todayISO()+'.xlsx', [{name:'Doanh số Bảo hiểm', rows}]);
@@ -7598,6 +7622,7 @@ function renderInsTransactions(c){
         if(!INS_PRODUCTS.includes(product)){ errors.push(`${line}: Sản phẩm phải là ${INS_PRODUCTS.join(' hoặc ')} (đang ghi "${row['Sản phẩm']}")`); return; }
         const amount = parseMoneyInput(row['Phí bảo hiểm thu']);
         if(amount<=0){ errors.push(`${line}: thiếu hoặc sai "Phí bảo hiểm thu"`); return; }
+        const passengerAmount = product==='BHDS' ? parseMoneyInput(row['Phí người ngồi trên xe']) : 0;
         let unit;
         if(lockedUnit) unit = lockedUnit;
         else if(lockedMulti){
@@ -7622,11 +7647,11 @@ function renderInsTransactions(c){
           phone: String(row['SĐT']||'').trim(),
           vehicle: formatVehicleField(row['Biển số/xe']),
           policyNo: String(row['Số đơn']||'').trim(),
-          premiumAmount: amount, status, note: '',
+          premiumAmount: amount, passengerAmount, status, note: '',
           invoiceLink: '', createdBy: currentUserId, createdAt: new Date().toISOString(),
         };
         toInsert.push(rec);
-        previewRows.push({'Ngày':date,'Đơn vị':unit,'NCC bảo hiểm':ins.name,'Sản phẩm':product,'Khách hàng':rec.customer,'Biển số/xe':rec.vehicle,'Phí bảo hiểm thu':fmt(amount)+'đ','Trạng thái':status});
+        previewRows.push({'Ngày':date,'Đơn vị':unit,'NCC bảo hiểm':ins.name,'Sản phẩm':product,'Khách hàng':rec.customer,'Biển số/xe':rec.vehicle,'Phí bảo hiểm thu':fmt(amount)+'đ','Phí người ngồi trên xe':passengerAmount>0?fmt(passengerAmount)+'đ':'—','Trạng thái':status});
       });
       openImportPreviewModal('Xem trước nhập Excel — Doanh số Bảo hiểm', previewRows, errors, ()=>{
         toInsert.forEach(rec=> state.insTransactions.push(rec));
@@ -7667,7 +7692,7 @@ function renderInsTransactions(c){
   const sumBox = document.getElementById('itxSummaryStats');
   if(sumBox){
     const list = getFilteredInsTx();
-    const totalPremium = list.reduce((s,t)=>s+(Number(t.premiumAmount)||0), 0);
+    const totalPremium = list.reduce((s,t)=>s+insTxTotalPremium(t), 0);
     const totalComm = list.reduce((s,t)=>s+insTxCommission(t), 0);
     sumBox.innerHTML = `
       <div class="mini-stat"><div class="mini-stat-label">Tổng phí bảo hiểm thu</div><div class="mini-stat-value">${fmt(totalPremium)}đ</div></div>
@@ -7789,7 +7814,10 @@ function renderInsTxTable(editable){
             <input class="cell-edit mini-field muted italic" data-field="vehicle" data-id="${t.id}" value="${escAttr(t.vehicle||'')}" ${dis} placeholder="Biển số / xe">
           </div>
         </td>
-        <td class="num"><input class="cell-edit num money mini-field" data-field="premiumAmount" data-id="${t.id}" type="text" inputmode="numeric" value="${formatMoneyValue(t.premiumAmount)}" ${dis} style="text-align:right;font-weight:600;min-width:120px"></td>
+        <td class="num">
+          <input class="cell-edit num money mini-field" data-field="premiumAmount" data-id="${t.id}" type="text" inputmode="numeric" value="${formatMoneyValue(t.premiumAmount)}" ${dis} style="text-align:right;font-weight:600;min-width:120px">
+          ${t.product==='BHDS' ? `<input class="cell-edit num money mini-field muted" data-field="passengerAmount" data-id="${t.id}" type="text" inputmode="numeric" value="${formatMoneyValue(t.passengerAmount||0)}" ${dis} placeholder="Phí người ngồi trên xe" title="Phí người ngồi trên xe — không chia VAT khi tính hoa hồng" style="text-align:right;min-width:120px;margin-top:4px">` : ''}
+        </td>
         <td>${(editable && !lockedForMe)
           ? `<select class="cell-edit status-select ${statusClass(t.status)}" data-status-id="${t.id}">${INS_TX_STATUSES.map(s=>`<option ${t.status===s?'selected':''}>${s}</option>`).join('')}</select>`
           : `<span class="stamp ${t.status==='Đã cấp đơn'?'ok':(t.status==='Huỷ'?'warn':'pending')}">${t.status}</span>`}</td>
