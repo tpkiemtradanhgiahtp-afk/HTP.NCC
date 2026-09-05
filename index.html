@@ -846,6 +846,13 @@ function slugifyUsername(str){
     .replace(/^\.+|\.+$/g,'');
 }
 const toDate = s => s ? new Date(s+'T00:00:00') : null;
+// Kiểm tra 1 chuỗi ngày (VD t.date của hợp đồng/hồ sơ) có thật sự hợp lệ hay không — bắt cả trường hợp rỗng
+// (chưa từng nhập) lẫn chuỗi có vẻ có giá trị nhưng parse ra "Invalid Date" (dữ liệu cũ lỗi từ trước).
+function isValidDateStr(s){
+  if(!s) return false;
+  const d = toDate(s);
+  return !!d && !isNaN(d.getTime());
+}
 
 function eomonth(d, addMonths){
   const y=d.getFullYear(), m=d.getMonth()+addMonths;
@@ -5824,6 +5831,7 @@ const BANK_TX_STATUSES = ['Đang xử lý','Đã duyệt','Đã giải ngân','T
 let bankTxUnitFilter = '';
 let bankTxBankFilter = '';
 let bankTxSearchFilter = ''; // tìm theo Khách hàng / SĐT / Biển số / Mã hồ sơ NH — khớp gần đúng (chứa)
+let bankTxBadDateOnly = false; // true = chỉ hiện hồ sơ thiếu ngày hoặc ngày không hợp lệ — công cụ dọn dữ liệu cũ bị lỗi
 let bankTxVisibleCount = 150; // phân trang kiểu "Xem thêm" — tránh vẽ hàng nghìn dòng input cùng lúc gây đơ máy
 let bankReconExpanded = new Set();
 
@@ -6086,6 +6094,8 @@ function renderBankTransactions(c){
             <datalist id="btxf_bank_list">${state.banks.map(b=>`<option value="${escAttr(b.name)}">`).join('')}</datalist>
           </div>
           <div class="field" style="min-width:220px"><label>Khách hàng / SĐT / Biển số / Mã hồ sơ</label><input id="btxf_search" placeholder="Gõ để tìm..." value="${escAttr(bankTxSearchFilter)}"></div>
+          ${(()=>{ const pfChk = partnerScopeFilter('bankId'); const badCount = (pfChk?state.bankTransactions.filter(pfChk):state.bankTransactions).filter(t=>!isValidDateStr(t.date)).length;
+            return badCount>0 ? `<div class="field" style="justify-content:flex-end"><label style="color:var(--rust)">⚠ Dữ liệu thiếu ngày</label><label style="display:flex;align-items:center;gap:6px;font-weight:600;color:var(--rust);white-space:nowrap"><input type="checkbox" id="btxf_baddate" ${bankTxBadDateOnly?'checked':''}> Chỉ hiện ${badCount} hồ sơ thiếu/sai ngày</label></div>` : ''; })()}
           <button class="btn btn-ghost" id="btxfClearBtn">Xem tất cả</button>
         </div>
       </div>
@@ -6128,6 +6138,9 @@ function renderBankTransactions(c){
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           ${editable ? `<label class="btn btn-ghost" style="cursor:pointer">⬆ Nhập Excel<input id="btxImportFile" type="file" accept=".xlsx,.xls" style="display:none"></label>` : ''}
           <button class="btn btn-ghost" id="btxExportBtn">⬇ Xuất Excel</button>
+          ${editable ? `
+          <button class="btn btn-danger-ghost" id="btxDeleteSelectedBtn" disabled>🗑 Xoá mục đã chọn (<span id="btxSelectedCount">0</span>)</button>
+          <button class="btn btn-danger-ghost" id="btxDeleteAllBtn" title="Xoá toàn bộ hồ sơ đang khớp bộ lọc hiện tại (không chỉ trang đang hiện) — dùng để dọn lại sau khi nhập Excel sai hàng loạt">🗑 Xoá toàn bộ đang lọc</button>` : ''}
         </div>
       </div>
       <div class="panel-body flush"><div class="tbl-wrap tbl-wrap-tall"><table class="data" id="btxTable"></table></div></div>
@@ -6142,8 +6155,10 @@ function renderBankTransactions(c){
   if(unitFFilter && !lockedUnit) unitFFilter.addEventListener(lockedMulti?'change':'input', ()=>{ bankTxUnitFilter = unitFFilter.value; redrawBankTxDebounced(); });
   document.getElementById('btxf_bank').addEventListener('input', ()=>{ bankTxBankFilter = document.getElementById('btxf_bank').value; redrawBankTxDebounced(); });
   document.getElementById('btxf_search').addEventListener('input', ()=>{ bankTxSearchFilter = document.getElementById('btxf_search').value; redrawBankTxDebounced(); });
+  const btxBadDateChk = document.getElementById('btxf_baddate');
+  if(btxBadDateChk) btxBadDateChk.addEventListener('change', ()=>{ bankTxBadDateOnly = btxBadDateChk.checked; bankTxVisibleCount=150; renderBankTxTable(editable); });
   document.getElementById('btxfClearBtn').addEventListener('click', ()=>{
-    bankTxBankFilter = ''; bankTxSearchFilter = ''; bankTxVisibleCount = 150;
+    bankTxBankFilter = ''; bankTxSearchFilter = ''; bankTxVisibleCount = 150; bankTxBadDateOnly = false;
     if(!lockedUnit) bankTxUnitFilter = '';
     renderAll();
   });
@@ -6262,6 +6277,32 @@ function renderBankTransactions(c){
       });
     });
   }
+  if(editable){
+    document.getElementById('btxDeleteSelectedBtn').addEventListener('click', ()=>{
+      const tblNow = document.getElementById('btxTable');
+      if(!tblNow) return;
+      const ids = Array.from(tblNow.querySelectorAll('.btx-chk:checked')).map(x=>x.dataset.id);
+      if(ids.length===0) return;
+      confirmModal(`Xoá ${ids.length} hồ sơ đã chọn?\n\nCác hồ sơ này sẽ chuyển vào Thùng rác, có thể khôi phục lại trong 30 ngày (mục "Thùng rác" ở menu Hệ thống).`, ()=>{
+        const {deleted, skipped} = bulkSoftDeleteBankTx(ids);
+        if(deleted>0) logActivity('delete','Doanh số (NH)', `Xoá hàng loạt ${deleted} hồ sơ đã chọn${skipped>0?` (bỏ qua ${skipped} hồ sơ không đủ quyền/đang khoá đối soát)`:''}`);
+        saveState();
+        toast(skipped>0 ? `Đã xoá ${deleted} hồ sơ, bỏ qua ${skipped} hồ sơ không đủ quyền/đang khoá` : `Đã xoá ${deleted} hồ sơ — xem lại ở Thùng rác nếu cần khôi phục`);
+        renderAll();
+      }, {danger:true});
+    });
+    document.getElementById('btxDeleteAllBtn').addEventListener('click', ()=>{
+      const list = getFilteredBankTx();
+      if(list.length===0){ toast('Không có hồ sơ nào khớp bộ lọc hiện tại để xoá'); return; }
+      confirmModal(`Xoá TOÀN BỘ ${list.length} hồ sơ đang khớp bộ lọc hiện tại (không chỉ trang đang hiện)?\n\nDùng khi lỡ nhập Excel sai hàng loạt, cần dọn để nhập lại. Các hồ sơ này sẽ chuyển vào Thùng rác, có thể khôi phục lại trong 30 ngày nếu cần.`, ()=>{
+        const {deleted, skipped} = bulkSoftDeleteBankTx(list.map(t=>t.id));
+        if(deleted>0) logActivity('delete','Doanh số (NH)', `Xoá hàng loạt ${deleted} hồ sơ đang lọc${skipped>0?` (bỏ qua ${skipped} hồ sơ không đủ quyền/đang khoá đối soát)`:''}`);
+        saveState();
+        toast(skipped>0 ? `Đã xoá ${deleted} hồ sơ, bỏ qua ${skipped} hồ sơ không đủ quyền/đang khoá` : `Đã xoá ${deleted} hồ sơ — xem lại ở Thùng rác nếu cần khôi phục`);
+        renderAll();
+      }, {danger:true});
+    });
+  }
   renderBankTxTable(editable);
   const sumBox = document.getElementById('btxSummaryStats');
   if(sumBox){
@@ -6290,9 +6331,21 @@ function getFilteredBankTx(){
       const hay = [t.customer, t.phone, t.vehicle, t.refCode].filter(Boolean).join(' ').toLowerCase();
       if(!hay.includes(searchFilter)) return false;
     }
+    if(bankTxBadDateOnly && isValidDateStr(t.date)) return false;
     if(!periodFilterMatches(t.date)) return false;
     return true;
   });
+}
+// Xoá hàng loạt hồ sơ vay (chuyển vào Thùng rác — khôi phục được), tôn trọng đúng quyền xoá từng bản ghi.
+function bulkSoftDeleteBankTx(ids){
+  let deleted=0, skipped=0;
+  ids.forEach(id=>{
+    const t = state.bankTransactions.find(x=>x.id===id);
+    if(!t || !canDeleteBankTx(t)){ skipped++; return; }
+    softDelete('bankTransactions', t, 'Doanh số (NH)');
+    deleted++;
+  });
+  return {deleted, skipped};
 }
 function renderBankTxTable(editable){
   const tbl = document.getElementById('btxTable');
@@ -6326,7 +6379,7 @@ function renderBankTxTable(editable){
     return;
   }
   if(sorted.length===0){
-    tbl.innerHTML = `<thead><tr><th>Hồ sơ</th><th>Khách hàng</th><th class="num">Số tiền vay</th><th>Trạng thái</th><th class="num">Hoa hồng</th><th>Người nhập</th><th>Hoá đơn</th><th></th></tr></thead>`;
+    tbl.innerHTML = `<thead><tr>${editable?'<th style="width:32px"></th>':''}<th>Hồ sơ</th><th>Khách hàng</th><th class="num">Số tiền vay</th><th>Trạng thái</th><th class="num">Hoa hồng</th><th>Người nhập</th><th>Hoá đơn</th><th></th></tr></thead>`;
     if(tbl.nextElementSibling && tbl.nextElementSibling.classList.contains('empty')) tbl.nextElementSibling.remove();
     tbl.insertAdjacentHTML('afterend', `<div class="empty"><div class="big">Không có hồ sơ nào khớp bộ lọc hiện tại</div></div>`);
     const moreBox = document.getElementById('btxMoreBox'); if(moreBox) moreBox.style.display='none';
@@ -6336,7 +6389,9 @@ function renderBankTxTable(editable){
   const rows = sorted.slice(0, bankTxVisibleCount);
   const statusClass = s => s==='Đã giải ngân'?'st-disbursed':(s==='Đã duyệt'?'st-approved':(s==='Từ chối'?'st-rejected':'st-pending'));
   tbl.innerHTML = `
-    <thead><tr><th>Hồ sơ</th><th>Khách hàng</th><th class="num">Số tiền vay</th><th>Trạng thái</th><th class="num">Hoa hồng</th><th>Người nhập</th><th>Hoá đơn</th><th></th></tr></thead>
+    <thead><tr>
+      ${editable ? `<th style="width:32px"><input type="checkbox" id="btxSelectAll" title="Chọn tất cả (trong trang đang hiện)"></th>` : ''}
+      <th>Hồ sơ</th><th>Khách hàng</th><th class="num">Số tiền vay</th><th>Trạng thái</th><th class="num">Hoa hồng</th><th>Người nhập</th><th>Hoá đơn</th><th></th></tr></thead>
     <tbody>${rows.map(t=>{
       const b = bankById(t.bankId);
       const creator = state.accounts.find(a=>a.id===t.createdBy);
@@ -6350,6 +6405,7 @@ function renderBankTxTable(editable){
       const dis = (editable && !lockedForMe)?'':'disabled';
       const canDelRow = editable && canDeleteBankTx(t);
       return `<tr>
+        ${editable ? `<td>${canDelRow?`<input type="checkbox" class="btx-chk" data-id="${escAttr(t.id)}">`:''}</td>` : ''}
         <td>
           <div class="stack-cell">
             ${editable
@@ -6389,6 +6445,24 @@ function renderBankTxTable(editable){
     } else {
       btxMoreBox.style.display = 'none';
     }
+  }
+  if(editable){
+    const selAllChk = tbl.querySelector('#btxSelectAll');
+    const rowChks = ()=> Array.from(tbl.querySelectorAll('.btx-chk'));
+    const updateSelectedUI = ()=>{
+      const checked = rowChks().filter(x=>x.checked);
+      const btn = document.getElementById('btxDeleteSelectedBtn');
+      const cnt = document.getElementById('btxSelectedCount');
+      if(cnt) cnt.textContent = checked.length;
+      if(btn) btn.disabled = checked.length===0;
+      if(selAllChk) selAllChk.checked = rowChks().length>0 && checked.length===rowChks().length;
+    };
+    if(selAllChk) selAllChk.addEventListener('change', ()=>{
+      rowChks().forEach(chk=> chk.checked = selAllChk.checked);
+      updateSelectedUI();
+    });
+    rowChks().forEach(chk=> chk.addEventListener('change', updateSelectedUI));
+    updateSelectedUI();
   }
   if(editable){
     wireCellEdits(tbl, state.bankTransactions, 'Doanh số (NH)', t=>{ const b=bankById(t.bankId); return `${t.unit} → ${b?b.name:''}`; });
@@ -6997,11 +7071,12 @@ const INS_PRODUCTS = ['BHVC','BHDS'];
 let insTxUnitFilter = '';
 let insTxInsurerFilter = '';
 let insTxSearchFilter = ''; // tìm theo Khách hàng / SĐT / Biển số / Số đơn — khớp gần đúng (chứa)
+let insTxBadDateOnly = false; // true = chỉ hiện hợp đồng thiếu ngày hoặc ngày không hợp lệ — công cụ dọn dữ liệu cũ bị lỗi
 let insTxVisibleCount = 150; // phân trang kiểu "Xem thêm" — tránh vẽ hàng nghìn dòng input cùng lúc gây đơ máy
 let insReconExpanded = new Set();
 let insRenewalUnitFilter = '';
 let insRenewalBankFilter = '';
-let insRenewalStatusFilter = ''; // '' = tất cả, 'overdue', 'due_soon', 'in_progress', 'ok', 'snoozed'
+let insRenewalStatusFilter = 'attention'; // 'attention' (mặc định, gộp overdue+due_soon+in_progress) | '' = tất cả | 'overdue' | 'due_soon' | 'in_progress' | 'ok' | 'snoozed'
 
 // Hoa hồng chỉ tính khi hợp đồng đã "Đã cấp đơn", theo đúng tỷ lệ BHVC/BHDS của NCC đó
 // (khác Ngân hàng: hoa hồng bảo hiểm không đổi theo tháng, chỉ đổi theo loại sản phẩm).
@@ -7259,7 +7334,7 @@ function computeRenewalMatches(t){
 }
 function addYearsToDate(dateStr, n){
   const d = toDate(dateStr);
-  if(!d) return null;
+  if(!d || isNaN(d.getTime())) return null; // isNaN(d.getTime()) bắt cả trường hợp Date "Invalid Date" (object vẫn truthy) — chỉ check !d là chưa đủ, để lọt lỗi này từng làm sập cả bảng Lịch tái tục khi có 1 bản ghi ngày sai/rỗng.
   const r = new Date(d);
   r.setFullYear(r.getFullYear()+n);
   return r;
@@ -7383,6 +7458,8 @@ function renderInsTransactions(c){
             <datalist id="itxf_ins_list">${state.insurers.map(i=>`<option value="${escAttr(i.name)}">`).join('')}</datalist>
           </div>
           <div class="field" style="min-width:220px"><label>Khách hàng / SĐT / Biển số / Số đơn</label><input id="itxf_search" placeholder="Gõ để tìm..." value="${escAttr(insTxSearchFilter)}"></div>
+          ${(()=>{ const pfChk = partnerScopeFilter('insurerId'); const badCount = (pfChk?state.insTransactions.filter(pfChk):state.insTransactions).filter(t=>!isValidDateStr(t.date)).length;
+            return badCount>0 ? `<div class="field" style="justify-content:flex-end"><label style="color:var(--rust)">⚠ Dữ liệu thiếu ngày</label><label style="display:flex;align-items:center;gap:6px;font-weight:600;color:var(--rust);white-space:nowrap"><input type="checkbox" id="itxf_baddate" ${insTxBadDateOnly?'checked':''}> Chỉ hiện ${badCount} hợp đồng thiếu/sai ngày</label></div>` : ''; })()}
           <button class="btn btn-ghost" id="itxfClearBtn">Xem tất cả</button>
         </div>
       </div>
@@ -7423,6 +7500,9 @@ function renderInsTransactions(c){
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           ${editable ? `<label class="btn btn-ghost" style="cursor:pointer">⬆ Nhập Excel<input id="itxImportFile" type="file" accept=".xlsx,.xls" style="display:none"></label>` : ''}
           <button class="btn btn-ghost" id="itxExportBtn">⬇ Xuất Excel</button>
+          ${editable ? `
+          <button class="btn btn-danger-ghost" id="itxDeleteSelectedBtn" disabled>🗑 Xoá mục đã chọn (<span id="itxSelectedCount">0</span>)</button>
+          <button class="btn btn-danger-ghost" id="itxDeleteAllBtn" title="Xoá toàn bộ hợp đồng đang khớp bộ lọc hiện tại (không chỉ trang đang hiện) — dùng để dọn lại sau khi nhập Excel sai hàng loạt">🗑 Xoá toàn bộ đang lọc</button>` : ''}
         </div>
       </div>
       <div class="panel-body flush"><div class="tbl-wrap tbl-wrap-tall"><table class="data" id="itxTable"></table></div></div>
@@ -7439,8 +7519,10 @@ function renderInsTransactions(c){
   if(unitFFilter && !lockedUnit) unitFFilter.addEventListener(lockedMulti?'change':'input', ()=>{ insTxUnitFilter = unitFFilter.value; redrawInsTxDebounced(); });
   document.getElementById('itxf_ins').addEventListener('input', ()=>{ insTxInsurerFilter = document.getElementById('itxf_ins').value; redrawInsTxDebounced(); });
   document.getElementById('itxf_search').addEventListener('input', ()=>{ insTxSearchFilter = document.getElementById('itxf_search').value; redrawInsTxDebounced(); });
+  const itxBadDateChk = document.getElementById('itxf_baddate');
+  if(itxBadDateChk) itxBadDateChk.addEventListener('change', ()=>{ insTxBadDateOnly = itxBadDateChk.checked; insTxVisibleCount=150; renderInsTxTable(editable); });
   document.getElementById('itxfClearBtn').addEventListener('click', ()=>{
-    insTxInsurerFilter = ''; insTxSearchFilter = ''; insTxVisibleCount = 150;
+    insTxInsurerFilter = ''; insTxSearchFilter = ''; insTxVisibleCount = 150; insTxBadDateOnly = false;
     if(!lockedUnit) insTxUnitFilter = '';
     renderAll();
   });
@@ -7552,6 +7634,32 @@ function renderInsTransactions(c){
       });
     });
   }
+  if(editable){
+    document.getElementById('itxDeleteSelectedBtn').addEventListener('click', ()=>{
+      const tblNow = document.getElementById('itxTable');
+      if(!tblNow) return;
+      const ids = Array.from(tblNow.querySelectorAll('.itx-chk:checked')).map(x=>x.dataset.id);
+      if(ids.length===0) return;
+      confirmModal(`Xoá ${ids.length} hợp đồng đã chọn?\n\nCác hợp đồng này sẽ chuyển vào Thùng rác, có thể khôi phục lại trong 30 ngày (mục "Thùng rác" ở menu Hệ thống).`, ()=>{
+        const {deleted, skipped} = bulkSoftDeleteInsTx(ids);
+        if(deleted>0) logActivity('delete','Doanh số (Bảo hiểm)', `Xoá hàng loạt ${deleted} hợp đồng đã chọn${skipped>0?` (bỏ qua ${skipped} hợp đồng không đủ quyền/đang khoá đối soát)`:''}`);
+        saveState();
+        toast(skipped>0 ? `Đã xoá ${deleted} hợp đồng, bỏ qua ${skipped} hợp đồng không đủ quyền/đang khoá` : `Đã xoá ${deleted} hợp đồng — xem lại ở Thùng rác nếu cần khôi phục`);
+        renderAll();
+      }, {danger:true});
+    });
+    document.getElementById('itxDeleteAllBtn').addEventListener('click', ()=>{
+      const list = getFilteredInsTx();
+      if(list.length===0){ toast('Không có hợp đồng nào khớp bộ lọc hiện tại để xoá'); return; }
+      confirmModal(`Xoá TOÀN BỘ ${list.length} hợp đồng đang khớp bộ lọc hiện tại (không chỉ trang đang hiện)?\n\nDùng khi lỡ nhập Excel sai hàng loạt, cần dọn để nhập lại. Các hợp đồng này sẽ chuyển vào Thùng rác, có thể khôi phục lại trong 30 ngày nếu cần.`, ()=>{
+        const {deleted, skipped} = bulkSoftDeleteInsTx(list.map(t=>t.id));
+        if(deleted>0) logActivity('delete','Doanh số (Bảo hiểm)', `Xoá hàng loạt ${deleted} hợp đồng đang lọc${skipped>0?` (bỏ qua ${skipped} hợp đồng không đủ quyền/đang khoá đối soát)`:''}`);
+        saveState();
+        toast(skipped>0 ? `Đã xoá ${deleted} hợp đồng, bỏ qua ${skipped} hợp đồng không đủ quyền/đang khoá` : `Đã xoá ${deleted} hợp đồng — xem lại ở Thùng rác nếu cần khôi phục`);
+        renderAll();
+      }, {danger:true});
+    });
+  }
   renderInsTxTable(editable);
   const sumBox = document.getElementById('itxSummaryStats');
   if(sumBox){
@@ -7580,9 +7688,23 @@ function getFilteredInsTx(){
       const hay = [t.customer, t.phone, t.vehicle, t.policyNo].filter(Boolean).join(' ').toLowerCase();
       if(!hay.includes(searchFilter)) return false;
     }
+    if(insTxBadDateOnly && isValidDateStr(t.date)) return false;
     if(!periodFilterMatches(t.date)) return false;
     return true;
   });
+}
+// Xoá hàng loạt hợp đồng bảo hiểm (chuyển vào Thùng rác — khôi phục được ở "Thùng rác", không mất vĩnh viễn
+// ngay). Tôn trọng đúng quyền xoá từng bản ghi (canDeleteInsTx) — bản ghi nào không đủ quyền/đang khoá đối
+// soát thì bỏ qua, không chặn cả lô. Trả về {deleted, skipped} để nơi gọi báo cáo rõ cho người dùng.
+function bulkSoftDeleteInsTx(ids){
+  let deleted=0, skipped=0;
+  ids.forEach(id=>{
+    const t = state.insTransactions.find(x=>x.id===id);
+    if(!t || !canDeleteInsTx(t)){ skipped++; return; }
+    softDelete('insTransactions', t, 'Doanh số (Bảo hiểm)');
+    deleted++;
+  });
+  return {deleted, skipped};
 }
 function renderInsTxTable(editable){
   const tbl = document.getElementById('itxTable');
@@ -7616,7 +7738,7 @@ function renderInsTxTable(editable){
     return;
   }
   if(sorted.length===0){
-    tbl.innerHTML = `<thead><tr><th>Hợp đồng</th><th>Khách hàng</th><th class="num">Phí bảo hiểm</th><th>Trạng thái</th><th class="num">Hoa hồng</th><th>Người nhập</th><th>Hoá đơn</th><th></th></tr></thead>`;
+    tbl.innerHTML = `<thead><tr>${editable?'<th style="width:32px"></th>':''}<th>Hợp đồng</th><th>Khách hàng</th><th class="num">Phí bảo hiểm</th><th>Trạng thái</th><th class="num">Hoa hồng</th><th>Người nhập</th><th>Hoá đơn</th><th></th></tr></thead>`;
     if(tbl.nextElementSibling && tbl.nextElementSibling.classList.contains('empty')) tbl.nextElementSibling.remove();
     tbl.insertAdjacentHTML('afterend', `<div class="empty"><div class="big">Không có hợp đồng nào khớp bộ lọc hiện tại</div></div>`);
     const moreBox = document.getElementById('itxMoreBox'); if(moreBox) moreBox.style.display='none';
@@ -7629,7 +7751,9 @@ function renderInsTxTable(editable){
   const rows = sorted.slice(0, insTxVisibleCount);
   const statusClass = s => s==='Đã cấp đơn'?'st-disbursed':(s==='Đã duyệt'?'st-approved':(s==='Huỷ'?'st-rejected':'st-pending'));
   tbl.innerHTML = `
-    <thead><tr><th>Hợp đồng</th><th>Khách hàng</th><th class="num">Phí bảo hiểm</th><th>Trạng thái</th><th class="num">Hoa hồng</th><th>Người nhập</th><th>Hoá đơn</th><th></th></tr></thead>
+    <thead><tr>
+      ${editable ? `<th style="width:32px"><input type="checkbox" id="itxSelectAll" title="Chọn tất cả (trong trang đang hiện)"></th>` : ''}
+      <th>Hợp đồng</th><th>Khách hàng</th><th class="num">Phí bảo hiểm</th><th>Trạng thái</th><th class="num">Hoa hồng</th><th>Người nhập</th><th>Hoá đơn</th><th></th></tr></thead>
     <tbody>${rows.map(t=>{
       const ins = insurerById(t.insurerId);
       const creator = state.accounts.find(a=>a.id===t.createdBy);
@@ -7642,6 +7766,7 @@ function renderInsTxTable(editable){
       const dis = (editable && !lockedForMe)?'':'disabled';
       const canDelRow = editable && canDeleteInsTx(t);
       return `<tr>
+        ${editable ? `<td>${canDelRow?`<input type="checkbox" class="itx-chk" data-id="${escAttr(t.id)}">`:''}</td>` : ''}
         <td>
           <div class="stack-cell">
             ${editable
@@ -7679,6 +7804,24 @@ function renderInsTxTable(editable){
     } else {
       itxMoreBox.style.display = 'none';
     }
+  }
+  if(editable){
+    const selAllChk = tbl.querySelector('#itxSelectAll');
+    const rowChks = ()=> Array.from(tbl.querySelectorAll('.itx-chk'));
+    const updateSelectedUI = ()=>{
+      const checked = rowChks().filter(x=>x.checked);
+      const btn = document.getElementById('itxDeleteSelectedBtn');
+      const cnt = document.getElementById('itxSelectedCount');
+      if(cnt) cnt.textContent = checked.length;
+      if(btn) btn.disabled = checked.length===0;
+      if(selAllChk) selAllChk.checked = rowChks().length>0 && checked.length===rowChks().length;
+    };
+    if(selAllChk) selAllChk.addEventListener('change', ()=>{
+      rowChks().forEach(chk=> chk.checked = selAllChk.checked);
+      updateSelectedUI();
+    });
+    rowChks().forEach(chk=> chk.addEventListener('change', updateSelectedUI));
+    updateSelectedUI();
   }
   if(editable){
     wireCellEdits(tbl, state.insTransactions, 'Doanh số (Bảo hiểm)', t=>{ const ins=insurerById(t.insurerId); return `${t.unit} → ${ins?ins.name:''}`; });
@@ -8263,7 +8406,8 @@ function renderInsRenewal(c){
           </div>
           <div class="field"><label>Trạng thái</label>
             <select id="irwf_status">
-              <option value="">Tất cả trạng thái</option>
+              <option value="attention" ${insRenewalStatusFilter==='attention'?'selected':''}>🔔 Cần chú ý (mặc định)</option>
+              <option value="" ${insRenewalStatusFilter===''?'selected':''}>Tất cả trạng thái</option>
               <option value="overdue" ${insRenewalStatusFilter==='overdue'?'selected':''}>Quá hạn chưa khai thác</option>
               <option value="due_soon" ${insRenewalStatusFilter==='due_soon'?'selected':''}>Sắp đến hạn</option>
               <option value="in_progress" ${insRenewalStatusFilter==='in_progress'?'selected':''}>Đang xử lý tái tục</option>
@@ -8281,7 +8425,7 @@ function renderInsRenewal(c){
     </div>
     <div class="panel">
       <div class="panel-head">
-        <div><h2>Danh sách hồ sơ cần theo dõi</h2><div class="desc">Quá hạn/Sắp đến hạn luôn nổi lên đầu và nhấp nháy để dễ nhận ra</div></div>
+        <div><h2>Danh sách hồ sơ cần theo dõi</h2><div class="desc">Mặc định chỉ hiện hồ sơ Quá hạn/Sắp đến hạn/Đang xử lý — đổi ô "Trạng thái" ở Bộ lọc thành "Tất cả trạng thái" để xem cả hồ sơ Chưa tới hạn. Quá hạn/Sắp đến hạn luôn nổi lên đầu và nhấp nháy để dễ nhận ra.</div></div>
         ${isAdmin ? `<div style="display:flex;gap:8px;flex-wrap:wrap">
           <button class="btn btn-ghost" id="renewalDeleteSelectedBtn" disabled>🗑 Bỏ theo dõi mục đã chọn (<span id="renewalSelectedCount">0</span>)</button>
           <button class="btn btn-ghost" id="renewalDeleteAllBtn">🗑 Bỏ theo dõi toàn bộ</button>
@@ -8481,7 +8625,9 @@ function renderInsRenewal(c){
         const b = bankById(r.t.bankId);
         if(!b || b.name.toLowerCase()!==insRenewalBankFilter.trim().toLowerCase()) return false;
       }
-      if(insRenewalStatusFilter && r.status!==insRenewalStatusFilter) return false;
+      if(insRenewalStatusFilter==='attention'){
+        if(!(r.status==='overdue'||r.status==='due_soon'||r.status==='in_progress')) return false;
+      } else if(insRenewalStatusFilter && r.status!==insRenewalStatusFilter) return false;
       return true;
     }).sort((a,b)=>{
       const aSn = a.status==='snoozed'?1:0, bSn = b.status==='snoozed'?1:0;
@@ -8507,6 +8653,7 @@ function renderInsRenewal(c){
         <th class="wrap" style="max-width:100px">Lần cấp đơn BH gần nhất</th><th class="wrap" style="max-width:90px">Cách khớp</th><th class="wrap" style="max-width:95px">Mốc đến hạn tiếp theo</th><th class="num">Số ngày</th><th>Trạng thái</th><th></th>
       </tr></thead>
       <tbody>${rows.map(r=>{
+       try{
         const isBank = r.source==='bank';
         const b = isBank ? bankById(r.t.bankId) : null;
         const daysTxt = r.daysLeft<0 ? `Quá ${-r.daysLeft} ngày` : `Còn ${r.daysLeft} ngày`;
@@ -8536,6 +8683,12 @@ function renderInsRenewal(c){
           <td>${renewalStatusStampHTML(r.status, r.snoozeUntil)}</td>
           <td><div style="display:flex;flex-direction:column;align-items:flex-start">${actionBtn}${trackBtn}</div></td>
         </tr>`;
+       }catch(err){
+        // Không để 1 bản ghi bất thường (dữ liệu ngày lỗi, thiếu field...) làm sập trắng cả bảng — chỉ báo lỗi
+        // đúng dòng đó, các dòng còn lại vẫn hiển thị bình thường. In lỗi ra console để dễ tra khi cần.
+        console.error('Lỗi dựng dòng Lịch tái tục cho hồ sơ', r && r.t && r.t.id, err);
+        return `<tr><td colspan="9" style="color:var(--rust)">⚠ Lỗi hiển thị 1 hồ sơ (id: ${escHtml(String(r && r.t && r.t.id || '?'))}) — có thể do dữ liệu ngày bị sai/thiếu. Xem console hoặc báo Admin kiểm tra.</td></tr>`;
+       }
       }).join('')}</tbody>`;
     if(canManageLinks){
       tbl.querySelectorAll('[data-editlink]').forEach(btn=>{
