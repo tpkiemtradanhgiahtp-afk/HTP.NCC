@@ -8735,9 +8735,10 @@ function allInsRenewalGroupsForSuggestion(){
   return result;
 }
 // Quét toàn bộ hợp đồng bảo hiểm (kể cả hồ sơ đang theo dõi qua khoản vay), so từng CẶP nhóm khác nhau xem
-// có dấu hiệu "cùng 1 khách nhưng bị gõ lệch 1 ký tự" hay không (SĐT lệch 1 số, hoặc biển số lệch 1 ký tự
-// VÀ trùng tên) — chỉ đưa ra GỢI Ý để người dùng tự xem xét và xác nhận bằng nút "🔗 Sửa liên kết", KHÔNG
-// tự động gộp (biển số lệch 1 ký tự thường là 2 XE THẬT KHÁC NHAU, tự động gộp rất rủi ro). Đây là thao tác
+// có dấu hiệu "cùng 1 khách" hay không, gồm 3 quy tắc: (1) cùng SĐT tuyệt đối nhưng khác nhóm — thường do 1
+// bên ghi số khung lúc xe chưa có biển số, bên kia đã có biển số thật lúc tái tục; (2) SĐT lệch đúng 1 số —
+// có thể gõ lệch; (3) biển số lệch đúng 1 ký tự VÀ trùng tên khách — có thể gõ lệch biển số. Chỉ đưa ra GỢI
+// Ý để người dùng tự xem xét và xác nhận bằng nút "🔗 Sửa liên kết", KHÔNG tự động gộp (biển số lệch 1 ký tự thường là 2 XE THẬT KHÁC NHAU, tự động gộp rất rủi ro). Đây là thao tác
 // quét thủ công (Admin/Quản lý bấm nút), không chạy tự động mỗi lần vẽ trang để tránh chậm khi dữ liệu lớn.
 function findRenewalMatchSuggestions(){
   const rows = allInsRenewalGroupsForSuggestion();
@@ -8751,7 +8752,12 @@ function findRenewalMatchSuggestions(){
       const plateA = normalizePlate(a.t.vehicle), plateB = normalizePlate(b.t.vehicle);
       const nameA = normalizeName(a.t.customer), nameB = normalizeName(b.t.customer);
       let reason = null;
-      if(phoneA && phoneB && phoneA.length===phoneB.length && phoneA!==phoneB && levenshteinDistance(phoneA,phoneB)===1){
+      if(phoneA && phoneB && phoneA===phoneB){
+        // Cùng SĐT TUYỆT ĐỐI mà lại nằm ở 2 nhóm khác nhau -> chắc chắn có ít nhất 1 bên đang khớp theo
+        // biển số khác nhau (VD 1 bên ghi số khung lúc xe chưa có biển, 1 bên ghi biển số thật lúc tái tục)
+        // — vì nếu cả 2 đều không có biển số, chúng đã tự gộp chung 1 nhóm theo SĐT rồi, không cần gợi ý.
+        reason = `Cùng SĐT (${escHtml(a.t.phone)}) nhưng đang bị xếp 2 nhóm khác nhau — có thể do 1 bên ghi số khung lúc xe chưa có biển số, bên kia đã có biển số thật`;
+      } else if(phoneA && phoneB && phoneA.length===phoneB.length && phoneA!==phoneB && levenshteinDistance(phoneA,phoneB)===1){
         reason = `SĐT gần giống nhau (${escHtml(a.t.phone)} ↔ ${escHtml(b.t.phone)}) — có thể gõ lệch 1 số`;
       } else if(plateA && plateB && plateA!==plateB && Math.abs(plateA.length-plateB.length)<=1 && levenshteinDistance(plateA,plateB)===1 && nameA && nameA===nameB){
         reason = `Biển số gần giống nhau (${escHtml(a.t.vehicle)} ↔ ${escHtml(b.t.vehicle)}), cùng tên khách — có thể gõ lệch 1 ký tự biển số`;
