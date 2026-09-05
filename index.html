@@ -988,7 +988,7 @@ const BRANCH_RECORD_FIELDS = {
 const BRANCH_META_FIELDS = {
   ncc:    ['nextSupplierNo','monitoring','reportDate'],
   nh:     ['nextBankNo'],
-  bh:     ['insAllocAlertThreshold','nextInsNo','insRenewalAlertDays','insRenewalAutoSnoozeDays','insAllocMonthLocks'],
+  bh:     ['insAllocAlertThreshold','nextInsNo','insRenewalAlertDays','insRenewalAutoSnoozeDays','insAllocMonthLocks','renewalDismissedSuggestions'],
   shared: ['units','driveUploadUrl','driveUploadSecret','emailNotifyEnabled','editPerms'],
 };
 // Toàn bộ field của 1 nhánh (gộp cả 2 loại trên) — dùng ở những chỗ chỉ cần biết "nhánh này có field gì"
@@ -1066,14 +1066,15 @@ function parseImportDate(val){
 // errors: mảng chuỗi mô tả các dòng bị bỏ qua (thiếu dữ liệu / không khớp danh mục...).
 function openImportPreviewModal(title, summaryRows, errors, onConfirm){
   const previewCols = summaryRows.length ? Object.keys(summaryRows[0]) : [];
+  const warnCount = summaryRows.filter(r=>r['⚠ Cảnh báo']).length;
   const body = `
     <div class="helper" style="margin-bottom:10px">
-      Đọc được <b>${summaryRows.length}</b> dòng hợp lệ sẽ được thêm mới${errors.length ? `, <b style="color:var(--rust)">${errors.length} dòng bị bỏ qua</b> (xem chi tiết bên dưới)` : ''}.
+      Đọc được <b>${summaryRows.length}</b> dòng hợp lệ sẽ được thêm mới${errors.length ? `, <b style="color:var(--rust)">${errors.length} dòng bị bỏ qua</b> (xem chi tiết bên dưới)` : ''}${warnCount>0 ? `, <b style="color:var(--amber)">${warnCount} dòng có thể trùng với hợp đồng đã có</b> (xem cột "⚠ Cảnh báo")` : ''}.
       Đây là thao tác ghi hàng loạt — kiểm tra kỹ bảng xem trước rồi mới bấm xác nhận.
     </div>
     ${summaryRows.length ? `<div class="tbl-wrap tbl-wrap-tall" style="max-height:320px"><table class="data">
       <thead><tr>${previewCols.map(k=>`<th class="wrap">${escHtml(k)}</th>`).join('')}</tr></thead>
-      <tbody>${summaryRows.slice(0,200).map(r=>`<tr>${previewCols.map(k=>`<td class="wrap">${escHtml(String(r[k]??''))}</td>`).join('')}</tr>`).join('')}</tbody>
+      <tbody>${summaryRows.slice(0,200).map(r=>`<tr>${previewCols.map(k=>`<td class="wrap"${k==='⚠ Cảnh báo'&&r[k]?' style="color:var(--amber);font-weight:600"':''}>${escHtml(String(r[k]??''))}</td>`).join('')}</tr>`).join('')}</tbody>
     </table></div>${summaryRows.length>200 ? `<div class="helper">... và ${summaryRows.length-200} dòng khác (vẫn được nhập đủ khi xác nhận)</div>` : ''}` : ''}
     ${errors.length ? `<div class="helper" style="margin-top:10px;color:var(--rust)">Dòng bị bỏ qua:<br>${errors.slice(0,50).map(e=>escHtml(e)).join('<br>')}${errors.length>50?`<br>... và ${errors.length-50} lỗi khác`:''}</div>` : ''}
     <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
@@ -2892,6 +2893,7 @@ function seedState(){
     insRenewalAlertDays: 45, // hồ sơ còn ≤ số ngày này tới mốc tái tục -> tính là "Sắp đến hạn" — chỉ Admin sửa được
     insRenewalAutoSnoozeDays: 15, // quá hạn quá số ngày này mà chưa tái tục -> tự dời mốc sang đúng 1 năm sau, không cần Admin tự tay Tạm ẩn — chỉ Admin sửa được
     insAllocMonthLocks: {}, // {'YYYY-MM': {locked, lockedBy, lockedAt}} — Admin "chốt" tỷ lệ phân bổ theo tháng, xem isInsAllocMonthLocked()
+    renewalDismissedSuggestions: [], // mảng chuỗi "idA|idB" (đã sắp xếp) — các cặp gợi ý "nghi ngờ trùng khách hàng" mà người dùng đã xác nhận KHÔNG phải trùng, để không hiện lại
     nextInsNo: insurers.length+1,
     driveUploadUrl: '', // URL Web App của Google Apps Script dùng để upload ảnh/PDF hợp đồng lên Drive — chỉ Admin sửa (Cài đặt)
     driveUploadSecret: '', // mã bí mật gửi kèm mỗi lần upload để tránh người ngoài spam vào cổng upload này
@@ -6197,7 +6199,7 @@ function renderBankTransactions(c){
         const lockR = lockingReconOf({bankId:bank.id, date:btxDate}, state.bankReconciliations, 'bankId');
         if(lockR){ toast(`Ngày này thuộc kỳ đối soát "${lockR.period}" đã chốt với ${bank.name} — chỉ Admin được ghi nhận thêm`); return; }
       }
-      state.bankTransactions.push({
+      const candidate = {
         id: uid('bt'), date: btxDate,
         unit, bankId: bank.id, product: (document.getElementById('btf_product').value||'').trim() || DEFAULT_BANK_PRODUCT,
         customer: document.getElementById('btf_customer').value.trim(),
@@ -6207,15 +6209,28 @@ function renderBankTransactions(c){
         loanAmount: amount, status, note: document.getElementById('btf_note').value.trim(),
         invoiceLink: document.getElementById('btf_invoice').value.trim(),
         createdBy: currentUserId, createdAt: new Date().toISOString(),
-      });
-      document.getElementById('btf_amount').value=''; document.getElementById('btf_customer').value='';
-      document.getElementById('btf_phone').value=''; document.getElementById('btf_vehicle').value='';
-      document.getElementById('btf_refcode').value=''; document.getElementById('btf_note').value='';
-      resetInvoiceUploadField('btf');
-      logActivity('create','Doanh số (NH)', `${unit} → ${bank.name} (${document.getElementById('btf_product').value.trim()||DEFAULT_BANK_PRODUCT}): ${fmt(amount)}đ (${status})`);
-      toast('Đã ghi nhận hồ sơ vay');
-      bankTxUnitFilter = unit; bankTxBankFilter = bank.name;
-      renderAll();
+      };
+      const doSave = ()=>{
+        state.bankTransactions.push(candidate);
+        document.getElementById('btf_amount').value=''; document.getElementById('btf_customer').value='';
+        document.getElementById('btf_phone').value=''; document.getElementById('btf_vehicle').value='';
+        document.getElementById('btf_refcode').value=''; document.getElementById('btf_note').value='';
+        resetInvoiceUploadField('btf');
+        logActivity('create','Doanh số (NH)', `${unit} → ${bank.name} (${candidate.product}): ${fmt(amount)}đ (${status})`);
+        toast('Đã ghi nhận hồ sơ vay');
+        bankTxUnitFilter = unit; bankTxBankFilter = bank.name;
+        renderAll();
+      };
+      const dups = findPossibleDuplicateTx(candidate, state.bankTransactions);
+      if(dups.length>0){
+        const listText = dups.map(d=>{
+          const db = bankById(d.bankId);
+          return `• ${d.customer||'(chưa có tên KH)'} · ${d.vehicle||'—'} — ${db?db.name:''} · ${d.date} · ${d.status} · ${fmt(d.loanAmount)}đ`;
+        }).join('\n');
+        confirmModal(`⚠ Đã có ${dups.length} hồ sơ khác trùng khách hàng (cùng biển số/SĐT/tên) trong vòng ${INS_DUP_WARN_DAYS} ngày gần đây:\n\n${listText}\n\nBạn có chắc vẫn muốn ghi nhận thêm hồ sơ mới này không?`, doSave, {danger:false});
+      } else {
+        doSave();
+      }
     });
   }
   document.getElementById('btxExportBtn').addEventListener('click', ()=>{
@@ -6275,8 +6290,10 @@ function renderBankTransactions(c){
           loanAmount: amount, status, note: '',
           invoiceLink: '', createdBy: currentUserId, createdAt: new Date().toISOString(),
         };
+        const dups = findPossibleDuplicateTx(rec, [...state.bankTransactions, ...toInsert]);
         toInsert.push(rec);
-        previewRows.push({'Ngày':date,'Đơn vị':unit,'Ngân hàng':bank.name,'Gói vay':product,'Khách hàng':rec.customer,'Biển số/xe':rec.vehicle,'Số tiền vay':fmt(amount)+'đ','Trạng thái':status});
+        previewRows.push({'Ngày':date,'Đơn vị':unit,'Ngân hàng':bank.name,'Gói vay':product,'Khách hàng':rec.customer,'Biển số/xe':rec.vehicle,'Số tiền vay':fmt(amount)+'đ','Trạng thái':status,
+          '⚠ Cảnh báo': dups.length ? `Có thể trùng (${dups.length} hồ sơ gần giống, ngày ${dups.map(d=>d.date).join(', ')})` : ''});
       });
       openImportPreviewModal('Xem trước nhập Excel — Doanh số Ngân hàng', previewRows, errors, ()=>{
         toInsert.forEach(rec=> state.bankTransactions.push(rec));
@@ -7418,6 +7435,57 @@ function renewalGroupKeyFor(t){
   if(name) return 'name:'+name;
   return null;
 }
+// Số ngày tối đa để 2 hợp đồng "cùng khách" (khớp biển số/SĐT/tên) bị coi là NGHI NGỜ trùng lặp khi nhập
+// tay/Excel — cố ý để NGẮN (không phải 365 ngày) vì mục đích là bắt lỗi "lỡ nhập 2 lần cùng 1 hợp đồng",
+// KHÔNG phải cảnh báo tái tục hợp lệ (thường cách nhau ~1 năm, không nên bị coi là trùng).
+const INS_DUP_WARN_DAYS = 60;
+// Kiểm tra 2 hợp đồng có "cùng khách + ngày gần nhau" hay không — dùng đúng logic khớp biển số/SĐT/tên có
+// sẵn (renewalGroupKeyFor) để nhất quán với toàn bộ cơ chế Lịch tái tục, không phát minh thêm quy tắc khác.
+function isLikelyDuplicateInsTx(a, b, maxDays){
+  const keyA = renewalGroupKeyFor(a), keyB = renewalGroupKeyFor(b);
+  if(!keyA || !keyB || keyA!==keyB) return false;
+  const dA = toDate(a.date), dB = toDate(b.date);
+  if(!dA || !dB) return false;
+  return Math.abs((dA-dB)/86400000) <= (maxDays==null?INS_DUP_WARN_DAYS:maxDays);
+}
+// Tìm các hồ sơ ĐÃ CÓ (trong pool) có khả năng là "lỡ nhập trùng" với candidate — dùng ở cả 2 module (Doanh
+// số Bảo hiểm / Doanh số Ngân hàng), cả form nhập tay lẫn Nhập Excel, để cảnh báo TRƯỚC khi ghi, không chặn
+// cứng (đôi khi đúng là 2 hợp đồng thật khác nhau trùng hợp cùng khách trong thời gian ngắn, VD hợp đồng bổ
+// sung/sửa đổi) — chỉ nhắc người nhập tự xem lại.
+function findPossibleDuplicateTx(candidate, pool, excludeId){
+  return (pool||[]).filter(t=> t.id!==excludeId && t.status!=='Huỷ' && isLikelyDuplicateInsTx(candidate, t, INS_DUP_WARN_DAYS));
+}
+// Khoảng cách Levenshtein (số ký tự cần sửa/thêm/xoá để biến chuỗi a thành b) — dùng để phát hiện "gõ lệch
+// 1-2 ký tự" ở công cụ rà soát nghi ngờ trùng khách hàng. KHÔNG dùng để tự động gộp nhóm (biển số lệch 1 ký
+// tự thường là 2 XE THẬT KHÁC NHAU, không phải gõ sai — rất rủi ro nếu tự động gộp nhầm dữ liệu 2 khách
+// khác nhau), chỉ dùng để GỢI Ý cho người dùng tự xem xét và xác nhận bằng tay.
+function levenshteinDistance(a, b){
+  a = a||''; b = b||'';
+  const m = a.length, n = b.length;
+  if(m===0) return n;
+  if(n===0) return m;
+  let prev = Array.from({length:n+1}, (_,j)=>j);
+  for(let i=1;i<=m;i++){
+    const cur = [i];
+    for(let j=1;j<=n;j++){
+      cur[j] = a[i-1]===b[j-1] ? prev[j-1] : 1+Math.min(prev[j-1], prev[j], cur[j-1]);
+    }
+    prev = cur;
+  }
+  return prev[n];
+}
+// Phân giải khoá nhóm THẬT SỰ của 1 hợp đồng bảo hiểm độc lập, có tính tới liên kết thủ công
+// (t.renewalGroupLink = id của 1 hợp đồng khác mà Admin/Quản lý xác nhận là "cùng 1 khách/xe", dùng khi
+// khớp tự động theo biển số/SĐT/tên bị gõ lệch ký tự nên thất bại). Đệ quy có chống vòng lặp (visited) để an
+// toàn nếu lỡ tạo liên kết vòng tròn A→B→A.
+function resolveStandaloneRenewalKey(t, byId, visited){
+  visited = visited || new Set();
+  if(t.renewalGroupLink && byId.has(t.renewalGroupLink) && !visited.has(t.id)){
+    visited.add(t.id);
+    return resolveStandaloneRenewalKey(byId.get(t.renewalGroupLink), byId, visited);
+  }
+  return renewalGroupKeyFor(t);
+}
 // Tìm hợp đồng bảo hiểm khớp với 1 hồ sơ vay — ưu tiên: liên kết thủ công (nếu có) > biển số > SĐT > tên.
 // Trả về {matches, method} để giao diện hiển thị rõ đang khớp theo cách nào, tránh coi kết quả suy đoán
 // như dữ liệu chắc chắn.
@@ -7502,8 +7570,9 @@ function standaloneRenewalRows(){
   });
   const active = state.insTransactions.filter(t=>t.status!=='Huỷ');
   const groups = new Map();
+  const byId = new Map(active.map(t=>[t.id, t]));
   active.forEach(t=>{
-    const key = renewalGroupKeyFor(t);
+    const key = resolveStandaloneRenewalKey(t, byId);
     if(!key || bankTrackedKeys.has(key)) return; // không đủ thông tin để nhóm, hoặc đã theo dõi qua đường vay -> bỏ qua tránh trùng
     if(!groups.has(key)) groups.set(key, []);
     groups.get(key).push(t);
@@ -7791,7 +7860,7 @@ function renderInsTransactions(c){
         const lockR = lockingReconOf({insurerId:ins.id, date:itxDate}, state.insReconciliations, 'insurerId');
         if(lockR){ toast(`Ngày này thuộc kỳ đối soát "${lockR.period}" đã chốt với ${ins.name} — chỉ Admin được ghi nhận thêm`); return; }
       }
-      state.insTransactions.push({
+      const candidate = {
         id: uid('it'), date: itxDate,
         unit, insurerId: ins.id, product,
         issueType: document.getElementById('itf_issuetype').value,
@@ -7802,15 +7871,30 @@ function renderInsTransactions(c){
         premiumAmount: amount, passengerAmount, status, note: document.getElementById('itf_note').value.trim(),
         invoiceLink: document.getElementById('itf_invoice').value.trim(),
         createdBy: currentUserId, createdAt: new Date().toISOString(),
-      });
-      document.getElementById('itf_amount').value=''; document.getElementById('itf_passenger').value=''; document.getElementById('itf_customer').value='';
-      document.getElementById('itf_phone').value=''; document.getElementById('itf_vehicle').value='';
-      document.getElementById('itf_policyno').value=''; document.getElementById('itf_note').value='';
-      resetInvoiceUploadField('itf');
-      logActivity('create','Doanh số (Bảo hiểm)', `${unit} → ${ins.name}: ${fmt(amount)}đ${passengerAmount>0?` + ${fmt(passengerAmount)}đ (người ngồi trên xe)`:''} (${status})`);
-      toast('Đã ghi nhận hợp đồng bảo hiểm');
-      insTxUnitFilter = unit; insTxInsurerFilter = ins.name;
-      renderAll();
+      };
+      const doSave = ()=>{
+        state.insTransactions.push(candidate);
+        document.getElementById('itf_amount').value=''; document.getElementById('itf_passenger').value=''; document.getElementById('itf_customer').value='';
+        document.getElementById('itf_phone').value=''; document.getElementById('itf_vehicle').value='';
+        document.getElementById('itf_policyno').value=''; document.getElementById('itf_note').value='';
+        resetInvoiceUploadField('itf');
+        logActivity('create','Doanh số (Bảo hiểm)', `${unit} → ${ins.name}: ${fmt(amount)}đ${passengerAmount>0?` + ${fmt(passengerAmount)}đ (người ngồi trên xe)`:''} (${status})`);
+        toast('Đã ghi nhận hợp đồng bảo hiểm');
+        insTxUnitFilter = unit; insTxInsurerFilter = ins.name;
+        renderAll();
+      };
+      // Cảnh báo TRƯỚC khi ghi nếu đã có hợp đồng khác cùng khách (khớp biển số/SĐT/tên) trong vòng
+      // ${INS_DUP_WARN_DAYS} ngày gần đây — chỉ nhắc, không chặn (đôi khi đúng là 2 hợp đồng thật khác nhau).
+      const dups = findPossibleDuplicateTx(candidate, state.insTransactions);
+      if(dups.length>0){
+        const listText = dups.map(d=>{
+          const dins = insurerById(d.insurerId);
+          return `• ${d.customer||'(chưa có tên KH)'} · ${d.vehicle||'—'} — ${dins?dins.name:''} · ${d.date} · ${d.status} · ${fmt(d.premiumAmount)}đ`;
+        }).join('\n');
+        confirmModal(`⚠ Đã có ${dups.length} hợp đồng khác trùng khách hàng (cùng biển số/SĐT/tên) trong vòng ${INS_DUP_WARN_DAYS} ngày gần đây:\n\n${listText}\n\nBạn có chắc vẫn muốn ghi nhận thêm hợp đồng mới này không?`, doSave, {danger:false});
+      } else {
+        doSave();
+      }
     });
   }
   document.getElementById('itxExportBtn').addEventListener('click', ()=>{
@@ -7874,8 +7958,13 @@ function renderInsTransactions(c){
           premiumAmount: amount, passengerAmount, status, note: '',
           invoiceLink: '', createdBy: currentUserId, createdAt: new Date().toISOString(),
         };
+        // Cảnh báo (không chặn) nếu trùng khách hàng (biển số/SĐT/tên) + ngày gần nhau — kiểm tra với CẢ dữ
+        // liệu đã có SẴN lẫn các dòng KHÁC đã xử lý trong cùng file này (bắt được cả trường hợp lỡ dán trùng
+        // 2 dòng trong 1 lần import).
+        const dups = findPossibleDuplicateTx(rec, [...state.insTransactions, ...toInsert]);
         toInsert.push(rec);
-        previewRows.push({'Ngày':date,'Đơn vị':unit,'NCC bảo hiểm':ins.name,'Sản phẩm':product,'Loại hợp đồng':issueType,'Khách hàng':rec.customer,'Biển số/xe':rec.vehicle,'Phí bảo hiểm thu':fmt(amount)+'đ','Phí người ngồi trên xe':passengerAmount>0?fmt(passengerAmount)+'đ':'—','Trạng thái':status});
+        previewRows.push({'Ngày':date,'Đơn vị':unit,'NCC bảo hiểm':ins.name,'Sản phẩm':product,'Loại hợp đồng':issueType,'Khách hàng':rec.customer,'Biển số/xe':rec.vehicle,'Phí bảo hiểm thu':fmt(amount)+'đ','Phí người ngồi trên xe':passengerAmount>0?fmt(passengerAmount)+'đ':'—','Trạng thái':status,
+          '⚠ Cảnh báo': dups.length ? `Có thể trùng (${dups.length} hợp đồng gần giống, ngày ${dups.map(d=>d.date).join(', ')})` : ''});
       });
       openImportPreviewModal('Xem trước nhập Excel — Doanh số Bảo hiểm', previewRows, errors, ()=>{
         toInsert.forEach(rec=> state.insTransactions.push(rec));
@@ -8621,6 +8710,34 @@ function renewalStatusStampHTML(status, snoozeUntil){
   const label = status==='snoozed' && snoozeUntil ? `🔕 Tạm ẩn tới ${new Date(snoozeUntil+'T00:00:00').toLocaleDateString('vi-VN')}` : renewalStatusLabel(status);
   return `<span class="stamp ${cls}">${label}</span>`;
 }
+function renewalDismissKeyFor(idA, idB){ return [idA, idB].sort().join('|'); }
+// Quét toàn bộ hồ sơ bảo hiểm độc lập đang theo dõi tái tục, so từng CẶP nhóm khác nhau xem có dấu hiệu
+// "cùng 1 khách nhưng bị gõ lệch 1 ký tự" hay không (SĐT lệch 1 số, hoặc biển số lệch 1 ký tự VÀ trùng tên)
+// — chỉ đưa ra GỢI Ý để người dùng tự xem xét và xác nhận bằng nút "🔗 Sửa liên kết", KHÔNG tự động gộp
+// (biển số lệch 1 ký tự thường là 2 XE THẬT KHÁC NHAU, tự động gộp rất rủi ro). Đây là thao tác quét thủ
+// công (Admin/Quản lý bấm nút), không chạy tự động mỗi lần vẽ trang để tránh chậm khi dữ liệu lớn.
+function findRenewalMatchSuggestions(){
+  const rows = standaloneRenewalRows();
+  const dismissed = new Set(state.renewalDismissedSuggestions||[]);
+  const suggestions = [];
+  for(let i=0;i<rows.length;i++){
+    for(let j=i+1;j<rows.length;j++){
+      const a = rows[i], b = rows[j];
+      if(dismissed.has(renewalDismissKeyFor(a.t.id, b.t.id))) continue;
+      const phoneA = normalizePhone(a.t.phone), phoneB = normalizePhone(b.t.phone);
+      const plateA = normalizePlate(a.t.vehicle), plateB = normalizePlate(b.t.vehicle);
+      const nameA = normalizeName(a.t.customer), nameB = normalizeName(b.t.customer);
+      let reason = null;
+      if(phoneA && phoneB && phoneA.length===phoneB.length && phoneA!==phoneB && levenshteinDistance(phoneA,phoneB)===1){
+        reason = `SĐT gần giống nhau (${escHtml(a.t.phone)} ↔ ${escHtml(b.t.phone)}) — có thể gõ lệch 1 số`;
+      } else if(plateA && plateB && plateA!==plateB && Math.abs(plateA.length-plateB.length)<=1 && levenshteinDistance(plateA,plateB)===1 && nameA && nameA===nameB){
+        reason = `Biển số gần giống nhau (${escHtml(a.t.vehicle)} ↔ ${escHtml(b.t.vehicle)}), cùng tên khách — có thể gõ lệch 1 ký tự biển số`;
+      }
+      if(reason) suggestions.push({a, b, reason});
+    }
+  }
+  return suggestions;
+}
 function renderInsRenewal(c){
   const u = currentUser();
   const lockedUnits = (u && u.role==='Nhân viên') ? accountUnits(u) : [];
@@ -8685,6 +8802,14 @@ function renderInsRenewal(c){
         ${collapsibleInfoHTML('renewal_filter_info', 'Danh sách gồm 2 nguồn: (1) hồ sơ vay thuộc gói yêu cầu mua lại bảo hiểm hằng năm — chỉ tính hồ sơ "Đã giải ngân" thuộc gói vay đã bật "Yêu cầu mua lại bảo hiểm hằng năm" ở Chính sách CK (Ngân hàng); (2) mọi đơn bảo hiểm "Đã cấp đơn" KHÔNG gắn khoản vay nào — mặc định đều theo dõi, đánh dấu "Không theo dõi" cho trường hợp ngoại lệ (hợp đồng nhiều năm, khách đã bán xe...). Liên kết/nhóm xe tự động theo biển số, dự phòng SĐT/tên khách hàng — nếu khớp sai, bấm "Sửa liên kết" ở cột cuối để chỉnh tay. Nếu khách không tái tục, hồ sơ vẫn cảnh báo "Quá hạn" trong đúng số ngày ở ô "Tự động ẩn sau quá hạn" (mặc định 15 ngày) — quá mốc đó, hệ thống TỰ dời mốc đến hạn sang đúng 1 năm sau, không cần Admin tự tay Tạm ẩn, rồi tự cảnh báo lại đúng theo ngưỡng "Sắp đến hạn" ở trên khi tới đúng chu kỳ mới. Nút "📋 Theo dõi" ở mỗi dòng dùng để ghi nhật ký liên hệ, hoặc hẹn tay 1 ngày khác nếu không muốn theo lịch tự động này.')}
       </div>
     </div>
+    ${canTrackBh ? `
+    <div class="panel">
+      ${panelToggleHeadHTML('irwSuggestPanel', '🔍 Rà soát nghi ngờ trùng khách hàng', 'Tìm các cặp hồ sơ có SĐT/biển số gần giống nhau (có thể do gõ lệch 1 ký tự) mà hệ thống KHÔNG tự nhận ra là cùng 1 khách — chỉ gợi ý, bạn tự xác nhận', '', false, 'quét')}
+      <div class="panel-body" ${panelBodyOpenAttr('irwSuggestPanel', false)}>
+        <button class="btn btn-primary" id="irwScanSuggestBtn">Quét ngay</button>
+        <div id="irwSuggestResultBox" style="margin-top:14px"></div>
+      </div>
+    </div>` : ''}
     <div class="panel">
       <div class="panel-head">
         <div><h2>Danh sách hồ sơ cần theo dõi</h2><div class="desc">Mặc định chỉ hiện hồ sơ Quá hạn/Sắp đến hạn/Đang xử lý — đổi ô "Trạng thái" ở Bộ lọc thành "Tất cả trạng thái" để xem cả hồ sơ Chưa tới hạn. Quá hạn/Sắp đến hạn luôn nổi lên đầu và nhấp nháy để dễ nhận ra.</div></div>
@@ -8706,6 +8831,58 @@ function renderInsRenewal(c){
     insRenewalBankFilter=''; insRenewalStatusFilter='';
     renderAll();
   });
+  const scanBtn = document.getElementById('irwScanSuggestBtn');
+  if(scanBtn){
+    const renderSuggestBox = ()=>{
+      const box = document.getElementById('irwSuggestResultBox');
+      if(!box) return;
+      const suggestions = findRenewalMatchSuggestions();
+      if(suggestions.length===0){
+        box.innerHTML = `<div class="helper">Không tìm thấy cặp nào nghi ngờ trùng khách hàng.</div>`;
+        return;
+      }
+      box.innerHTML = `<div class="helper" style="margin-bottom:10px">Tìm thấy <b>${suggestions.length}</b> cặp nghi ngờ — xem kỹ rồi mới xác nhận, KHÔNG tự động gộp gì cả.</div>` +
+        suggestions.map((s,idx)=>`
+          <div style="border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:8px" data-suggest-idx="${idx}">
+            <div class="meta-line" style="margin-bottom:6px">${s.reason}</div>
+            <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:8px">
+              <div><b>${escHtml(s.a.t.customer||'(chưa có tên KH)')}</b><div class="meta-line">${escHtml(s.a.t.vehicle||'—')} · ${escHtml(s.a.t.phone||'')} · ${s.a.t.date}</div></div>
+              <div><b>${escHtml(s.b.t.customer||'(chưa có tên KH)')}</b><div class="meta-line">${escHtml(s.b.t.vehicle||'—')} · ${escHtml(s.b.t.phone||'')} · ${s.b.t.date}</div></div>
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <button class="btn btn-primary" data-suggest-merge="${idx}" style="font-size:12px;padding:5px 10px">🔗 Đúng, đây là cùng khách — Gộp lại</button>
+              <button class="btn btn-ghost" data-suggest-dismiss="${idx}" style="font-size:12px;padding:5px 10px">Không phải, bỏ qua</button>
+            </div>
+          </div>`).join('');
+      box.querySelectorAll('[data-suggest-merge]').forEach(btn=>{
+        btn.addEventListener('click', ()=>{
+          const s = suggestions[Number(btn.dataset.suggestMerge)];
+          // Gộp: hợp đồng có ngày CŨ HƠN sẽ liên kết theo hợp đồng MỚI HƠN (để anchorDate luôn là hợp đồng
+          // gần nhất, đúng nguyên tắc tính mốc tái tục — không quan trọng gộp theo chiều nào, tự resolve đúng).
+          const [older, newer] = s.a.t.date <= s.b.t.date ? [s.a.t, s.b.t] : [s.b.t, s.a.t];
+          const rec = state.insTransactions.find(x=>x.id===older.id);
+          if(rec){
+            rec.renewalGroupLink = newer.id;
+            logActivity('update','Doanh số (Bảo hiểm)', `${rec.customer||''} (${rec.vehicle||''}) — Gộp nhóm tái tục (từ gợi ý rà soát nghi ngờ trùng) với hợp đồng ${newer.date} (${newer.customer||''})`);
+            saveState();
+            toast('Đã gộp chung nhóm theo dõi tái tục');
+          }
+          renderAll();
+        });
+      });
+      box.querySelectorAll('[data-suggest-dismiss]').forEach(btn=>{
+        btn.addEventListener('click', ()=>{
+          const s = suggestions[Number(btn.dataset.suggestDismiss)];
+          if(!state.renewalDismissedSuggestions) state.renewalDismissedSuggestions = [];
+          state.renewalDismissedSuggestions.push(renewalDismissKeyFor(s.a.t.id, s.b.t.id));
+          saveState();
+          toast('Đã bỏ qua gợi ý này');
+          renderSuggestBox();
+        });
+      });
+    };
+    scanBtn.addEventListener('click', renderSuggestBox);
+  }
   if(isAdmin){
     document.getElementById('irwAlertDaysInput').addEventListener('change', (e)=>{
       const days = Math.max(0, Number(e.target.value)||0);
@@ -8931,6 +9108,7 @@ function renderInsRenewal(c){
         const actionBtn = isBank
           ? (canManageLinks ? `<button class="btn btn-ghost" data-editlink="${r.t.id}" style="font-size:11.5px;padding:4px 8px;white-space:nowrap">Sửa liên kết</button>` : '')
           : (canTrackThisRow ? `<button class="btn btn-ghost" data-exempt="${r.t.id}" style="font-size:11.5px;padding:4px 8px;white-space:nowrap" title="Dùng khi hợp đồng nhiều năm hoặc khách đã bán xe/huỷ — sẽ không hiện lại trong Lịch tái tục nữa">🚫 Không theo dõi</button>` : '');
+        const standaloneLinkBtn = (!isBank && canTrackThisRow) ? `<button class="btn btn-ghost" data-editlink-standalone="${r.t.id}" style="font-size:11.5px;padding:4px 8px;white-space:nowrap;margin-top:4px" title="Dùng khi hệ thống không tự nhận ra đây là cùng khách/xe với 1 hợp đồng khác do gõ lệch biển số/SĐT/tên">🔗 Sửa liên kết${r.t.renewalGroupLink?' ✓':''}</button>` : '';
         const trackBtn = canTrackThisRow ? `<button class="btn btn-ghost" data-tracking="${escAttr(r.t.id)}" data-tracking-source="${r.source}" style="font-size:11.5px;padding:4px 8px;white-space:nowrap;margin-top:4px" title="Ghi nhận liên hệ tư vấn lại, hoặc tạm ẩn cảnh báo tới 1 ngày hẹn trước">📋 Theo dõi${r.contactLog.length?` (${r.contactLog.length})`:''}</button>` : '';
         const isPulsing = r.status==='overdue' || r.status==='due_soon'; // tạm ẩn/đang xử lý/chưa tới hạn không nhấp nháy
         return `<tr class="${isPulsing?(r.status==='overdue'?'renewal-pulse-overdue':'renewal-pulse-soon'):''}">
@@ -8943,7 +9121,7 @@ function renderInsRenewal(c){
           <td>${r.nextDue.toISOString().slice(0,10)}</td>
           <td class="num" style="font-weight:600;${r.status==='overdue'?'color:var(--rust)':r.status==='due_soon'?'color:var(--amber)':''}">${daysTxt}</td>
           <td>${renewalStatusStampHTML(r.status, r.snoozeUntil)}</td>
-          <td><div style="display:flex;flex-direction:column;align-items:flex-start">${actionBtn}${trackBtn}</div></td>
+          <td><div style="display:flex;flex-direction:column;align-items:flex-start">${actionBtn}${standaloneLinkBtn}${trackBtn}</div></td>
         </tr>`;
        }catch(err){
         // Không để 1 bản ghi bất thường (dữ liệu ngày lỗi, thiếu field...) làm sập trắng cả bảng — chỉ báo lỗi
@@ -8957,8 +9135,11 @@ function renderInsRenewal(c){
         btn.addEventListener('click', ()=> openRenewalLinkModal(btn.dataset.editlink));
       });
     }
-    // Wiring cho "Không theo dõi" + "📋 Theo dõi": querySelectorAll rỗng vô hại nếu nút không được vẽ ra do
-    // thiếu quyền (canTrackBh/canTrackNh) — không cần bọc thêm điều kiện role ở đây.
+    // Wiring cho "Không theo dõi" + "📋 Theo dõi" + "🔗 Sửa liên kết" (BH độc lập): querySelectorAll rỗng vô
+    // hại nếu nút không được vẽ ra do thiếu quyền (canTrackBh/canTrackNh) — không cần bọc thêm điều kiện role.
+    tbl.querySelectorAll('[data-editlink-standalone]').forEach(btn=>{
+      btn.addEventListener('click', ()=> openStandaloneRenewalLinkModal(btn.dataset.editlinkStandalone));
+    });
     tbl.querySelectorAll('[data-exempt]').forEach(btn=>{
       btn.addEventListener('click', ()=>{
         const insTx = state.insTransactions.find(x=>x.id===btn.dataset.exempt);
@@ -9004,6 +9185,65 @@ function renderInsRenewal(c){
 
 // Modal cho Admin/Quản lý sửa tay khi hệ thống khớp sai (hoặc xác nhận "chưa có hợp đồng phù hợp") — xem
 // bankTransactions.renewalLink ở phần comment đầu khối "Lịch tái tục hằng năm" phía trên.
+// Modal "Sửa liên kết" cho hồ sơ BẢO HIỂM ĐỘC LẬP (không qua vay) — dùng khi khớp tự động theo biển
+// số/SĐT/tên bị gõ lệch ký tự nên không nhận ra "cùng 1 khách/xe", cần gán tay. Khác với
+// openRenewalLinkModal (nối khoản vay ↔ hợp đồng bảo hiểm), modal này nối 2 hợp đồng bảo hiểm với nhau.
+function openStandaloneRenewalLinkModal(insTxId){
+  const t = state.insTransactions.find(x=>x.id===insTxId);
+  if(!t) return;
+  const renderList = (q)=>{
+    const qq = (q||'').trim().toLowerCase();
+    const candidates = state.insTransactions.filter(it=>it.id!==t.id && it.status!=='Huỷ').filter(it=>{
+      if(!qq) return true;
+      const hay = [it.customer, it.phone, it.vehicle, it.policyNo].join(' ').toLowerCase();
+      return hay.includes(qq);
+    }).sort((a,b)=> b.date.localeCompare(a.date)).slice(0,30);
+    if(candidates.length===0) return `<div class="helper">Không tìm thấy hợp đồng bảo hiểm nào khớp từ khoá tìm.</div>`;
+    return candidates.map(it=>{
+      const ins = insurerById(it.insurerId);
+      const selected = t.renewalGroupLink===it.id;
+      return `<div class="renewal-pick-row" data-pick="${it.id}" style="padding:10px 12px;border:1px solid var(--line);border-radius:8px;margin-bottom:6px;cursor:pointer;${selected?'background:var(--forest-soft);border-color:var(--forest)':''}">
+        <b>${escHtml(it.customer||'(chưa có tên KH)')}</b> · ${escHtml(it.vehicle||'—')}
+        <div class="meta-line">${ins?escHtml(ins.name):''} · ${it.date} · ${escHtml(it.status)}${selected?' · <b>Đang chọn</b>':''}</div>
+      </div>`;
+    }).join('');
+  };
+  openModal('Sửa liên kết tái tục',
+    `Hợp đồng: <b>${escHtml(t.customer||'(chưa có tên KH)')}</b> · ${escHtml(t.vehicle||'—')} · ${t.date}`,
+    `<div class="helper" style="margin-bottom:10px">Dùng khi hệ thống KHÔNG tự nhận ra đây là cùng 1 khách/xe với 1 hợp đồng khác (do biển số/SĐT/tên gõ lệch ký tự) — chọn đúng hợp đồng cũ bên dưới để gộp chung 1 nhóm theo dõi tái tục.</div>
+     <div class="field" style="margin-bottom:10px"><input id="srlm_search" placeholder="Tìm theo tên KH / biển số / SĐT / số đơn bảo hiểm..." autocomplete="off"></div>
+     <div id="srlm_list" style="max-height:320px;overflow:auto"></div>
+     ${t.renewalGroupLink ? `<div style="margin-top:14px"><button class="btn btn-ghost" id="srlm_reset">Bỏ liên kết thủ công, dùng lại khớp tự động</button></div>` : ''}`,
+    (body)=>{
+      const listEl = body.querySelector('#srlm_list');
+      const searchEl = body.querySelector('#srlm_search');
+      const bindPicks = ()=>{
+        listEl.querySelectorAll('[data-pick]').forEach(row=>{
+          row.addEventListener('click', ()=>{
+            const it = state.insTransactions.find(x=>x.id===row.dataset.pick);
+            t.renewalGroupLink = row.dataset.pick;
+            logActivity('update','Doanh số (Bảo hiểm)', `${t.customer||''} (${t.vehicle||''}) — Gán thủ công: cùng nhóm tái tục với hợp đồng ${it?it.date:''} (${it?it.customer:''})`);
+            saveState();
+            toast('Đã gộp chung nhóm theo dõi tái tục');
+            closeModal();
+            renderAll();
+          });
+        });
+      };
+      listEl.innerHTML = renderList('');
+      bindPicks();
+      searchEl.addEventListener('input', ()=>{ listEl.innerHTML = renderList(searchEl.value); bindPicks(); });
+      const resetBtn = body.querySelector('#srlm_reset');
+      if(resetBtn) resetBtn.addEventListener('click', ()=>{
+        delete t.renewalGroupLink;
+        logActivity('update','Doanh số (Bảo hiểm)', `${t.customer||''} (${t.vehicle||''}) — Bỏ liên kết thủ công, dùng lại khớp tự động cho chu kỳ tái tục`);
+        saveState();
+        toast('Đã bỏ liên kết thủ công');
+        closeModal();
+        renderAll();
+      });
+    });
+}
 function openRenewalLinkModal(bankTxId){
   const t = state.bankTransactions.find(x=>x.id===bankTxId);
   if(!t) return;
@@ -9856,7 +10096,9 @@ function renderAccounts(c){
                 ${ROLES.map(r=>{
                   if(r==='Admin') return `<td style="text-align:center">✅</td>`;
                   if(r==='Đối tác') return `<td style="text-align:center">—</td>`; // Đối tác không thuộc diện cấu hình ở bảng này, quyền của Đối tác xử lý riêng theo từng chỗ cụ thể
-                  const allowed = keys.every(k=> ((state.editPerms&&state.editPerms[k])||DEFAULT_EDIT_PERMS[k]||[]).includes(r));
+                  const allowed = locked
+                    ? keys.every(k=> (DEFAULT_EDIT_PERMS[k]||[]).includes(r)) // dòng cố định: luôn hiện đúng theo default, không đọc state.editPerms có thể còn giá trị cũ từ trước khi khoá lại
+                    : keys.every(k=> ((state.editPerms&&state.editPerms[k])||DEFAULT_EDIT_PERMS[k]||[]).includes(r));
                   const clickable = isAdmin && !locked;
                   return `<td style="text-align:center;${clickable?'cursor:pointer':''}" ${clickable?`data-perm-toggle="${escAttr(r)}"`:''} title="${clickable?'Bấm để '+(allowed?'thu hồi':'cấp')+' quyền':(locked?'Cố định, không cấu hình được ở đây':'')}">${allowed?'✅':'—'}</td>`;
                 }).join('')}
