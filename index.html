@@ -6077,6 +6077,7 @@ function renderBankTransactions(c){
   else if(lockedMulti && bankTxUnitFilter && !lockedUnits.includes(bankTxUnitFilter)) bankTxUnitFilter = '';
   setTitle('Doanh số', state.bankTransactions.length+' hồ sơ vay — hoa hồng tự tính theo chính sách đúng tháng giải ngân');
   const editable = canEdit('nh_transactions');
+  const isAdmin = currentRole()==='Admin'; // Nhập Excel + Xoá hàng loạt chỉ dành cho Admin — tránh tài khoản khác lỡ tay xoá/nhập sai dữ liệu hàng loạt
   c.innerHTML = `
     <div class="panel">
       ${panelToggleHeadHTML('btxFilterPanel', 'Bộ lọc', 'Xem theo đúng Đơn vị và/hoặc Ngân hàng — áp dụng cho Sổ hồ sơ vay bên dưới, không ảnh hưởng gì tới việc ghi nhận mới', `<div class="mini-stats-row" id="btxSummaryStats"></div>`, false, 'lọc')}
@@ -6136,9 +6137,9 @@ function renderBankTransactions(c){
       <div class="panel-head">
         <div><h2>Sổ hồ sơ vay</h2><div class="desc" id="btxFilterNote"></div></div>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
-          ${editable ? `<label class="btn btn-ghost" style="cursor:pointer">⬆ Nhập Excel<input id="btxImportFile" type="file" accept=".xlsx,.xls" style="display:none"></label>` : ''}
+          ${isAdmin ? `<label class="btn btn-ghost" style="cursor:pointer">⬆ Nhập Excel<input id="btxImportFile" type="file" accept=".xlsx,.xls" style="display:none"></label>` : ''}
           <button class="btn btn-ghost" id="btxExportBtn">⬇ Xuất Excel</button>
-          ${editable ? `
+          ${isAdmin ? `
           <button class="btn btn-danger-ghost" id="btxDeleteSelectedBtn" disabled>🗑 Xoá mục đã chọn (<span id="btxSelectedCount">0</span>)</button>
           <button class="btn btn-danger-ghost" id="btxDeleteAllBtn" title="Xoá toàn bộ hồ sơ đang khớp bộ lọc hiện tại (không chỉ trang đang hiện) — dùng để dọn lại sau khi nhập Excel sai hàng loạt">🗑 Xoá toàn bộ đang lọc</button>` : ''}
         </div>
@@ -6220,7 +6221,7 @@ function renderBankTransactions(c){
     });
     exportToExcel('DoanhSo_NganHang_'+todayISO()+'.xlsx', [{name:'Doanh số NH', rows}]);
   });
-  if(editable){
+  if(isAdmin){
     document.getElementById('btxImportFile').addEventListener('change', async (e)=>{
       const file = e.target.files[0];
       e.target.value = '';
@@ -6277,7 +6278,7 @@ function renderBankTransactions(c){
       });
     });
   }
-  if(editable){
+  if(isAdmin){
     document.getElementById('btxDeleteSelectedBtn').addEventListener('click', ()=>{
       const tblNow = document.getElementById('btxTable');
       if(!tblNow) return;
@@ -6348,6 +6349,7 @@ function bulkSoftDeleteBankTx(ids){
   return {deleted, skipped};
 }
 function renderBankTxTable(editable){
+  const isAdmin = currentRole()==='Admin'; // cột checkbox chỉ phục vụ 2 nút Xoá hàng loạt — nay chỉ Admin dùng được
   const tbl = document.getElementById('btxTable');
   if(!tbl){ renderAll(); return; } // tương tự renderTxTable — bảng đã bị thay bằng khối "trống", vẽ lại cả trang để phục hồi đúng
   const note = document.getElementById('btxFilterNote');
@@ -6379,7 +6381,7 @@ function renderBankTxTable(editable){
     return;
   }
   if(sorted.length===0){
-    tbl.innerHTML = `<thead><tr>${editable?'<th style="width:32px"></th>':''}<th>Hồ sơ</th><th>Khách hàng</th><th class="num">Số tiền vay</th><th>Trạng thái</th><th class="num">Hoa hồng</th><th>Người nhập</th><th>Hoá đơn</th><th></th></tr></thead>`;
+    tbl.innerHTML = `<thead><tr>${isAdmin?'<th style="width:32px"></th>':''}<th>Hồ sơ</th><th>Khách hàng</th><th class="num">Số tiền vay</th><th>Trạng thái</th><th class="num">Hoa hồng</th><th>Người nhập</th><th>Hoá đơn</th><th></th></tr></thead>`;
     if(tbl.nextElementSibling && tbl.nextElementSibling.classList.contains('empty')) tbl.nextElementSibling.remove();
     tbl.insertAdjacentHTML('afterend', `<div class="empty"><div class="big">Không có hồ sơ nào khớp bộ lọc hiện tại</div></div>`);
     const moreBox = document.getElementById('btxMoreBox'); if(moreBox) moreBox.style.display='none';
@@ -6390,7 +6392,7 @@ function renderBankTxTable(editable){
   const statusClass = s => s==='Đã giải ngân'?'st-disbursed':(s==='Đã duyệt'?'st-approved':(s==='Từ chối'?'st-rejected':'st-pending'));
   tbl.innerHTML = `
     <thead><tr>
-      ${editable ? `<th style="width:32px"><input type="checkbox" id="btxSelectAll" title="Chọn tất cả (trong trang đang hiện)"></th>` : ''}
+      ${isAdmin ? `<th style="width:32px"><input type="checkbox" id="btxSelectAll" title="Chọn tất cả (trong trang đang hiện)"></th>` : ''}
       <th>Hồ sơ</th><th>Khách hàng</th><th class="num">Số tiền vay</th><th>Trạng thái</th><th class="num">Hoa hồng</th><th>Người nhập</th><th>Hoá đơn</th><th></th></tr></thead>
     <tbody>${rows.map(t=>{
       const b = bankById(t.bankId);
@@ -6405,7 +6407,7 @@ function renderBankTxTable(editable){
       const dis = (editable && !lockedForMe)?'':'disabled';
       const canDelRow = editable && canDeleteBankTx(t);
       return `<tr>
-        ${editable ? `<td>${canDelRow?`<input type="checkbox" class="btx-chk" data-id="${escAttr(t.id)}">`:''}</td>` : ''}
+        ${isAdmin ? `<td>${canDelRow?`<input type="checkbox" class="btx-chk" data-id="${escAttr(t.id)}">`:''}</td>` : ''}
         <td>
           <div class="stack-cell">
             ${editable
@@ -6446,7 +6448,7 @@ function renderBankTxTable(editable){
       btxMoreBox.style.display = 'none';
     }
   }
-  if(editable){
+  if(isAdmin){
     const selAllChk = tbl.querySelector('#btxSelectAll');
     const rowChks = ()=> Array.from(tbl.querySelectorAll('.btx-chk'));
     const updateSelectedUI = ()=>{
@@ -7441,6 +7443,7 @@ function renderInsTransactions(c){
   else if(lockedMulti && insTxUnitFilter && !lockedUnits.includes(insTxUnitFilter)) insTxUnitFilter = '';
   setTitle('Doanh số', state.insTransactions.length+' hợp đồng bảo hiểm — hoa hồng tự tính theo BHVC/BHDS của đúng NCC');
   const editable = canEdit('bh_transactions');
+  const isAdmin = currentRole()==='Admin'; // Nhập Excel + Xoá hàng loạt chỉ dành cho Admin — tránh tài khoản khác lỡ tay xoá/nhập sai dữ liệu hàng loạt
   c.innerHTML = `
     <div class="panel">
       ${panelToggleHeadHTML('itxFilterPanel', 'Bộ lọc', 'Xem theo đúng Đơn vị và/hoặc NCC bảo hiểm — áp dụng cho Sổ hợp đồng bên dưới, không ảnh hưởng gì tới việc ghi nhận mới', `<div class="mini-stats-row" id="itxSummaryStats"></div>`, false, 'lọc')}
@@ -7498,9 +7501,9 @@ function renderInsTransactions(c){
       <div class="panel-head">
         <div><h2>Sổ hợp đồng bảo hiểm</h2><div class="desc" id="itxFilterNote"></div></div>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
-          ${editable ? `<label class="btn btn-ghost" style="cursor:pointer">⬆ Nhập Excel<input id="itxImportFile" type="file" accept=".xlsx,.xls" style="display:none"></label>` : ''}
+          ${isAdmin ? `<label class="btn btn-ghost" style="cursor:pointer">⬆ Nhập Excel<input id="itxImportFile" type="file" accept=".xlsx,.xls" style="display:none"></label>` : ''}
           <button class="btn btn-ghost" id="itxExportBtn">⬇ Xuất Excel</button>
-          ${editable ? `
+          ${isAdmin ? `
           <button class="btn btn-danger-ghost" id="itxDeleteSelectedBtn" disabled>🗑 Xoá mục đã chọn (<span id="itxSelectedCount">0</span>)</button>
           <button class="btn btn-danger-ghost" id="itxDeleteAllBtn" title="Xoá toàn bộ hợp đồng đang khớp bộ lọc hiện tại (không chỉ trang đang hiện) — dùng để dọn lại sau khi nhập Excel sai hàng loạt">🗑 Xoá toàn bộ đang lọc</button>` : ''}
         </div>
@@ -7576,7 +7579,7 @@ function renderInsTransactions(c){
     });
     exportToExcel('DoanhSo_BaoHiem_'+todayISO()+'.xlsx', [{name:'Doanh số Bảo hiểm', rows}]);
   });
-  if(editable){
+  if(isAdmin){
     document.getElementById('itxImportFile').addEventListener('change', async (e)=>{
       const file = e.target.files[0];
       e.target.value = '';
@@ -7634,7 +7637,7 @@ function renderInsTransactions(c){
       });
     });
   }
-  if(editable){
+  if(isAdmin){
     document.getElementById('itxDeleteSelectedBtn').addEventListener('click', ()=>{
       const tblNow = document.getElementById('itxTable');
       if(!tblNow) return;
@@ -7707,6 +7710,7 @@ function bulkSoftDeleteInsTx(ids){
   return {deleted, skipped};
 }
 function renderInsTxTable(editable){
+  const isAdmin = currentRole()==='Admin'; // cột checkbox chỉ phục vụ 2 nút Xoá hàng loạt — nay chỉ Admin dùng được
   const tbl = document.getElementById('itxTable');
   if(!tbl){ renderAll(); return; } // tương tự renderTxTable — bảng đã bị thay bằng khối "trống", vẽ lại cả trang để phục hồi đúng
   const note = document.getElementById('itxFilterNote');
@@ -7738,7 +7742,7 @@ function renderInsTxTable(editable){
     return;
   }
   if(sorted.length===0){
-    tbl.innerHTML = `<thead><tr>${editable?'<th style="width:32px"></th>':''}<th>Hợp đồng</th><th>Khách hàng</th><th class="num">Phí bảo hiểm</th><th>Trạng thái</th><th class="num">Hoa hồng</th><th>Người nhập</th><th>Hoá đơn</th><th></th></tr></thead>`;
+    tbl.innerHTML = `<thead><tr>${isAdmin?'<th style="width:32px"></th>':''}<th>Hợp đồng</th><th>Khách hàng</th><th class="num">Phí bảo hiểm</th><th>Trạng thái</th><th class="num">Hoa hồng</th><th>Người nhập</th><th>Hoá đơn</th><th></th></tr></thead>`;
     if(tbl.nextElementSibling && tbl.nextElementSibling.classList.contains('empty')) tbl.nextElementSibling.remove();
     tbl.insertAdjacentHTML('afterend', `<div class="empty"><div class="big">Không có hợp đồng nào khớp bộ lọc hiện tại</div></div>`);
     const moreBox = document.getElementById('itxMoreBox'); if(moreBox) moreBox.style.display='none';
@@ -7752,7 +7756,7 @@ function renderInsTxTable(editable){
   const statusClass = s => s==='Đã cấp đơn'?'st-disbursed':(s==='Đã duyệt'?'st-approved':(s==='Huỷ'?'st-rejected':'st-pending'));
   tbl.innerHTML = `
     <thead><tr>
-      ${editable ? `<th style="width:32px"><input type="checkbox" id="itxSelectAll" title="Chọn tất cả (trong trang đang hiện)"></th>` : ''}
+      ${isAdmin ? `<th style="width:32px"><input type="checkbox" id="itxSelectAll" title="Chọn tất cả (trong trang đang hiện)"></th>` : ''}
       <th>Hợp đồng</th><th>Khách hàng</th><th class="num">Phí bảo hiểm</th><th>Trạng thái</th><th class="num">Hoa hồng</th><th>Người nhập</th><th>Hoá đơn</th><th></th></tr></thead>
     <tbody>${rows.map(t=>{
       const ins = insurerById(t.insurerId);
@@ -7766,7 +7770,7 @@ function renderInsTxTable(editable){
       const dis = (editable && !lockedForMe)?'':'disabled';
       const canDelRow = editable && canDeleteInsTx(t);
       return `<tr>
-        ${editable ? `<td>${canDelRow?`<input type="checkbox" class="itx-chk" data-id="${escAttr(t.id)}">`:''}</td>` : ''}
+        ${isAdmin ? `<td>${canDelRow?`<input type="checkbox" class="itx-chk" data-id="${escAttr(t.id)}">`:''}</td>` : ''}
         <td>
           <div class="stack-cell">
             ${editable
@@ -7805,7 +7809,7 @@ function renderInsTxTable(editable){
       itxMoreBox.style.display = 'none';
     }
   }
-  if(editable){
+  if(isAdmin){
     const selAllChk = tbl.querySelector('#itxSelectAll');
     const rowChks = ()=> Array.from(tbl.querySelectorAll('.itx-chk'));
     const updateSelectedUI = ()=>{
