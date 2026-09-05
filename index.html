@@ -8711,13 +8711,36 @@ function renewalStatusStampHTML(status, snoozeUntil){
   return `<span class="stamp ${cls}">${label}</span>`;
 }
 function renewalDismissKeyFor(idA, idB){ return [idA, idB].sort().join('|'); }
-// Quét toàn bộ hồ sơ bảo hiểm độc lập đang theo dõi tái tục, so từng CẶP nhóm khác nhau xem có dấu hiệu
-// "cùng 1 khách nhưng bị gõ lệch 1 ký tự" hay không (SĐT lệch 1 số, hoặc biển số lệch 1 ký tự VÀ trùng tên)
-// — chỉ đưa ra GỢI Ý để người dùng tự xem xét và xác nhận bằng nút "🔗 Sửa liên kết", KHÔNG tự động gộp
-// (biển số lệch 1 ký tự thường là 2 XE THẬT KHÁC NHAU, tự động gộp rất rủi ro). Đây là thao tác quét thủ
-// công (Admin/Quản lý bấm nút), không chạy tự động mỗi lần vẽ trang để tránh chậm khi dữ liệu lớn.
+// Nhóm TOÀN BỘ hợp đồng bảo hiểm "Đã cấp đơn" theo đúng khách/xe (ưu tiên biển số, dự phòng SĐT/tên, có
+// tính liên kết thủ công) — dùng riêng cho công cụ rà soát nghi ngờ trùng khách hàng, KHÔNG loại trừ nhóm
+// đang được theo dõi qua khoản vay ngân hàng như standaloneRenewalRows() (mục đích khác nhau: cái kia để
+// tránh hiện trùng 2 dòng trong Lịch tái tục, còn đây cần quét ĐỦ mọi hợp đồng bảo hiểm để không bỏ sót).
+function allInsRenewalGroupsForSuggestion(){
+  const active = state.insTransactions.filter(t=>t.status!=='Huỷ');
+  const byId = new Map(active.map(t=>[t.id, t]));
+  const groups = new Map();
+  active.forEach(t=>{
+    const key = resolveStandaloneRenewalKey(t, byId);
+    if(!key) return;
+    if(!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(t);
+  });
+  const result = [];
+  groups.forEach(txs=>{
+    const issued = txs.filter(t=>t.status==='Đã cấp đơn' && !t.renewalExempt);
+    if(issued.length===0) return;
+    const sorted = issued.slice().sort((a,b)=> b.date.localeCompare(a.date));
+    result.push({t: sorted[0]});
+  });
+  return result;
+}
+// Quét toàn bộ hợp đồng bảo hiểm (kể cả hồ sơ đang theo dõi qua khoản vay), so từng CẶP nhóm khác nhau xem
+// có dấu hiệu "cùng 1 khách nhưng bị gõ lệch 1 ký tự" hay không (SĐT lệch 1 số, hoặc biển số lệch 1 ký tự
+// VÀ trùng tên) — chỉ đưa ra GỢI Ý để người dùng tự xem xét và xác nhận bằng nút "🔗 Sửa liên kết", KHÔNG
+// tự động gộp (biển số lệch 1 ký tự thường là 2 XE THẬT KHÁC NHAU, tự động gộp rất rủi ro). Đây là thao tác
+// quét thủ công (Admin/Quản lý bấm nút), không chạy tự động mỗi lần vẽ trang để tránh chậm khi dữ liệu lớn.
 function findRenewalMatchSuggestions(){
-  const rows = standaloneRenewalRows();
+  const rows = allInsRenewalGroupsForSuggestion();
   const dismissed = new Set(state.renewalDismissedSuggestions||[]);
   const suggestions = [];
   for(let i=0;i<rows.length;i++){
