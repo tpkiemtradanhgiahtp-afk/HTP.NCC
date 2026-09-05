@@ -6831,6 +6831,23 @@ function findInsRate(insurerId, valueTrieu, ageYears){
 }
 
 /* ---------------------------- Bảo hiểm · Danh mục NCC ---------------------------- */
+// Tỷ lệ hoa hồng "Cấp mới" ĐANG áp dụng cho hôm nay (dùng để hiển thị gọn ở Danh mục NCC, gộp chung 2 nguồn
+// dữ liệu — Lịch sử hoa hồng ưu tiên hơn, tỷ lệ mặc định là dự phòng). unset:true nếu NCC này chưa từng
+// thiết lập gì cả (chưa có mốc nào + tỷ lệ mặc định = 0) — nhắc Admin thiết lập ngay, tránh tính hoa hồng
+// nhầm thành 0đ mà không ai để ý.
+function insCurrentDisplayRate(insurerId, product, issueType){
+  issueType = issueType || 'new';
+  const hist = activeInsCommissionRate(insurerId, product, todayISO(), issueType);
+  if(hist) return {rate: hist.rate, startDate: hist.startDate, fromHistory: true};
+  if(issueType==='renewal'){
+    // Chưa có mốc Tái tục riêng -> tự dùng lại đúng tỷ lệ Cấp mới hiện hành (đúng công thức tính thật ở insTxCommission)
+    return {...insCurrentDisplayRate(insurerId, product, 'new'), isFallbackToNew: true};
+  }
+  const ins = insurerById(insurerId);
+  const flat = ins ? (product==='BHDS' ? ins.bhds : ins.bhvc) : 0;
+  if(!flat) return {rate: 0, unset: true};
+  return {rate: flat, fromHistory: false};
+}
 function renderInsSuppliers(c){
   setTitle('Danh mục NCC bảo hiểm', state.insurers.length+' hãng/đại lý bảo hiểm — hoa hồng chuẩn & điều khoản nổi bật');
   const editable = canEdit('bh_suppliers');
@@ -6879,21 +6896,41 @@ function renderInsSuppliers(c){
   }
   const dis = editable?'':'disabled';
   tbl.innerHTML = `
-    <thead><tr><th>STT</th><th class="wrap">Tên NCC bảo hiểm</th><th class="num" title="Tỷ lệ MẶC ĐỊNH — dùng cho hợp đồng không rơi vào mốc nào ở tab &quot;Lịch sử hoa hồng&quot;. Nếu NCC đổi tỷ lệ giữa tháng/đầu tháng, vào tab đó thêm mốc mới thay vì sửa ở đây, để không tính hồi tố nhầm cho hợp đồng cũ.">BHVC</th><th class="num" title="Tỷ lệ MẶC ĐỊNH — dùng cho hợp đồng không rơi vào mốc nào ở tab &quot;Lịch sử hoa hồng&quot;. Nếu NCC đổi tỷ lệ giữa tháng/đầu tháng, vào tab đó thêm mốc mới thay vì sửa ở đây, để không tính hồi tố nhầm cho hợp đồng cũ.">BHDS</th><th class="wrap">Điều khoản nổi bật</th><th>Trạng thái</th><th>Hợp đồng</th><th></th></tr></thead>
+    <thead><tr><th>STT</th><th class="wrap">Tên NCC bảo hiểm</th><th class="num" title="Tỷ lệ hoa hồng ĐANG áp dụng cho hôm nay, cả Cấp mới lẫn Tái tục — gộp từ tab &quot;Lịch sử hoa hồng&quot; (nếu có mốc) hoặc tỷ lệ mặc định lúc tạo NCC. Tái tục ghi &quot;(= cấp mới)&quot; nghĩa là NCC chưa khai báo mốc Tái tục riêng, đang tự dùng chung tỷ lệ Cấp mới. Bấm nút Sửa để đổi, không sửa trực tiếp được ở đây nữa — tránh 2 nơi lệch số nhau.">BHVC</th><th class="num" title="Tỷ lệ hoa hồng ĐANG áp dụng cho hôm nay, cả Cấp mới lẫn Tái tục — gộp từ tab &quot;Lịch sử hoa hồng&quot; (nếu có mốc) hoặc tỷ lệ mặc định lúc tạo NCC. Tái tục ghi &quot;(= cấp mới)&quot; nghĩa là NCC chưa khai báo mốc Tái tục riêng, đang tự dùng chung tỷ lệ Cấp mới. Bấm nút Sửa để đổi, không sửa trực tiếp được ở đây nữa — tránh 2 nơi lệch số nhau.">BHDS</th><th class="wrap">Điều khoản nổi bật</th><th>Trạng thái</th><th>Hợp đồng</th><th></th></tr></thead>
     <tbody>${state.insurers.map(ins=>{
       const rows = insRateRowsFor(ins.id).length;
+      const rateCellHTML = (product)=>{
+        const rNew = insCurrentDisplayRate(ins.id, product, 'new');
+        const rRenewal = insCurrentDisplayRate(ins.id, product, 'renewal');
+        if(rNew.unset){
+          return `<div style="color:var(--rust);font-weight:600">Chưa thiết lập</div>${editable?`<button class="btn btn-ghost" data-goto-comm-hist="${ins.id}" style="font-size:11px;padding:2px 8px;margin-top:2px">Thiết lập</button>`:''}`;
+        }
+        return `
+          <div><span class="meta-line">Cấp mới</span> <span style="font-weight:700">${fmtPct(rNew.rate)}</span></div>
+          ${rNew.fromHistory?`<div class="meta-line">từ ${rNew.startDate}</div>`:''}
+          <div style="margin-top:3px"><span class="meta-line">Tái tục</span> <span style="font-weight:700">${fmtPct(rRenewal.rate)}</span>${rRenewal.isFallbackToNew?` <span class="meta-line">(= cấp mới)</span>`:''}</div>
+          ${(!rRenewal.isFallbackToNew && rRenewal.fromHistory)?`<div class="meta-line">từ ${rRenewal.startDate}</div>`:''}
+          ${editable?`<button class="btn btn-ghost" data-goto-comm-hist="${ins.id}" style="font-size:11px;padding:2px 8px;margin-top:3px">✎ Sửa</button>`:''}`;
+      };
       return `<tr data-rowid="${ins.id}">
         <td>${ins.stt}</td>
         <td class="wrap"><input class="cell-edit" data-field="name" data-id="${ins.id}" value="${escAttr(ins.name)}" ${dis}>
           <div class="meta-line">${rows} khoảng giá trị xe đã có biểu phí</div></td>
-        <td class="num"><input class="cell-edit num pct" data-field="bhvc" data-id="${ins.id}" type="number" step="0.1" value="${round2(ins.bhvc*100)}" ${dis} style="width:60px"></td>
-        <td class="num"><input class="cell-edit num pct" data-field="bhds" data-id="${ins.id}" type="number" step="0.1" value="${round2(ins.bhds*100)}" ${dis} style="width:60px"></td>
+        <td class="num">${rateCellHTML('BHVC')}</td>
+        <td class="num">${rateCellHTML('BHDS')}</td>
         <td class="wrap"><input class="cell-edit" data-field="terms" data-id="${ins.id}" value="${escAttr(ins.terms||'')}" ${dis}></td>
         <td><select class="cell-edit" data-field="status" data-id="${ins.id}" ${dis}>${['Đang hợp tác','Theo dõi','Thử nghiệm','Ngừng hợp tác'].map(p=>`<option ${ins.status===p?'selected':''}>${p}</option>`).join('')}</select></td>
         <td>${contractBadgeHTML(ins, 'NCC Bảo hiểm')}</td>
         <td>${editable?`<button class="row-del" data-del="${ins.id}" title="Xoá NCC">✕</button>`:''}</td>
       </tr>`;
     }).join('')}</tbody>`;
+  tbl.querySelectorAll('[data-goto-comm-hist]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      insCommHistoryFocusInsurerId = btn.dataset.gotoCommHist;
+      activeTab = 'bh_comm_history';
+      renderAll();
+    });
+  });
   wireContractBadges(tbl, state.insurers, 'NCC Bảo hiểm', editable);
   if(editable){
     wireCellEdits(tbl, state.insurers, 'NCC Bảo hiểm', x=>x.name);
@@ -7082,6 +7119,7 @@ const INS_PRODUCTS = ['BHVC','BHDS'];
 let insTxUnitFilter = '';
 let insTxInsurerFilter = '';
 let insTxSearchFilter = ''; // tìm theo Khách hàng / SĐT / Biển số / Số đơn — khớp gần đúng (chứa)
+let insCommHistoryFocusInsurerId = ''; // lọc trang "Lịch sử hoa hồng" theo đúng 1 NCC — set khi bấm "✎ Sửa" từ Danh mục NCC nhảy sang, '' = xem tất cả NCC
 let insTxBadDateOnly = false; // true = chỉ hiện hợp đồng thiếu ngày hoặc ngày không hợp lệ — công cụ dọn dữ liệu cũ bị lỗi
 let insTxVisibleCount = 150; // phân trang kiểu "Xem thêm" — tránh vẽ hàng nghìn dòng input cùng lúc gây đơ máy
 let insReconExpanded = new Set();
@@ -7114,17 +7152,24 @@ function insTxTotalPremium(t){
 // cách activeBankPolicy() chọn chính sách NH theo tháng). Trả về null nếu NCC đó chưa từng khai báo mốc nào
 // trước/đúng ngày này — khi đó nơi gọi tự dùng tỷ lệ mặc định ins.bhvc/ins.bhds như trước giờ, đảm bảo
 // KHÔNG phá vỡ dữ liệu cũ khi tính năng này mới ra mắt (chưa ai khai báo mốc thì mọi thứ tính y như cũ).
-function activeInsCommissionRate(insurerId, product, dateStr){
-  const rows = (state.insCommissionRates||[]).filter(p=>p.insurerId===insurerId && p.product===product && p.startDate<=dateStr);
+// Tỷ lệ hoa hồng CÓ HIỆU LỰC cho 1 NCC + Sản phẩm + Loại hợp đồng (issueType: 'new'|'renewal') tại đúng ngày
+// cấp đơn — tra theo lịch sử insCommissionRates: chọn mốc có startDate GẦN NHẤT nhưng KHÔNG VƯỢT QUÁ ngày
+// cấp đơn, ĐÚNG issueType đó (giống hệt cách activeBankPolicy() chọn chính sách NH theo tháng). Coi mốc cũ
+// chưa từng có issueType (tạo trước khi tính năng Tái tục ra đời) là 'new' để tương thích ngược.
+// Trả về null nếu không có mốc nào khớp — nơi gọi (insTxCommission) tự lo phần fallback.
+function activeInsCommissionRate(insurerId, product, dateStr, issueType){
+  const rows = (state.insCommissionRates||[]).filter(p=>p.insurerId===insurerId && p.product===product
+    && (p.issueType||'new')===issueType && p.startDate<=dateStr);
   if(rows.length===0) return null;
   rows.sort((a,b)=> b.startDate.localeCompare(a.startDate));
   return rows[0];
 }
-// Toàn bộ các "khoảng thời gian áp dụng" của 1 NCC + Sản phẩm, suy ra ngày kết thúc của mỗi mốc = ngày liền
-// trước ngày bắt đầu của mốc kế tiếp (mốc mới nhất thì endLabel = "hiện tại") — chỉ để HIỂN THỊ cho dễ hiểu,
-// không lưu endDate thật trong dữ liệu (tránh phải đồng bộ 2 nơi mỗi khi thêm/xoá 1 mốc).
-function insCommissionRatePeriods(insurerId, product){
-  const rows = (state.insCommissionRates||[]).filter(p=>p.insurerId===insurerId && p.product===product).slice().sort((a,b)=> a.startDate.localeCompare(b.startDate));
+// Toàn bộ các "khoảng thời gian áp dụng" của 1 NCC + Sản phẩm + Loại hợp đồng, suy ra ngày kết thúc của mỗi
+// mốc = ngày liền trước ngày bắt đầu của mốc kế tiếp CÙNG loại (mốc mới nhất thì endLabel = "hiện tại") —
+// chỉ để HIỂN THỊ cho dễ hiểu, không lưu endDate thật trong dữ liệu.
+function insCommissionRatePeriods(insurerId, product, issueType){
+  const rows = (state.insCommissionRates||[]).filter(p=>p.insurerId===insurerId && p.product===product && (p.issueType||'new')===issueType)
+    .slice().sort((a,b)=> a.startDate.localeCompare(b.startDate));
   return rows.map((r,i)=>{
     const next = rows[i+1];
     let endLabel = 'Hiện tại';
@@ -7136,12 +7181,27 @@ function insCommissionRatePeriods(insurerId, product){
     return {...r, endLabel};
   }).reverse(); // mới nhất lên đầu cho dễ xem
 }
+// Hợp đồng "Tái tục" (t.issueType==='Tái tục'): ưu tiên tỷ lệ tái tục có hiệu lực đúng ngày đó; NẾU NCC
+// CHƯA khai báo mốc tái tục nào (issueType='renewal' rỗng) thì tự động dùng lại đúng tỷ lệ "Cấp mới" của
+// cùng ngày đó — đúng yêu cầu "bỏ trống thì áp dụng mức cấp mới", không phải 1 con số cố định riêng mà vẫn
+// tôn trọng mốc thời gian của bên cấp mới.
 function insTxCommission(t){
   if(t.status!=='Đã cấp đơn') return 0;
   const ins = insurerById(t.insurerId);
   if(!ins) return 0;
-  const hist = activeInsCommissionRate(t.insurerId, t.product, t.date);
-  const rate = hist ? hist.rate : (t.product==='BHDS' ? ins.bhds : ins.bhvc);
+  const isRenewal = t.issueType==='Tái tục';
+  let rate;
+  if(isRenewal){
+    const histRenewal = activeInsCommissionRate(t.insurerId, t.product, t.date, 'renewal');
+    if(histRenewal) rate = histRenewal.rate;
+    else {
+      const histNew = activeInsCommissionRate(t.insurerId, t.product, t.date, 'new');
+      rate = histNew ? histNew.rate : (t.product==='BHDS' ? ins.bhds : ins.bhvc);
+    }
+  } else {
+    const histNew = activeInsCommissionRate(t.insurerId, t.product, t.date, 'new');
+    rate = histNew ? histNew.rate : (t.product==='BHDS' ? ins.bhds : ins.bhvc);
+  }
   const base = t.product==='BHDS'
     ? insPremiumBeforeVat(t.premiumAmount) + (Number(t.passengerAmount)||0) // phí người ngồi trên xe KHÔNG chia VAT
     : insPremiumBeforeVat(t.premiumAmount);
@@ -7496,7 +7556,7 @@ function renderInsCommissionHistory(c){
   const pf = partnerScopeFilter('insurerId');
   const insurerScope = pf ? state.insurers.filter(ins=>pf({insurerId:ins.id})) : state.insurers;
   setTitle('Lịch sử hoa hồng', 'Mỗi lần NCC đổi tỷ lệ hoa hồng là 1 mốc mới — hợp đồng ký trước mốc giữ nguyên tỷ lệ cũ, không bị tính lại hồi tố');
-  const insOptions = insurerScope.map(i=>`<option value="${i.id}">${escHtml(i.name)}</option>`).join('');
+  const insOptions = insurerScope.map(i=>`<option value="${i.id}" ${i.id===insCommHistoryFocusInsurerId?'selected':''}>${escHtml(i.name)}</option>`).join('');
   c.innerHTML = `
     ${editable ? `
     <div class="panel">
@@ -7506,38 +7566,45 @@ function renderInsCommissionHistory(c){
         <div class="form-grid">
           <div class="field"><label>NCC bảo hiểm</label><select id="ich_ins">${insOptions}</select></div>
           <div class="field"><label>Sản phẩm</label><select id="ich_product">${INS_PRODUCTS.map(p=>`<option>${p}</option>`).join('')}</select></div>
+          <div class="field"><label>Loại hợp đồng</label><select id="ich_issuetype">
+            <option value="new">Cấp mới</option>
+            <option value="renewal">Tái tục</option>
+          </select></div>
           <div class="field"><label>Tỷ lệ hoa hồng mới (%)</label><input id="ich_rate" type="number" step="0.01" min="0" placeholder="VD: 15"></div>
           <div class="field"><label>Áp dụng từ ngày</label><input id="ich_startdate" type="date" value="${todayISO()}"></div>
           <div class="field" style="grid-column:1/-1"><label>Ghi chú</label><input id="ich_note" placeholder="VD: NCC tăng tỷ lệ thúc đẩy tháng 9"></div>
           <button class="btn btn-primary" id="addInsCommRateBtn">+ Thêm mốc</button>
         </div>
-        <div class="helper">Hợp đồng cấp đơn trước mốc sớm nhất từng khai báo (hoặc khi NCC chưa khai báo mốc nào) vẫn dùng đúng tỷ lệ mặc định ở tab "Danh mục NCC" như trước giờ — không ảnh hưởng gì tới dữ liệu cũ.</div>
+        <div class="helper">Hợp đồng cấp đơn trước mốc sớm nhất từng khai báo (hoặc khi NCC chưa khai báo mốc nào) vẫn dùng đúng tỷ lệ mặc định ở tab "Danh mục NCC" như trước giờ — không ảnh hưởng gì tới dữ liệu cũ. Riêng "Tái tục": NCC nào KHÔNG khai báo mốc Tái tục thì hợp đồng Tái tục của NCC đó sẽ tự dùng lại đúng tỷ lệ Cấp mới cùng thời điểm — chỉ NCC có chính sách hoa hồng tái tục khác biệt thật sự mới cần khai báo riêng.</div>
       </div>
     </div>` : lockedNote('Bạn đang xem ở chế độ chỉ đọc — chỉ Admin/Quản lý mới thêm/sửa mốc tỷ lệ hoa hồng.')}
     <div class="panel">
-      <div class="panel-head"><div><h2>Toàn bộ mốc đã khai báo</h2><div class="desc">Mới nhất lên đầu — cột "Áp dụng đến" tự suy ra từ mốc kế tiếp, không cần tự nhập</div></div></div>
+      <div class="panel-head"><div><h2>Toàn bộ mốc đã khai báo</h2><div class="desc">${insCommHistoryFocusInsurerId ? `Đang lọc theo NCC <b>${escHtml(insurerById(insCommHistoryFocusInsurerId)?.name||'')}</b> · <a href="#" id="ichClearFocus" style="color:var(--gold)">Xem tất cả NCC</a>` : 'Mới nhất lên đầu — cột "Áp dụng đến" tự suy ra từ mốc kế tiếp CÙNG loại, không cần tự nhập'}</div></div></div>
       <div class="panel-body flush"><div class="tbl-wrap"><table class="data" id="insCommHistTable"></table></div></div>
     </div>
   `;
+  const clearFocusLink = document.getElementById('ichClearFocus');
+  if(clearFocusLink) clearFocusLink.addEventListener('click', e=>{ e.preventDefault(); insCommHistoryFocusInsurerId=''; renderAll(); });
   if(editable){
     document.getElementById('addInsCommRateBtn').addEventListener('click', ()=>{
       const insurerId = document.getElementById('ich_ins').value;
       const ins = insurerById(insurerId);
       if(!ins){ toast('Chọn NCC bảo hiểm trước'); return; }
       const product = document.getElementById('ich_product').value;
+      const issueType = document.getElementById('ich_issuetype').value;
       const ratePct = Number(document.getElementById('ich_rate').value);
       if(!(ratePct>=0)){ toast('Nhập tỷ lệ hoa hồng hợp lệ'); return; }
       const startDate = document.getElementById('ich_startdate').value;
       if(!startDate){ toast('Chọn ngày bắt đầu áp dụng'); return; }
-      const dup = (state.insCommissionRates||[]).find(p=>p.insurerId===insurerId && p.product===product && p.startDate===startDate);
-      if(dup){ toast(`Đã có mốc ${product} bắt đầu đúng ngày ${startDate} cho ${ins.name} — sửa mốc đó thay vì thêm trùng`); return; }
+      const dup = (state.insCommissionRates||[]).find(p=>p.insurerId===insurerId && p.product===product && (p.issueType||'new')===issueType && p.startDate===startDate);
+      if(dup){ toast(`Đã có mốc ${product} (${issueType==='renewal'?'Tái tục':'Cấp mới'}) bắt đầu đúng ngày ${startDate} cho ${ins.name} — sửa mốc đó thay vì thêm trùng`); return; }
       if(!state.insCommissionRates) state.insCommissionRates = [];
       state.insCommissionRates.push({
-        id: uid('icr'), insurerId, product, rate: ratePct/100, startDate,
+        id: uid('icr'), insurerId, product, issueType, rate: ratePct/100, startDate,
         note: document.getElementById('ich_note').value.trim(),
         createdBy: currentUserId, createdAt: new Date().toISOString(),
       });
-      logActivity('create','Chính sách CK (Bảo hiểm)', `${ins.name} — ${product}: tỷ lệ hoa hồng mới ${round2(ratePct)}% áp dụng từ ${startDate}`);
+      logActivity('create','Chính sách CK (Bảo hiểm)', `${ins.name} — ${product} (${issueType==='renewal'?'Tái tục':'Cấp mới'}): tỷ lệ hoa hồng mới ${round2(ratePct)}% áp dụng từ ${startDate}`);
       saveState();
       toast('Đã thêm mốc tỷ lệ hoa hồng');
       document.getElementById('ich_rate').value=''; document.getElementById('ich_note').value='';
@@ -7550,22 +7617,28 @@ function renderInsCommHistTable(editable, insurerScope){
   const tbl = document.getElementById('insCommHistTable');
   if(!tbl){ renderAll(); return; } // bảng đã bị thay bằng khối "trống" (outerHTML) — vẽ lại cả trang để phục hồi đúng
   const scopeIds = new Set(insurerScope.map(i=>i.id));
-  const all = (state.insCommissionRates||[]).filter(p=>scopeIds.has(p.insurerId)).slice()
+  const all = (state.insCommissionRates||[]).filter(p=>scopeIds.has(p.insurerId) && (!insCommHistoryFocusInsurerId || p.insurerId===insCommHistoryFocusInsurerId)).slice()
     .sort((a,b)=> b.startDate.localeCompare(a.startDate));
   if(all.length===0){
-    tbl.outerHTML = `<div class="empty"><div class="big">Chưa khai báo mốc thay đổi tỷ lệ nào</div>Mọi hợp đồng đang tính hoa hồng theo đúng tỷ lệ mặc định ở tab "Danh mục NCC".</div>`;
+    tbl.outerHTML = insCommHistoryFocusInsurerId
+      ? `<div class="empty"><div class="big">NCC này chưa khai báo mốc thay đổi tỷ lệ nào</div>Đang tính hoa hồng theo đúng tỷ lệ mặc định ở tab "Danh mục NCC". <a href="#" id="ichClearFocusEmpty" style="color:var(--gold)">Xem tất cả NCC</a></div>`
+      : `<div class="empty"><div class="big">Chưa khai báo mốc thay đổi tỷ lệ nào</div>Mọi hợp đồng đang tính hoa hồng theo đúng tỷ lệ mặc định ở tab "Danh mục NCC".</div>`;
+    const clearBtn = document.getElementById('ichClearFocusEmpty');
+    if(clearBtn) clearBtn.addEventListener('click', e=>{ e.preventDefault(); insCommHistoryFocusInsurerId=''; renderAll(); });
     return;
   }
   tbl.innerHTML = `
-    <thead><tr><th>NCC bảo hiểm</th><th>Sản phẩm</th><th class="num">Tỷ lệ</th><th>Áp dụng từ</th><th>Áp dụng đến</th><th class="wrap">Ghi chú</th><th>Người thêm</th><th></th></tr></thead>
+    <thead><tr><th>NCC bảo hiểm</th><th>Sản phẩm</th><th>Loại</th><th class="num">Tỷ lệ</th><th>Áp dụng từ</th><th>Áp dụng đến</th><th class="wrap">Ghi chú</th><th>Người thêm</th><th></th></tr></thead>
     <tbody>${all.map(p=>{
       const ins = insurerById(p.insurerId);
-      const periods = insCommissionRatePeriods(p.insurerId, p.product);
+      const issueType = p.issueType||'new';
+      const periods = insCommissionRatePeriods(p.insurerId, p.product, issueType);
       const period = periods.find(x=>x.id===p.id);
       const creator = state.accounts.find(a=>a.id===p.createdBy);
       return `<tr>
         <td class="wrap"><b>${ins?escHtml(ins.name):'<em>(đã xoá)</em>'}</b></td>
         <td><span class="tag">${escHtml(p.product)}</span></td>
+        <td><span class="tag" style="${issueType==='renewal'?'color:var(--gold)':''}">${issueType==='renewal'?'Tái tục':'Cấp mới'}</span></td>
         <td class="num" style="font-weight:700">${fmtPct(p.rate)}</td>
         <td>${p.startDate}</td>
         <td class="meta-line">${period?escHtml(period.endLabel):'—'}</td>
@@ -7580,9 +7653,10 @@ function renderInsCommHistTable(editable, insurerScope){
         const p = (state.insCommissionRates||[]).find(x=>x.id===btn.dataset.delCommRate);
         if(!p) return;
         const ins = insurerById(p.insurerId);
-        confirmModal(`Xoá mốc tỷ lệ ${fmtPct(p.rate)} (${p.product}, áp dụng từ ${p.startDate}) của ${ins?ins.name:''}?\n\nSau khi xoá, hợp đồng trong khoảng thời gian này sẽ tự động dùng lại tỷ lệ của mốc liền trước (hoặc tỷ lệ mặc định nếu không còn mốc nào khác).`, ()=>{
+        const issueType = p.issueType||'new';
+        confirmModal(`Xoá mốc tỷ lệ ${fmtPct(p.rate)} (${p.product} — ${issueType==='renewal'?'Tái tục':'Cấp mới'}, áp dụng từ ${p.startDate}) của ${ins?ins.name:''}?\n\nSau khi xoá, hợp đồng trong khoảng thời gian này sẽ tự động dùng lại tỷ lệ của mốc liền trước${issueType==='renewal'?' (hoặc tỷ lệ Cấp mới cùng thời điểm nếu không còn mốc Tái tục nào khác)':' (hoặc tỷ lệ mặc định nếu không còn mốc nào khác)'}.`, ()=>{
           state.insCommissionRates = state.insCommissionRates.filter(x=>x.id!==p.id);
-          logActivity('delete','Chính sách CK (Bảo hiểm)', `${ins?ins.name:''} — ${p.product}: xoá mốc tỷ lệ ${fmtPct(p.rate)} (từ ${p.startDate})`);
+          logActivity('delete','Chính sách CK (Bảo hiểm)', `${ins?ins.name:''} — ${p.product} (${issueType==='renewal'?'Tái tục':'Cấp mới'}): xoá mốc tỷ lệ ${fmtPct(p.rate)} (từ ${p.startDate})`);
           saveState();
           toast('Đã xoá mốc tỷ lệ hoa hồng');
           renderInsCommHistTable(editable, insurerScope);
@@ -7642,6 +7716,10 @@ function renderInsTransactions(c){
             <datalist id="itf_ins_list">${state.insurers.map(i=>`<option value="${escAttr(i.name)}">`).join('')}</datalist>
           </div>
           <div class="field"><label>Sản phẩm</label><select id="itf_product">${INS_PRODUCTS.map(p=>`<option>${p}</option>`).join('')}</select></div>
+          <div class="field"><label>Loại hợp đồng</label><select id="itf_issuetype">
+            <option value="Cấp mới">Cấp mới</option>
+            <option value="Tái tục">Tái tục</option>
+          </select></div>
           <div class="field"><label>Khách hàng</label><input id="itf_customer" placeholder="Tên khách hàng"></div>
           <div class="field"><label>SĐT khách hàng</label><input id="itf_phone" type="tel" placeholder="09xxxxxxxx"></div>
           <div class="field"><label>Xe (biển số / mẫu xe)</label><input id="itf_vehicle" placeholder="VD: 29A-123.45 · Honda SH"></div>
@@ -7653,7 +7731,7 @@ function renderInsTransactions(c){
           ${invoiceUploadFieldHTML('itf')}
           <button class="btn btn-primary" id="addInsTxBtn">+ Ghi nhận hợp đồng</button>
         </div>
-        <div class="helper">Chỉ hợp đồng trạng thái <b>"Đã cấp đơn"</b> mới được tính Hoa hồng, theo đúng tỷ lệ BHVC/BHDS của NCC đó — xem/sửa tỷ lệ ở tab "Danh mục NCC". Với BHDS, "Phí người ngồi trên xe" (nếu có bán kèm) được tính hoa hồng riêng, không trừ VAT như phí bảo hiểm dân sự chính.</div>
+        <div class="helper">Chỉ hợp đồng trạng thái <b>"Đã cấp đơn"</b> mới được tính Hoa hồng, theo đúng tỷ lệ BHVC/BHDS của NCC đó tại tab "Lịch sử hoa hồng" (hoặc mặc định ở "Danh mục NCC" nếu NCC chưa khai báo mốc nào). "Loại hợp đồng" = Tái tục chỉ ảnh hưởng tới NCC nào có khai báo riêng tỷ lệ Tái tục — còn lại tính như Cấp mới. Với BHDS, "Phí người ngồi trên xe" (nếu có bán kèm) được tính hoa hồng riêng, không trừ VAT như phí bảo hiểm dân sự chính.</div>
       </div>
     </div>` : lockedNote('Bạn đang xem ở chế độ chỉ đọc — chỉ Admin/Quản lý/Nhân viên mới ghi nhận hợp đồng.')}
     <div class="panel">
@@ -7716,6 +7794,7 @@ function renderInsTransactions(c){
       state.insTransactions.push({
         id: uid('it'), date: itxDate,
         unit, insurerId: ins.id, product,
+        issueType: document.getElementById('itf_issuetype').value,
         customer: document.getElementById('itf_customer').value.trim(),
         phone: document.getElementById('itf_phone').value.trim(),
         vehicle: formatVehicleField(document.getElementById('itf_vehicle').value),
@@ -7739,7 +7818,7 @@ function renderInsTransactions(c){
     const rows = list.map(t=>{
       const ins = insurerById(t.insurerId);
       return {
-        'Ngày': t.date, 'Đơn vị': t.unit, 'NCC bảo hiểm': ins?ins.name:'(đã xoá)', 'Sản phẩm': t.product||'',
+        'Ngày': t.date, 'Đơn vị': t.unit, 'NCC bảo hiểm': ins?ins.name:'(đã xoá)', 'Sản phẩm': t.product||'', 'Loại hợp đồng': t.issueType==='Tái tục'?'Tái tục':'Cấp mới',
         'Số đơn': t.policyNo||'', 'Khách hàng': t.customer||'', 'SĐT': t.phone||'', 'Biển số/xe': t.vehicle||'',
         'Phí bảo hiểm thu': Number(t.premiumAmount)||0, 'Phí người ngồi trên xe': Number(t.passengerAmount)||0, 'Trạng thái': t.status||'',
       };
@@ -7766,6 +7845,8 @@ function renderInsTransactions(c){
         const amount = parseMoneyInput(row['Phí bảo hiểm thu']);
         if(amount<=0){ errors.push(`${line}: thiếu hoặc sai "Phí bảo hiểm thu"`); return; }
         const passengerAmount = product==='BHDS' ? parseMoneyInput(row['Phí người ngồi trên xe']) : 0;
+        const issueTypeRaw = String(row['Loại hợp đồng']||'').trim().toLowerCase();
+        const issueType = issueTypeRaw==='tái tục' ? 'Tái tục' : 'Cấp mới'; // bỏ trống/giá trị lạ -> mặc định Cấp mới
         let unit;
         if(lockedUnit) unit = lockedUnit;
         else if(lockedMulti){
@@ -7785,7 +7866,7 @@ function renderInsTransactions(c){
           if(lockR){ errors.push(`${line}: ngày ${date} thuộc kỳ đối soát "${lockR.period}" đã chốt với ${ins.name} — chỉ Admin nhập được`); return; }
         }
         const rec = {
-          id: uid('it'), date, unit, insurerId: ins.id, product,
+          id: uid('it'), date, unit, insurerId: ins.id, product, issueType,
           customer: String(row['Khách hàng']||'').trim(),
           phone: String(row['SĐT']||'').trim(),
           vehicle: formatVehicleField(row['Biển số/xe']),
@@ -7794,7 +7875,7 @@ function renderInsTransactions(c){
           invoiceLink: '', createdBy: currentUserId, createdAt: new Date().toISOString(),
         };
         toInsert.push(rec);
-        previewRows.push({'Ngày':date,'Đơn vị':unit,'NCC bảo hiểm':ins.name,'Sản phẩm':product,'Khách hàng':rec.customer,'Biển số/xe':rec.vehicle,'Phí bảo hiểm thu':fmt(amount)+'đ','Phí người ngồi trên xe':passengerAmount>0?fmt(passengerAmount)+'đ':'—','Trạng thái':status});
+        previewRows.push({'Ngày':date,'Đơn vị':unit,'NCC bảo hiểm':ins.name,'Sản phẩm':product,'Loại hợp đồng':issueType,'Khách hàng':rec.customer,'Biển số/xe':rec.vehicle,'Phí bảo hiểm thu':fmt(amount)+'đ','Phí người ngồi trên xe':passengerAmount>0?fmt(passengerAmount)+'đ':'—','Trạng thái':status});
       });
       openImportPreviewModal('Xem trước nhập Excel — Doanh số Bảo hiểm', previewRows, errors, ()=>{
         toInsert.forEach(rec=> state.insTransactions.push(rec));
@@ -7945,6 +8026,12 @@ function renderInsTxTable(editable){
               ? `<input class="cell-edit mini-field" data-field="date" data-id="${t.id}" type="date" value="${t.date}" ${dis}>`
               : `<div class="mini-field">${new Date(t.date+'T00:00:00').toLocaleDateString('vi-VN')}</div>`}
             <div class="meta-line">${escHtml(t.unit)} → ${ins?escHtml(ins.name):'<em>(đã xoá)</em>'} · <span class="tag">${escHtml(t.product||'BHVC')}</span> ${lockIconHTML(lockR,'bh')}</div>
+            ${editable
+              ? `<select class="cell-edit mini-field muted" data-field="issueType" data-id="${t.id}" ${dis} style="font-size:12px">
+                   <option value="Cấp mới" ${(t.issueType||'Cấp mới')==='Cấp mới'?'selected':''}>Cấp mới</option>
+                   <option value="Tái tục" ${t.issueType==='Tái tục'?'selected':''}>Tái tục</option>
+                 </select>`
+              : `<div class="meta-line">${t.issueType==='Tái tục'?'Tái tục':'Cấp mới'}</div>`}
             ${editable
               ? `<input class="cell-edit mini-field muted" data-field="policyNo" data-id="${t.id}" value="${escAttr(t.policyNo||'')}" ${dis} placeholder="Số đơn bảo hiểm">`
               : (t.policyNo?`<div class="meta-line">Số đơn: ${escAttr(t.policyNo)}</div>`:'')}
