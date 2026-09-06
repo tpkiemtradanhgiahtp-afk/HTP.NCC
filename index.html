@@ -7137,6 +7137,10 @@ let insTxUnitFilter = '';
 let insTxInsurerFilter = '';
 let insTxSearchFilter = ''; // tìm theo Khách hàng / SĐT / Biển số / Số đơn — khớp gần đúng (chứa)
 let insCommHistoryFocusInsurerId = ''; // lọc trang "Lịch sử hoa hồng" theo đúng 1 NCC — set khi bấm "✎ Sửa" từ Danh mục NCC nhảy sang, '' = xem tất cả NCC
+// Ngữ cảnh điền sẵn form "Ghi nhận hợp đồng bảo hiểm" khi bấm "📝 Ghi nhận đơn mới" từ 1 dòng ở Lịch tái
+// tục — null = không có gì đang chờ điền sẵn. linkToInsTxId (nếu có) sẽ được gán vào renewalGroupLink của
+// hợp đồng mới ngay khi lưu, đảm bảo CHẮC CHẮN gộp đúng nhóm tái tục, không phụ thuộc khớp tự động.
+let renewalPrefillContext = null;
 let insTxBadDateOnly = false; // true = chỉ hiện hợp đồng thiếu ngày hoặc ngày không hợp lệ — công cụ dọn dữ liệu cũ bị lỗi
 let insTxVisibleCount = 150; // phân trang kiểu "Xem thêm" — tránh vẽ hàng nghìn dòng input cùng lúc gây đơ máy
 let insReconExpanded = new Set();
@@ -7772,26 +7776,30 @@ function renderInsTransactions(c){
     <div class="panel">
       ${panelToggleHeadHTML('itxEntryPanel', 'Ghi nhận hợp đồng bảo hiểm', '', (lockedMulti ? `<span class="tag gold">Đơn vị của bạn: ${escHtml(lockedUnits.join(' + '))}</span>` : ''), false, 'nhập')}
       <div class="panel-body" ${panelBodyOpenAttr('itxEntryPanel', false)}>
+        ${renewalPrefillContext ? `<div class="locked-note" style="border-color:var(--forest);color:var(--forest);background:var(--forest-soft);display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+          <span>🔗 Đang ghi nhận <b>Tái tục</b> cho <b>${escHtml(renewalPrefillContext.customer||'(chưa có tên KH)')}</b> (${escHtml(renewalPrefillContext.vehicle||'—')}) — hợp đồng mới sẽ tự gộp đúng nhóm theo dõi tái tục, không phụ thuộc khớp tự động.</span>
+          <button class="btn btn-ghost" id="itfCancelPrefillBtn" style="white-space:nowrap">Huỷ liên kết</button>
+        </div>` : ''}
         <div class="form-grid">
           <div class="field"><label>Ngày</label><input id="itf_date" type="date" value="${todayISO()}"></div>
           <div class="field"><label>Đơn vị</label>
             ${lockedUnit
               ? `<input id="itf_unit" value="${escAttr(lockedUnit)}" disabled>`
               : lockedMulti
-              ? `<select id="itf_unit">${lockedUnits.map(x=>`<option value="${escAttr(x)}">${escAttr(x)}</option>`).join('')}</select>`
-              : `<input id="itf_unit" list="itf_unit_list" placeholder="Tên đơn vị">${unitDatalistHTML('itf_unit_list')}`}
+              ? `<select id="itf_unit">${lockedUnits.map(x=>`<option value="${escAttr(x)}" ${renewalPrefillContext&&renewalPrefillContext.unit===x?'selected':''}>${escAttr(x)}</option>`).join('')}</select>`
+              : `<input id="itf_unit" list="itf_unit_list" placeholder="Tên đơn vị" value="${escAttr(renewalPrefillContext?renewalPrefillContext.unit:'')}">${unitDatalistHTML('itf_unit_list')}`}
           </div>
-          <div class="field"><label>NCC bảo hiểm</label><input id="itf_ins" list="itf_ins_list" placeholder="Chọn NCC bảo hiểm">
+          <div class="field"><label>NCC bảo hiểm</label><input id="itf_ins" list="itf_ins_list" placeholder="Chọn NCC bảo hiểm" value="${escAttr(renewalPrefillContext?renewalPrefillContext.insurerName:'')}">
             <datalist id="itf_ins_list">${state.insurers.map(i=>`<option value="${escAttr(i.name)}">`).join('')}</datalist>
           </div>
-          <div class="field"><label>Sản phẩm</label><select id="itf_product">${INS_PRODUCTS.map(p=>`<option>${p}</option>`).join('')}</select></div>
+          <div class="field"><label>Sản phẩm</label><select id="itf_product">${INS_PRODUCTS.map(p=>`<option ${renewalPrefillContext&&renewalPrefillContext.product===p?'selected':''}>${p}</option>`).join('')}</select></div>
           <div class="field"><label>Loại hợp đồng</label><select id="itf_issuetype">
-            <option value="Cấp mới">Cấp mới</option>
-            <option value="Tái tục">Tái tục</option>
+            <option value="Cấp mới" ${!renewalPrefillContext?'selected':''}>Cấp mới</option>
+            <option value="Tái tục" ${renewalPrefillContext?'selected':''}>Tái tục</option>
           </select></div>
-          <div class="field"><label>Khách hàng</label><input id="itf_customer" placeholder="Tên khách hàng"></div>
-          <div class="field"><label>SĐT khách hàng</label><input id="itf_phone" type="tel" placeholder="09xxxxxxxx"></div>
-          <div class="field"><label>Xe (biển số / mẫu xe)</label><input id="itf_vehicle" placeholder="VD: 29A-123.45 · Honda SH"></div>
+          <div class="field"><label>Khách hàng</label><input id="itf_customer" placeholder="Tên khách hàng" value="${escAttr(renewalPrefillContext?renewalPrefillContext.customer:'')}"></div>
+          <div class="field"><label>SĐT khách hàng</label><input id="itf_phone" type="tel" placeholder="09xxxxxxxx" value="${escAttr(renewalPrefillContext?renewalPrefillContext.phone:'')}"></div>
+          <div class="field"><label>Xe (biển số / mẫu xe)</label><input id="itf_vehicle" placeholder="VD: 29A-123.45 · Honda SH" value="${escAttr(renewalPrefillContext?renewalPrefillContext.vehicle:'')}"></div>
           <div class="field"><label>Số đơn bảo hiểm</label><input id="itf_policyno" placeholder="Số hợp đồng / giấy CN bảo hiểm"></div>
           <div class="field"><label>Phí bảo hiểm thu (VNĐ)</label><input id="itf_amount" class="field-money" type="text" inputmode="numeric" placeholder="0"></div>
           <div class="field" id="itf_passenger_wrap" style="display:none"><label>Phí người ngồi trên xe (VNĐ) <span class="info-tip" title="Riêng cho BHDS — hầu hết NCC KHÔNG tính VAT cho khoản này nên phải tách ra tính hoa hồng riêng, không chia chung 1,1 với phí bảo hiểm dân sự">i</span></label><input id="itf_passenger" class="field-money" type="text" inputmode="numeric" placeholder="0 (để trống nếu không bán kèm)"></div>
@@ -7844,6 +7852,8 @@ function renderInsTransactions(c){
     syncPassengerVisibility();
     itfProductSel.addEventListener('change', syncPassengerVisibility);
     wireInvoiceUploadField('itf', ()=> 'Doanh số BH · '+(document.getElementById('itf_ins').value||'').trim());
+    const cancelPrefillBtn = document.getElementById('itfCancelPrefillBtn');
+    if(cancelPrefillBtn) cancelPrefillBtn.addEventListener('click', ()=>{ renewalPrefillContext = null; renderAll(); });
     document.getElementById('addInsTxBtn').addEventListener('click', ()=>{
       const insName = document.getElementById('itf_ins').value;
       const ins = state.insurers.find(x=>x.name.trim().toLowerCase()===insName.trim().toLowerCase());
@@ -7860,6 +7870,7 @@ function renderInsTransactions(c){
         const lockR = lockingReconOf({insurerId:ins.id, date:itxDate}, state.insReconciliations, 'insurerId');
         if(lockR){ toast(`Ngày này thuộc kỳ đối soát "${lockR.period}" đã chốt với ${ins.name} — chỉ Admin được ghi nhận thêm`); return; }
       }
+      const linkToInsTxId = renewalPrefillContext ? renewalPrefillContext.linkToInsTxId : '';
       const candidate = {
         id: uid('it'), date: itxDate,
         unit, insurerId: ins.id, product,
@@ -7871,6 +7882,7 @@ function renderInsTransactions(c){
         premiumAmount: amount, passengerAmount, status, note: document.getElementById('itf_note').value.trim(),
         invoiceLink: document.getElementById('itf_invoice').value.trim(),
         createdBy: currentUserId, createdAt: new Date().toISOString(),
+        ...(linkToInsTxId ? {renewalGroupLink: linkToInsTxId} : {}),
       };
       const doSave = ()=>{
         state.insTransactions.push(candidate);
@@ -7878,14 +7890,17 @@ function renderInsTransactions(c){
         document.getElementById('itf_phone').value=''; document.getElementById('itf_vehicle').value='';
         document.getElementById('itf_policyno').value=''; document.getElementById('itf_note').value='';
         resetInvoiceUploadField('itf');
-        logActivity('create','Doanh số (Bảo hiểm)', `${unit} → ${ins.name}: ${fmt(amount)}đ${passengerAmount>0?` + ${fmt(passengerAmount)}đ (người ngồi trên xe)`:''} (${status})`);
+        logActivity('create','Doanh số (Bảo hiểm)', `${unit} → ${ins.name}: ${fmt(amount)}đ${passengerAmount>0?` + ${fmt(passengerAmount)}đ (người ngồi trên xe)`:''} (${status})${linkToInsTxId?' — liên kết tái tục từ Lịch tái tục':''}`);
         toast('Đã ghi nhận hợp đồng bảo hiểm');
         insTxUnitFilter = unit; insTxInsurerFilter = ins.name;
+        renewalPrefillContext = null;
         renderAll();
       };
       // Cảnh báo TRƯỚC khi ghi nếu đã có hợp đồng khác cùng khách (khớp biển số/SĐT/tên) trong vòng
       // ${INS_DUP_WARN_DAYS} ngày gần đây — chỉ nhắc, không chặn (đôi khi đúng là 2 hợp đồng thật khác nhau).
-      const dups = findPossibleDuplicateTx(candidate, state.insTransactions);
+      // Bỏ qua bước này nếu đang ghi nhận qua đúng đường "Ghi nhận đơn mới" từ Lịch tái tục — đã CHỦ ĐỘNG
+      // xác nhận đây là cùng khách ngay từ lúc bấm nút đó rồi, cảnh báo lại là thừa.
+      const dups = linkToInsTxId ? [] : findPossibleDuplicateTx(candidate, state.insTransactions);
       if(dups.length>0){
         const listText = dups.map(d=>{
           const dins = insurerById(d.insurerId);
@@ -8715,6 +8730,27 @@ function renewalDismissKeyFor(idA, idB){ return [idA, idB].sort().join('|'); }
 // tính liên kết thủ công) — dùng riêng cho công cụ rà soát nghi ngờ trùng khách hàng, KHÔNG loại trừ nhóm
 // đang được theo dõi qua khoản vay ngân hàng như standaloneRenewalRows() (mục đích khác nhau: cái kia để
 // tránh hiện trùng 2 dòng trong Lịch tái tục, còn đây cần quét ĐỦ mọi hợp đồng bảo hiểm để không bỏ sót).
+// Bấm "📝 Ghi nhận đơn mới" từ 1 dòng Lịch tái tục -> nhảy sang Doanh số Bảo hiểm, điền sẵn NCC/Sản
+// phẩm/Đơn vị/Khách hàng/SĐT/Biển số theo đúng hồ sơ đang xem, chọn sẵn "Tái tục", và GÁN CHẮC CHẮN
+// renewalGroupLink khi lưu — không phụ thuộc khớp tự động theo biển số/SĐT/tên (loại bỏ tận gốc rủi ro
+// khớp sai đã bàn trước đó, vì chính người dùng xác nhận "đây là cùng khách" ngay từ lúc bấm nút này).
+function startNewContractFromRenewal(r){
+  const isBank = r.source==='bank';
+  const ins = isBank ? (r.lastIssued ? insurerById(r.lastIssued.insurerId) : null) : insurerById(r.t.insurerId);
+  const product = isBank ? (r.lastIssued ? r.lastIssued.product : 'BHVC') : (r.t.product||'BHVC');
+  renewalPrefillContext = {
+    insurerName: ins ? ins.name : '',
+    product,
+    unit: r.t.unit,
+    customer: r.t.customer||'',
+    phone: r.t.phone||'',
+    vehicle: r.t.vehicle||'',
+    linkToInsTxId: isBank ? (r.lastIssued ? r.lastIssued.id : '') : r.t.id,
+  };
+  activeTab = 'bh_transactions';
+  panelOpenState['itxEntryPanel'] = true; // buộc mở panel, bất kể trước đó người dùng đã thu gọn hay chưa
+  renderAll();
+}
 function allInsRenewalGroupsForSuggestion(){
   const active = state.insTransactions.filter(t=>t.status!=='Huỷ');
   const byId = new Map(active.map(t=>[t.id, t]));
@@ -9139,6 +9175,7 @@ function renderInsRenewal(c){
           : (canTrackThisRow ? `<button class="btn btn-ghost" data-exempt="${r.t.id}" style="font-size:11.5px;padding:4px 8px;white-space:nowrap" title="Dùng khi hợp đồng nhiều năm hoặc khách đã bán xe/huỷ — sẽ không hiện lại trong Lịch tái tục nữa">🚫 Không theo dõi</button>` : '');
         const standaloneLinkBtn = (!isBank && canTrackThisRow) ? `<button class="btn btn-ghost" data-editlink-standalone="${r.t.id}" style="font-size:11.5px;padding:4px 8px;white-space:nowrap;margin-top:4px" title="Dùng khi hệ thống không tự nhận ra đây là cùng khách/xe với 1 hợp đồng khác do gõ lệch biển số/SĐT/tên">🔗 Sửa liên kết${r.t.renewalGroupLink?' ✓':''}</button>` : '';
         const trackBtn = canTrackThisRow ? `<button class="btn btn-ghost" data-tracking="${escAttr(r.t.id)}" data-tracking-source="${r.source}" style="font-size:11.5px;padding:4px 8px;white-space:nowrap;margin-top:4px" title="Ghi nhận liên hệ tư vấn lại, hoặc tạm ẩn cảnh báo tới 1 ngày hẹn trước">📋 Theo dõi${r.contactLog.length?` (${r.contactLog.length})`:''}</button>` : '';
+        const newContractBtn = canTrackThisRow ? `<button class="btn btn-primary" data-newcontract="${escAttr(r.t.id)}" data-newcontract-source="${r.source}" style="font-size:11.5px;padding:4px 8px;white-space:nowrap;margin-top:4px" title="Mở Doanh số Bảo hiểm, điền sẵn thông tin khách này và tự gán đúng nhóm tái tục — không cần lo khớp tự động sai">📝 Ghi nhận đơn mới</button>` : '';
         const isPulsing = r.status==='overdue' || r.status==='due_soon'; // tạm ẩn/đang xử lý/chưa tới hạn không nhấp nháy
         return `<tr class="${isPulsing?(r.status==='overdue'?'renewal-pulse-overdue':'renewal-pulse-soon'):''}">
           ${isAdmin ? `<td><input type="checkbox" class="renewal-chk" data-id="${escAttr(r.t.id)}" data-source="${r.source}"></td>` : ''}
@@ -9150,7 +9187,7 @@ function renderInsRenewal(c){
           <td>${r.nextDue.toISOString().slice(0,10)}</td>
           <td class="num" style="font-weight:600;${r.status==='overdue'?'color:var(--rust)':r.status==='due_soon'?'color:var(--amber)':''}">${daysTxt}</td>
           <td>${renewalStatusStampHTML(r.status, r.snoozeUntil)}</td>
-          <td><div style="display:flex;flex-direction:column;align-items:flex-start">${actionBtn}${standaloneLinkBtn}${trackBtn}</div></td>
+          <td><div style="display:flex;flex-direction:column;align-items:flex-start">${newContractBtn}${actionBtn}${standaloneLinkBtn}${trackBtn}</div></td>
         </tr>`;
        }catch(err){
         // Không để 1 bản ghi bất thường (dữ liệu ngày lỗi, thiếu field...) làm sập trắng cả bảng — chỉ báo lỗi
@@ -9168,6 +9205,13 @@ function renderInsRenewal(c){
     // hại nếu nút không được vẽ ra do thiếu quyền (canTrackBh/canTrackNh) — không cần bọc thêm điều kiện role.
     tbl.querySelectorAll('[data-editlink-standalone]').forEach(btn=>{
       btn.addEventListener('click', ()=> openStandaloneRenewalLinkModal(btn.dataset.editlinkStandalone));
+    });
+    tbl.querySelectorAll('[data-newcontract]').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        const rowsNow = currentRenewalRows();
+        const r = rowsNow.find(x=>x.t.id===btn.dataset.newcontract && x.source===btn.dataset.newcontractSource);
+        if(r) startNewContractFromRenewal(r);
+      });
     });
     tbl.querySelectorAll('[data-exempt]').forEach(btn=>{
       btn.addEventListener('click', ()=>{
