@@ -5766,10 +5766,14 @@ function bankProductsFor(bankId){
   state.bankPolicies.filter(p=>p.bankId===bankId).forEach(p=>{ set.add(p.product || DEFAULT_BANK_PRODUCT); });
   return Array.from(set);
 }
+// Ngày áp dụng CHÍNH XÁC của 1 chính sách CK ngân hàng — dùng startDate nếu có (chính sách mới, khai báo từ
+// khi có tính năng này), fallback về ngày 1 đầu tháng nếu chưa có (chính sách cũ, tương thích ngược, tránh
+// phải chạy migrate dữ liệu cũ).
+function bankPolicyEffectiveDate(p){ return p.startDate || (p.month+'-01'); }
 function activeBankPolicy(bankId, dateStr, product){
-  const mk = monthKey(dateStr);
   const prod = product || DEFAULT_BANK_PRODUCT;
-  const rows = state.bankPolicies.filter(p=>p.bankId===bankId && (p.product||DEFAULT_BANK_PRODUCT)===prod && p.month<=mk).sort((a,b)=> b.month.localeCompare(a.month));
+  const rows = state.bankPolicies.filter(p=>p.bankId===bankId && (p.product||DEFAULT_BANK_PRODUCT)===prod && bankPolicyEffectiveDate(p)<=dateStr)
+    .sort((a,b)=> bankPolicyEffectiveDate(b).localeCompare(bankPolicyEffectiveDate(a)));
   return rows[0] || null;
 }
 function bankTxCommission(t){
@@ -5930,15 +5934,15 @@ function renderBankPolicies(c){
   c.innerHTML = `
     ${editable ? `
     <div class="panel">
-      <div class="panel-head"><div><h2>Thêm chính sách tháng</h2>
-      <div class="desc">Chính sách của 1 ngân hàng áp dụng từ tháng nhập cho tới khi có dòng chính sách tháng mới hơn của chính ngân hàng đó.</div></div></div>
+      <div class="panel-head"><div><h2>Thêm chính sách mới</h2>
+      <div class="desc">Chính sách của 1 ngân hàng/gói vay áp dụng từ ĐÚNG NGÀY nhập cho tới khi có dòng chính sách mới hơn của chính gói đó — dùng cho cả trường hợp NCC đổi hoa hồng thúc đẩy giữa tháng, không chỉ đầu tháng.</div></div></div>
       <div class="panel-body">
         <div class="form-grid">
           <div class="field"><label>Ngân hàng</label><select id="bpf_bank">${bankOptions}</select></div>
           <div class="field"><label>Tên gói vay</label><input id="bpf_product" list="bpf_product_list" placeholder="VD: Gói mua xe mới (để trống = ${escAttr(DEFAULT_BANK_PRODUCT)})">
             <datalist id="bpf_product_list">${Array.from(new Set(state.bankPolicies.map(p=>p.product||DEFAULT_BANK_PRODUCT))).map(pr=>`<option value="${escAttr(pr)}">`).join('')}</datalist>
           </div>
-          <div class="field"><label>Tháng áp dụng</label><input id="bpf_month" type="month" value="${monthKey()}"></div>
+          <div class="field"><label>Ngày áp dụng</label><input id="bpf_startdate" type="date" value="${todayISO()}"></div>
           <div class="field"><label>Tỷ lệ vay tối đa (%)</label><input id="bpf_ratio" type="number" step="1" placeholder="85"></div>
           <div class="field"><label>Thời gian vay tối đa (năm)</label><input id="bpf_term" type="number" step="1" placeholder="7"></div>
           <div class="field"><label>Lãi suất ưu đãi năm đầu (%)</label><input id="bpf_promo" type="number" step="0.01" placeholder="9.5"></div>
@@ -5978,9 +5982,10 @@ function renderBankPolicies(c){
     document.getElementById('addBankPolicyBtn').addEventListener('click', ()=>{
       const bankId = document.getElementById('bpf_bank').value;
       if(!bankId){ toast('Cần có ngân hàng trước khi thêm chính sách'); return; }
-      const month = document.getElementById('bpf_month').value || monthKey();
+      const startDate = document.getElementById('bpf_startdate').value || todayISO();
+      const month = monthKey(startDate); // suy ra để tương thích ngược — nhiều báo cáo khác vẫn nhóm theo tháng
       const p = {
-        id: uid('bp'), bankId, month,
+        id: uid('bp'), bankId, month, startDate,
         product: (document.getElementById('bpf_product').value||'').trim() || DEFAULT_BANK_PRODUCT,
         maxLoanRatio: (Number(document.getElementById('bpf_ratio').value)||0)/100,
         maxLoanTerm: Number(document.getElementById('bpf_term').value)||0,
@@ -5996,8 +6001,8 @@ function renderBankPolicies(c){
       };
       state.bankPolicies.push(p);
       const b = bankById(bankId);
-      logActivity('create','Chính sách CK (NH)', `Thêm chính sách "${p.product}" ${monthLabel(month)} cho ${b?b.name:''}`);
-      toast('Đã thêm chính sách '+monthLabel(month));
+      logActivity('create','Chính sách CK (NH)', `Thêm chính sách "${p.product}" cho ${b?b.name:''}, áp dụng từ ${startDate}`);
+      toast('Đã thêm chính sách áp dụng từ '+startDate);
       renderAll();
     });
   }
@@ -6022,11 +6027,11 @@ function renderBankPolicies(c){
     if(bankCmp!==0) return bankCmp;
     const prodCmp = (a.product||DEFAULT_BANK_PRODUCT).localeCompare(b.product||DEFAULT_BANK_PRODUCT);
     if(prodCmp!==0) return prodCmp;
-    return b.month.localeCompare(a.month);
+    return bankPolicyEffectiveDate(b).localeCompare(bankPolicyEffectiveDate(a));
   });
   tbl.innerHTML = `
     <thead><tr>
-      <th class="wrap">Ngân hàng</th><th class="wrap">Gói vay</th><th>Tháng</th><th class="num">Tỷ lệ vay tối đa</th><th class="num">TG vay tối đa</th>
+      <th class="wrap">Ngân hàng</th><th class="wrap">Gói vay</th><th>Ngày áp dụng</th><th class="num">Tỷ lệ vay tối đa</th><th class="num">TG vay tối đa</th>
       <th class="num">LS ưu đãi năm đầu</th><th class="num">Biên độ sau ưu đãi</th><th class="num">Phí trả trước hạn</th>
       <th class="num">Hoa hồng (trước thuế)</th><th>Tái tục hằng năm</th><th class="wrap">Phê duyệt</th><th>Giải ngân</th><th>Giấy tờ</th><th class="wrap">Đánh giá</th><th></th>
     </tr></thead>
@@ -6035,7 +6040,7 @@ function renderBankPolicies(c){
       return `<tr>
         <td class="wrap">${b?escHtml(b.name):'<em>(đã xoá)</em>'}</td>
         <td class="wrap"><input class="cell-edit" data-field="product" data-id="${p.id}" value="${escAttr(p.product||DEFAULT_BANK_PRODUCT)}" ${dis}></td>
-        <td>${monthLabel(p.month)}</td>
+        <td><input class="cell-edit" data-field="startDate" data-id="${p.id}" type="date" value="${bankPolicyEffectiveDate(p)}" ${dis}><div class="meta-line">${monthLabel(p.month)}</div></td>
         <td class="num"><input class="cell-edit num pct" data-field="maxLoanRatio" data-id="${p.id}" type="number" step="1" value="${round2(p.maxLoanRatio*100)}" ${dis} style="width:60px"></td>
         <td class="num"><input class="cell-edit num" data-field="maxLoanTerm" data-id="${p.id}" type="number" step="1" value="${p.maxLoanTerm}" ${dis} style="width:52px"> năm</td>
         <td class="num"><input class="cell-edit num pct" data-field="promoRateY1" data-id="${p.id}" type="number" step="0.01" value="${round2(p.promoRateY1*100)}" ${dis} style="width:60px"></td>
@@ -6051,7 +6056,18 @@ function renderBankPolicies(c){
       </tr>`;
     }).join('')}</tbody>`;
   if(editable){
-    wireCellEdits(tbl, state.bankPolicies, 'Chính sách CK (NH)', p=>{ const b=bankById(p.bankId); return `${b?b.name:''} — ${p.product||DEFAULT_BANK_PRODUCT} — ${monthLabel(p.month)}`; });
+    wireCellEdits(tbl, state.bankPolicies, 'Chính sách CK (NH)', p=>{ const b=bankById(p.bankId); return `${b?b.name:''} — ${p.product||DEFAULT_BANK_PRODUCT} — ${bankPolicyEffectiveDate(p)}`; });
+    // Sửa trực tiếp "Ngày áp dụng" trong bảng thì phải suy lại luôn p.month theo ngày mới — nhiều báo cáo
+    // khác (Phân bổ, thống kê...) vẫn nhóm theo tháng, không đồng bộ sẽ làm 2 nơi lệch nhau.
+    tbl.querySelectorAll('[data-field="startDate"]').forEach(inp=>{
+      inp.addEventListener('change', ()=>{
+        const p = state.bankPolicies.find(x=>x.id===inp.dataset.id);
+        if(!p || !inp.value) return;
+        p.month = monthKey(inp.value);
+        saveState();
+        renderAll();
+      });
+    });
     tbl.querySelectorAll('.renew-toggle').forEach(cb=>{
       cb.addEventListener('change', ()=>{
         const p = state.bankPolicies.find(x=>x.id===cb.dataset.id);
@@ -6067,9 +6083,9 @@ function renderBankPolicies(c){
       btn.addEventListener('click', ()=>{
         const p = state.bankPolicies.find(x=>x.id===btn.dataset.del);
         const b = p ? bankById(p.bankId) : null;
-        confirmModal(`Xoá chính sách ${p?monthLabel(p.month):''} của "${b?b.name:''}"?`, ()=>{
+        confirmModal(`Xoá chính sách áp dụng từ ${p?bankPolicyEffectiveDate(p):''} của "${b?b.name:''}"?`, ()=>{
           const trashId = softDelete('bankPolicies', p, 'Chính sách CK (NH)');
-          logActivity('delete','Chính sách CK (NH)', `Xoá chính sách ${p?monthLabel(p.month):''} — ${b?b.name:''}`);
+          logActivity('delete','Chính sách CK (NH)', `Xoá chính sách áp dụng từ ${p?bankPolicyEffectiveDate(p):''} — ${b?b.name:''}`);
           toastUndo('Đã xoá chính sách', trashId);
           renderAll();
         });
