@@ -595,6 +595,16 @@
   #insRevenueTable input.cell-edit.money{ min-width:0; }
   #insRevenueTable input.cell-edit{ font-size:12.5px; }
 
+  .sidebar-toggle-btn{
+    display:none; align-items:center; justify-content:center;
+    width:38px; height:38px; border-radius:9px; border:1px solid var(--line);
+    background:var(--panel); cursor:pointer; font-size:18px; flex:0 0 auto; margin-right:10px;
+  }
+  /* Ẩn hẳn ở MỌI kích thước màn hình theo mặc định — chỉ khối @media bên dưới mới cho hiện lại đúng lúc cần
+     (trên di động, khi bấm ☰). Thiếu dòng này thì trên máy tính, div rỗng này vô tình thành 1 flex-item lạc
+     trong .shell (vì .shell là display:flex) — vô hại về mặt hiển thị nhưng sai về cấu trúc, nên vá cho đúng. */
+  .sidebar-backdrop{ display:none; }
+
   @media (max-width:900px){
     .content{ padding:18px 14px 40px; }
     .topbar{ padding:14px 16px; }
@@ -614,15 +624,7 @@
     .row-del{ padding:6px 9px; font-size:16px; }
     .nav-item{ padding:11px 12px; }
   }
-  .sidebar-toggle-btn{
-    display:none; align-items:center; justify-content:center;
-    width:38px; height:38px; border-radius:9px; border:1px solid var(--line);
-    background:var(--panel); cursor:pointer; font-size:18px; flex:0 0 auto; margin-right:10px;
-  }
-  /* Ẩn hẳn ở MỌI kích thước màn hình theo mặc định — chỉ khối @media bên dưới mới cho hiện lại đúng lúc cần
-     (trên di động, khi bấm ☰). Thiếu dòng này thì trên máy tính, div rỗng này vô tình thành 1 flex-item lạc
-     trong .shell (vì .shell là display:flex) — vô hại về mặt hiển thị nhưng sai về cấu trúc, nên vá cho đúng. */
-  .sidebar-backdrop{ display:none; }
+
 
   /* ---------- Login gate (dark theme) ---------- */
   .login-screen{
