@@ -293,6 +293,10 @@
   .panel-head .desc{ font-size:12px; color:var(--slate); margin-top:3px; }
   .panel-body{ padding:18px 20px 20px; }
   .panel-body.flush{ padding:0; }
+  /* Đặt 2 panel nhỏ (VD "Thêm kỳ đối soát" + "Bộ lọc") cạnh nhau thay vì xếp chồng, tiết kiệm chiều cao —
+     tự xuống dòng (mỗi panel chiếm cả hàng) trên màn hình hẹp nhờ flex-wrap, không cần media query riêng. */
+  .panel-row{ display:flex; gap:16px; margin-bottom:24px; align-items:flex-start; flex-wrap:wrap; }
+  .panel-row > *{ flex:1 1 320px; margin-bottom:0; min-width:280px; }
 
   /* ---------- Tables ---------- */
   .tbl-wrap{ overflow-x:auto; }
@@ -2912,7 +2916,7 @@ let state = null; // được gán = seedState() ngay khi init() bắt đầu ch
 let currentUserId = null;
 
 /* ---------------------------- Phân quyền (tài khoản & vai trò) ---------------------------- */
-const ROLES = ['Admin','Quản lý','Nhân viên','Đối tác'];
+const ROLES = ['Admin','Quản lý','Kế toán','Nhân viên','Đối tác'];
 // Các tab/khu vực mà mỗi vai trò được phép SỬA (mọi vai trò đã đăng nhập đều XEM được tất cả tab mình thấy).
 // LƯU Ý: vai trò "Đối tác" CỐ Ý không xuất hiện trong bất kỳ danh sách nào dưới đây -> không có quyền sửa ở
 // bất cứ khu vực nào (chỉ xem), trừ 1 ngoại lệ tự xác nhận hoa hồng của chính mình xử lý riêng ở render.
@@ -2924,6 +2928,7 @@ const DEFAULT_EDIT_PERMS = {
   policies:     ['Admin','Quản lý'],
   transactions: ['Admin','Quản lý','Nhân viên'],
   reconcile:    ['Admin','Quản lý'],
+  reconcile_pay:   ['Admin','Quản lý','Kế toán'], // Ghi nhận thanh toán ở Sổ nhận tiền — TÁCH RIÊNG khỏi quyền thêm/sửa kỳ đối soát (reconcile), để Kế toán ghi nhận tiền về được mà không có quyền sửa kỳ/phương pháp tính CK
   monitor:      ['Admin','Quản lý'],   // chọn chu kỳ theo dõi / ngày báo cáo
   settings:     ['Admin'],   // danh sách đơn vị — cả tab Cài đặt giờ chỉ Admin xem/sửa được (mục "Hệ thống") — CỐ ĐỊNH, không cho cấu hình lại
   accounts:     ['Admin'],             // quản trị tài khoản — CỐ ĐỊNH, không cho cấu hình lại
@@ -2931,11 +2936,13 @@ const DEFAULT_EDIT_PERMS = {
   nh_policies:     ['Admin','Quản lý'],
   nh_transactions: ['Admin','Quản lý','Nhân viên'],
   nh_reconcile:    ['Admin','Quản lý'],
+  nh_reconcile_pay:['Admin','Quản lý','Kế toán'],
   bh_suppliers:    ['Admin','Quản lý'],
   bh_policies:     ['Admin','Quản lý'],
   bh_comm_history: ['Admin','Quản lý'], // Lịch sử tỷ lệ hoa hồng theo mốc thời gian
   bh_transactions: ['Admin','Quản lý','Nhân viên'],
   bh_reconcile:    ['Admin','Quản lý'],
+  bh_reconcile_pay:['Admin','Quản lý','Kế toán'],
   bh_allocation:   ['Admin','Quản lý'],  // nhập DT dịch vụ/sửa chữa theo hãng theo tháng
   yearly_targets:  ['Admin','Quản lý'],  // Mục tiêu năm — dùng chung cho cả 3 module
 };
@@ -2947,7 +2954,8 @@ const PERM_AREA_ROWS = [
   {label:'Danh mục NCC / NH / Bảo hiểm', keys:['suppliers','nh_suppliers','bh_suppliers'], locked:false},
   {label:'Chính sách CK / Biểu phí', keys:['policies','nh_policies','bh_policies','bh_comm_history'], locked:false},
   {label:'Doanh số', keys:['transactions','nh_transactions','bh_transactions'], locked:false},
-  {label:'Đối soát CK', keys:['reconcile','nh_reconcile','bh_reconcile'], locked:false},
+  {label:'Đối soát CK — Thêm/sửa kỳ, phương pháp tính', keys:['reconcile','nh_reconcile','bh_reconcile'], locked:false},
+  {label:'Đối soát CK — Ghi nhận thanh toán (Sổ nhận tiền)', keys:['reconcile_pay','nh_reconcile_pay','bh_reconcile_pay'], locked:false},
   {label:'Theo dõi mốc CK (chọn chu kỳ)', keys:['monitor'], locked:false},
   {label:'Phân bổ dịch vụ Bảo hiểm (DT dịch vụ/sửa chữa)', keys:['bh_allocation'], locked:false},
   {label:'Mục tiêu năm', keys:['yearly_targets'], locked:false},
@@ -3646,6 +3654,8 @@ let txUnitFilter = '';
 let txSupplierFilter = '';
 let txVisibleCount = TX_PAGE_SIZE; // phân trang kiểu "Xem thêm" — nhất quán với Sổ hợp đồng bảo hiểm/Sổ hồ sơ vay
 let reconExpanded = new Set();
+let reconSupplierFilter = ''; // lọc Lịch sử đối soát theo tên NCC
+let reconVisibleCount = TX_PAGE_SIZE; // phân trang kiểu "Xem thêm"
 // Bộ lọc Tháng/Năm dùng CHUNG cho cả 3 module (nút 📅 trên đầu trang) — chọn 1 lần, áp dụng cho Doanh số
 // ở mọi module, giữ nguyên lựa chọn khi chuyển tab. Rỗng = không lọc gì theo thời gian.
 let globalYearFilter = '';  // '' hoặc 'YYYY'
@@ -5517,13 +5527,14 @@ function reconCalc(r){
 function renderReconcile(c){
   setTitle('Đối soát CK', state.reconciliations.length+' kỳ đối soát — theo dõi CK phải hưởng / NCC xác nhận / đã nhận');
   const editable = canEdit('reconcile');
+  const canPay = canEdit('reconcile_pay');
   const supplierOptions = state.suppliers.map(s=>`<option value="${s.id}">${escHtml(s.name)}</option>`).join('');
   c.innerHTML = `
+    <div class="panel-row">
     ${editable ? `
     <div class="panel">
-      <div class="panel-head"><div><h2>Thêm kỳ đối soát</h2>
-      <div class="desc">Doanh số & CK được tính lại đúng theo khoảng Từ ngày–Đến ngày bạn nhập (không lấy toàn bộ lịch sử), theo đúng "Phương pháp áp dụng" đã cấu hình ở Chính sách CK và các mốc còn hiệu lực tại thời điểm Đến ngày. Riêng Thưởng thêm vẫn tính theo trạng thái tại "Ngày báo cáo" (tab Theo dõi mốc CK) — nếu đối soát 1 kỳ trong quá khứ, hãy đặt Ngày báo cáo trùng thời điểm đó để Thưởng thêm chính xác. Sau khi thêm kỳ, ghi nhận từng lần NCC trả tiền ở "Sổ nhận tiền" bên trong mỗi dòng — Trạng thái sẽ tự cập nhật theo số tiền thực nhận, không cần chọn tay.</div></div></div>
-      <div class="panel-body">
+      ${panelToggleHeadHTML('reconAddPanel', 'Thêm kỳ đối soát', 'Doanh số &amp; CK được tính lại đúng theo khoảng Từ ngày–Đến ngày bạn nhập, theo đúng "Phương pháp áp dụng" ở Chính sách CK và các mốc còn hiệu lực. Sau khi thêm kỳ, ghi nhận từng lần NCC trả tiền ở "Sổ nhận tiền" bên trong mỗi dòng.', '', false, 'nhập')}
+      <div class="panel-body" ${panelBodyOpenAttr('reconAddPanel', false)}>
         <div class="form-grid">
           <div class="field"><label>Kỳ đối soát</label><input id="rf_period" placeholder="VD: T8/2026"></div>
           <div class="field"><label>NCC</label><select id="rf_supplier">${supplierOptions}</select></div>
@@ -5534,15 +5545,36 @@ function renderReconcile(c){
         </div>
         <div class="helper">"NCC xác nhận" là số CK mà NCC đồng ý/xác nhận bằng văn bản (nếu có) — độc lập với số tiền thực đã nhận, ghi ở Sổ nhận tiền bên trong từng dòng.</div>
       </div>
-    </div>` : lockedNote('Bạn đang xem ở chế độ chỉ đọc — chỉ Admin/Quản lý mới thêm/sửa kỳ đối soát.')}
+    </div>` : lockedNote(canPay
+      ? 'Bạn có quyền ghi nhận thanh toán ở "Sổ nhận tiền" bên trong mỗi dòng bên dưới, nhưng không thêm/sửa được kỳ đối soát mới — chỉ Admin/Quản lý làm được việc đó.'
+      : 'Bạn đang xem ở chế độ chỉ đọc — chỉ Admin/Quản lý mới thêm/sửa kỳ đối soát.')}
+    <div class="panel">
+      ${panelToggleHeadHTML('reconFilterPanel', 'Bộ lọc', 'Lọc Lịch sử đối soát bên dưới theo NCC', '', false, 'lọc')}
+      <div class="panel-body" ${panelBodyOpenAttr('reconFilterPanel', false)}>
+        <div class="form-grid">
+          <div class="field"><label>NCC</label><input id="rcf_supplier" list="rcf_supplier_list" placeholder="Tất cả NCC..." value="${escAttr(reconSupplierFilter)}">
+            <datalist id="rcf_supplier_list">${state.suppliers.map(s=>`<option value="${escAttr(s.name)}">`).join('')}</datalist>
+          </div>
+          <button class="btn btn-ghost" id="rcfClearBtn">Xem tất cả</button>
+        </div>
+      </div>
+    </div>
+    </div>
     <div class="panel">
       <div class="panel-head"><div><h2>Lịch sử đối soát</h2>
       <div class="desc" id="reconFilterNote">Bấm vào số "Đã nhận" của mỗi dòng để mở Sổ nhận tiền — ghi nhận từng lần thanh toán, Trạng thái tự tính từ đó.</div></div>
       <button class="btn btn-ghost" id="reconExportBtn">⬇ Xuất Excel</button>
       </div>
       <div class="panel-body flush"><div class="tbl-wrap"><table class="data" id="reconTable"></table></div></div>
+      <div class="panel-body" id="reconMoreBox" style="display:none;text-align:center">
+        <button class="btn btn-ghost" id="reconMoreBtn">Xem thêm</button>
+      </div>
     </div>
   `;
+  wirePanelToggles(c);
+  const redrawReconDebounced = debounce(()=>{ reconVisibleCount = TX_PAGE_SIZE; renderReconTable(editable, canPay); }, 300);
+  document.getElementById('rcf_supplier').addEventListener('input', ()=>{ reconSupplierFilter = document.getElementById('rcf_supplier').value; redrawReconDebounced(); });
+  document.getElementById('rcfClearBtn').addEventListener('click', ()=>{ reconSupplierFilter=''; reconVisibleCount=TX_PAGE_SIZE; renderAll(); });
   if(editable){
     attachMoneyFormatting(document.getElementById('rf_confirmed'));
     document.getElementById('addReconBtn').addEventListener('click', ()=>{
@@ -5563,7 +5595,7 @@ function renderReconcile(c){
     toast('Đã thêm kỳ đối soát — ghi nhận thanh toán ở Sổ nhận tiền khi có tiền về');
     reconExpanded.add(newId);
     saveState();
-    renderReconTable(editable);
+    renderReconTable(editable, canPay);
     document.getElementById('rf_period').value=''; document.getElementById('rf_from').value=''; document.getElementById('rf_to').value='';
     document.getElementById('rf_confirmed').value='';
     });
@@ -5583,14 +5615,18 @@ function renderReconcile(c){
     });
     exportToExcel('DoiSoatCK_NCC_'+todayISO()+'.xlsx', [{name:'Đối soát CK', rows}]);
   });
-  renderReconTable(editable);
+  renderReconTable(editable, canPay);
 }
 function getFilteredRecon(){
   const pf = partnerScopeFilter('supplierId');
+  const supFilter = (reconSupplierFilter||'').trim().toLowerCase();
   const list = pf ? state.reconciliations.filter(pf) : state.reconciliations;
-  return list.filter(r=>periodFilterMatchesRange(r.fromDate, r.toDate));
+  return list.filter(r=>{
+    if(supFilter){ const s = supplierById(r.supplierId); if(!s || !s.name.trim().toLowerCase().includes(supFilter)) return false; }
+    return periodFilterMatchesRange(r.fromDate, r.toDate);
+  });
 }
-function renderReconTable(editable){
+function renderReconTable(editable, canPay){
   const tbl = document.getElementById('reconTable');
   if(!tbl){ renderAll(); return; }
   const pf = partnerScopeFilter('supplierId');
@@ -5598,14 +5634,21 @@ function renderReconTable(editable){
   const list = getFilteredRecon();
   const note = document.getElementById('reconFilterNote');
   if(note){
-    note.innerHTML = globalYearFilter
-      ? `Đang lọc theo <b>${escAttr(periodFilterDescText())}</b> (${list.length}/${allList.length} kỳ — tính theo kỳ có giao với khoảng đang lọc) · Bấm vào số "Đã nhận" để mở Sổ nhận tiền.`
+    const parts = [];
+    if((reconSupplierFilter||'').trim()) parts.push(`NCC <b>${escAttr(reconSupplierFilter)}</b>`);
+    if(globalYearFilter) parts.push(`<b>${escAttr(periodFilterDescText())}</b>`);
+    note.innerHTML = parts.length
+      ? `Đang lọc theo ${parts.join(' · ')} (${list.length}/${allList.length} kỳ — tính theo kỳ có giao với khoảng đang lọc) · Bấm vào số "Đã nhận" để mở Sổ nhận tiền.`
       : `Bấm vào số "Đã nhận" của mỗi dòng để mở Sổ nhận tiền — ghi nhận từng lần thanh toán, Trạng thái tự tính từ đó.`;
   }
   const isPartnerSelf = isPartnerAccount(currentUser());
   if(list.length===0){
-    tbl.outerHTML = `<div class="empty"><div class="big">${allList.length===0?'Chưa có kỳ đối soát nào':'Không có kỳ nào trong khoảng đang lọc'}</div>${editable && allList.length===0?'Thêm kỳ đối soát ở form phía trên.':''}</div>`; return;
+    tbl.outerHTML = `<div class="empty"><div class="big">${allList.length===0?'Chưa có kỳ đối soát nào':'Không có kỳ nào khớp bộ lọc hiện tại'}</div>${editable && allList.length===0?'Thêm kỳ đối soát ở form phía trên.':''}</div>`;
+    const moreBox = document.getElementById('reconMoreBox'); if(moreBox) moreBox.style.display='none';
+    return;
   }
+  if(tbl.nextElementSibling && tbl.nextElementSibling.classList.contains('empty')) tbl.nextElementSibling.remove();
+  const rows = list.slice(0, reconVisibleCount);
   const dis = editable?'':'disabled';
   tbl.innerHTML = `
     <thead><tr>
@@ -5614,7 +5657,7 @@ function renderReconTable(editable){
       <th class="num">Thưởng thêm</th><th class="num money-col">NCC xác nhận</th><th class="num money-col">Đã nhận</th>
       <th class="num">Chênh lệch</th><th class="num">Còn phải thu</th><th>Trạng thái</th><th>Chốt</th><th></th>
     </tr></thead>
-    <tbody>${list.map(r=>{
+    <tbody>${rows.map(r=>{
       const s = supplierById(r.supplierId);
       const rc = reconCalc(r);
       const payments = ensureReconciliationPayments(r);
@@ -5653,13 +5696,13 @@ function renderReconTable(editable){
           <td class="num" style="font-weight:600">${fmt(p.amount)}</td>
           <td><span class="tag">${p.method||'—'}</span></td>
           <td class="wrap" style="color:var(--slate)">${escHtml(p.note||'')}</td>
-          <td>${editable?`<button class="row-del" data-del-pay="${r.id}|${p.id}" title="Xoá lần thanh toán này">✕</button>`:''}</td>
+          <td>${canPay?`<button class="row-del" data-del-pay="${r.id}|${p.id}" title="Xoá lần thanh toán này">✕</button>`:''}</td>
         </tr>`).join('');
       const detailRow = `<tr style="background:#FBFAF3">
         <td></td>
         <td colspan="14" style="padding:12px 16px 16px">
           <div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--slate);font-weight:600;margin-bottom:8px">Sổ nhận tiền — ${s?escHtml(s.name):''} · ${escHtml(r.period)}</div>
-          ${editable ? `
+          ${canPay ? `
           <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:end;margin-bottom:10px">
             <div class="field" style="width:150px"><label>Ngày nhận</label><input type="date" id="pay_date_${r.id}" value="${todayISO()}"></div>
             <div class="field" style="width:160px"><label>Số tiền (VNĐ)</label><input type="text" inputmode="numeric" class="field-money" id="pay_amount_${r.id}" placeholder="0"></div>
@@ -5676,8 +5719,20 @@ function renderReconTable(editable){
       </tr>`;
       return mainRow + detailRow;
     }).join('')}</tbody>`;
+  const reconMoreBox = document.getElementById('reconMoreBox');
+  if(reconMoreBox){
+    if(list.length > rows.length){
+      reconMoreBox.style.display = '';
+      document.getElementById('reconMoreBtn').textContent = `Xem thêm ${TX_PAGE_SIZE} dòng (còn ${list.length-rows.length} kỳ khớp bộ lọc)`;
+      document.getElementById('reconMoreBtn').onclick = ()=>{ reconVisibleCount += TX_PAGE_SIZE; renderReconTable(editable, canPay); };
+    } else {
+      reconMoreBox.style.display = 'none';
+    }
+  }
   if(editable || isPartnerSelf){
     wireCellEdits(tbl, state.reconciliations, 'Đối soát CK', r=>{ const s=supplierById(r.supplierId); return `${r.period} (${s?s.name:''})`; });
+  }
+  if(canPay){
     tbl.querySelectorAll('[data-add-pay]').forEach(el=>{
       const fld = document.getElementById('pay_amount_'+el.dataset.addPay);
       if(fld) attachMoneyFormatting(fld);
@@ -5687,7 +5742,7 @@ function renderReconTable(editable){
     btn.addEventListener('click', ()=>{
       const id = btn.dataset.togglePay;
       if(reconExpanded.has(id)) reconExpanded.delete(id); else reconExpanded.add(id);
-      renderReconTable(editable);
+      renderReconTable(editable, canPay);
     });
   });
   if(editable){
@@ -5717,6 +5772,21 @@ function renderReconTable(editable){
         });
       });
     });
+    tbl.querySelectorAll('[data-del]').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        const r = state.reconciliations.find(x=>x.id===btn.dataset.del);
+        if(r && r.locked && currentRole()!=='Admin'){ toast('Kỳ đã chốt — chỉ Admin được xoá'); return; }
+        const s = r ? supplierById(r.supplierId) : null;
+        confirmModal(`Xoá kỳ "${r?r.period:''}"${r&&r.locked?' (đã chốt)':''}?`, ()=>{
+          const trashId = softDelete('reconciliations', r, 'Đối soát CK');
+          logActivity('delete','Đối soát CK', `Xoá kỳ "${r?r.period:''}" (${s?s.name:''})`);
+          toastUndo('Đã xoá kỳ "'+(r?r.period:'')+'"', trashId);
+          renderAll();
+        });
+      });
+    });
+  }
+  if(canPay){
     tbl.querySelectorAll('[data-add-pay]').forEach(btn=>{
       btn.addEventListener('click', ()=>{
         const id = btn.dataset.addPay;
@@ -5732,7 +5802,7 @@ function renderReconTable(editable){
         logActivity('create','Đối soát CK', `Ghi nhận thanh toán ${fmt(amount)}đ (${method}) cho kỳ "${r.period}" — ${s?s.name:''}`);
         toast('Đã ghi nhận thanh toán');
         saveState();
-        renderReconTable(editable);
+        renderReconTable(editable, canPay);
       });
     });
     tbl.querySelectorAll('[data-del-pay]').forEach(btn=>{
@@ -5744,20 +5814,7 @@ function renderReconTable(editable){
           r.payments = ensureReconciliationPayments(r).filter(p=>p.id!==pid);
           logActivity('delete','Đối soát CK', `Xoá 1 lần thanh toán ở kỳ "${r.period}"`);
           saveState();
-          renderReconTable(editable);
-        });
-      });
-    });
-    tbl.querySelectorAll('[data-del]').forEach(btn=>{
-      btn.addEventListener('click', ()=>{
-        const r = state.reconciliations.find(x=>x.id===btn.dataset.del);
-        if(r && r.locked && currentRole()!=='Admin'){ toast('Kỳ đã chốt — chỉ Admin được xoá'); return; }
-        const s = r ? supplierById(r.supplierId) : null;
-        confirmModal(`Xoá kỳ "${r?r.period:''}"${r&&r.locked?' (đã chốt)':''}?`, ()=>{
-          const trashId = softDelete('reconciliations', r, 'Đối soát CK');
-          logActivity('delete','Đối soát CK', `Xoá kỳ "${r?r.period:''}" (${s?s.name:''})`);
-          toastUndo('Đã xoá kỳ "'+(r?r.period:'')+'"', trashId);
-          renderAll();
+          renderReconTable(editable, canPay);
         });
       });
     });
@@ -5875,6 +5932,8 @@ let bankTxSearchFilter = ''; // tìm theo Khách hàng / SĐT / Biển số / M�
 let bankTxBadDateOnly = false; // true = chỉ hiện hồ sơ thiếu ngày hoặc ngày không hợp lệ — công cụ dọn dữ liệu cũ bị lỗi
 let bankTxVisibleCount = TX_PAGE_SIZE; // phân trang kiểu "Xem thêm" — tránh vẽ hàng nghìn dòng input cùng lúc gây đơ máy
 let bankReconExpanded = new Set();
+let bankReconFilter = ''; // lọc Lịch sử đối soát theo tên ngân hàng
+let bankReconVisibleCount = TX_PAGE_SIZE;
 
 /* ---------------------------- Ngân hàng · Danh mục NCC ---------------------------- */
 function renderBankSuppliers(c){
@@ -6614,12 +6673,14 @@ function renderBankAllocation(c){
 function renderBankReconcile(c){
   setTitle('Đối soát CK', state.bankReconciliations.length+' kỳ đối soát — theo dõi Hoa hồng phải hưởng / đã nhận theo từng ngân hàng');
   const editable = canEdit('nh_reconcile');
+  const canPay = canEdit('nh_reconcile_pay');
   const bankOptions = state.banks.map(b=>`<option value="${b.id}">${escHtml(b.name)}</option>`).join('');
   c.innerHTML = `
+    <div class="panel-row">
     ${editable ? `
     <div class="panel">
-      <div class="panel-head"><div><h2>Thêm kỳ đối soát</h2></div></div>
-      <div class="panel-body">
+      ${panelToggleHeadHTML('bankReconAddPanel', 'Thêm kỳ đối soát', '', '', false, 'nhập')}
+      <div class="panel-body" ${panelBodyOpenAttr('bankReconAddPanel', false)}>
         <div class="form-grid">
           <div class="field"><label>Ngân hàng</label><select id="brf_bank">${bankOptions}</select></div>
           <div class="field"><label>Tên kỳ</label><input id="brf_period" placeholder="VD: T5/2026"></div>
@@ -6628,7 +6689,21 @@ function renderBankReconcile(c){
           <button class="btn btn-primary" id="addBankReconBtn">+ Thêm kỳ đối soát</button>
         </div>
       </div>
-    </div>` : lockedNote('Bạn đang xem ở chế độ chỉ đọc — chỉ Admin/Quản lý mới thêm/sửa kỳ đối soát.')}
+    </div>` : lockedNote(canPay
+      ? 'Bạn có quyền ghi nhận thanh toán ở "Sổ nhận tiền" bên trong mỗi dòng bên dưới, nhưng không thêm/sửa được kỳ đối soát mới — chỉ Admin/Quản lý làm được việc đó.'
+      : 'Bạn đang xem ở chế độ chỉ đọc — chỉ Admin/Quản lý mới thêm/sửa kỳ đối soát.')}
+    <div class="panel">
+      ${panelToggleHeadHTML('bankReconFilterPanel', 'Bộ lọc', 'Lọc Lịch sử đối soát bên dưới theo Ngân hàng', '', false, 'lọc')}
+      <div class="panel-body" ${panelBodyOpenAttr('bankReconFilterPanel', false)}>
+        <div class="form-grid">
+          <div class="field"><label>Ngân hàng</label><input id="brcf_bank" list="brcf_bank_list" placeholder="Tất cả ngân hàng..." value="${escAttr(bankReconFilter)}">
+            <datalist id="brcf_bank_list">${state.banks.map(b=>`<option value="${escAttr(b.name)}">`).join('')}</datalist>
+          </div>
+          <button class="btn btn-ghost" id="brcfClearBtn">Xem tất cả</button>
+        </div>
+      </div>
+    </div>
+    </div>
     <div class="panel">
       <div class="panel-head"><div><h2>Tất cả kỳ đối soát</h2>
         <div class="desc">"Số tiền giải ngân" &amp; "Hoa hồng phải hưởng" tự lấy từ tab <b>Doanh số</b> — chỉ tính hồ sơ trạng thái <b>"Đã giải ngân"</b>, đúng ngân hàng và nằm trong khoảng Từ ngày–Đến ngày của kỳ này. Nếu 2 cột này ra 0đ dù bạn đã có hồ sơ vay, kiểm tra lại: hồ sơ đã chuyển trạng thái "Đã giải ngân" chưa, ngày giải ngân có nằm trong khoảng của kỳ không, và đúng ngân hàng đang chọn. Khi NH đã xác nhận số hoa hồng thực tế (cột "NH xác nhận" khác 0), hệ thống ưu tiên dùng số đó thay cho số tự tính để ra "Chênh lệch"/"Còn phải thu".</div>
@@ -6637,8 +6712,15 @@ function renderBankReconcile(c){
       <button class="btn btn-ghost" id="bankReconExportBtn">⬇ Xuất Excel</button>
       </div>
       <div class="panel-body flush"><div class="tbl-wrap"><table class="data" id="bankReconTable"></table></div></div>
+      <div class="panel-body" id="bankReconMoreBox" style="display:none;text-align:center">
+        <button class="btn btn-ghost" id="bankReconMoreBtn">Xem thêm</button>
+      </div>
     </div>
   `;
+  wirePanelToggles(c);
+  const redrawBankReconDebounced = debounce(()=>{ bankReconVisibleCount = TX_PAGE_SIZE; renderBankReconTable(editable, canPay); }, 300);
+  document.getElementById('brcf_bank').addEventListener('input', ()=>{ bankReconFilter = document.getElementById('brcf_bank').value; redrawBankReconDebounced(); });
+  document.getElementById('brcfClearBtn').addEventListener('click', ()=>{ bankReconFilter=''; bankReconVisibleCount=TX_PAGE_SIZE; renderAll(); });
   if(editable){
     document.getElementById('addBankReconBtn').addEventListener('click', ()=>{
       const bankId = document.getElementById('brf_bank').value;
@@ -6668,31 +6750,38 @@ function renderBankReconcile(c){
     });
     exportToExcel('DoiSoatCK_NganHang_'+todayISO()+'.xlsx', [{name:'Đối soát CK NH', rows}]);
   });
-  renderBankReconTable(editable);
+  renderBankReconTable(editable, canPay);
 }
 function getFilteredBankRecon(){
   const pf = partnerScopeFilter('bankId');
+  const bkFilter = (bankReconFilter||'').trim().toLowerCase();
   const list = pf ? state.bankReconciliations.filter(pf) : state.bankReconciliations;
-  return list.filter(r=>periodFilterMatchesRange(r.fromDate, r.toDate));
+  return list.filter(r=>{
+    if(bkFilter){ const b = bankById(r.bankId); if(!b || !b.name.trim().toLowerCase().includes(bkFilter)) return false; }
+    return periodFilterMatchesRange(r.fromDate, r.toDate);
+  });
 }
-function renderBankReconTable(editable){
+function renderBankReconTable(editable, canPay){
   const tbl = document.getElementById('bankReconTable');
   if(!tbl){ renderAll(); return; }
   const note = document.getElementById('bankReconFilterNote');
-  if(note){
-    const pf = partnerScopeFilter('bankId');
-    const allList = pf ? state.bankReconciliations.filter(pf) : state.bankReconciliations;
-    const list = getFilteredBankRecon();
-    note.innerHTML = globalYearFilter ? `Đang lọc theo <b>${escAttr(periodFilterDescText())}</b> (${list.length}/${allList.length} kỳ — tính theo kỳ có giao với khoảng đang lọc).` : '';
-  }
-  if(!tbl) return;
+  const pf = partnerScopeFilter('bankId');
+  const allList = pf ? state.bankReconciliations.filter(pf) : state.bankReconciliations;
   const list = getFilteredBankRecon();
+  if(note){
+    const parts = [];
+    if((bankReconFilter||'').trim()) parts.push(`Ngân hàng <b>${escAttr(bankReconFilter)}</b>`);
+    if(globalYearFilter) parts.push(`<b>${escAttr(periodFilterDescText())}</b>`);
+    note.innerHTML = parts.length ? `Đang lọc theo ${parts.join(' · ')} (${list.length}/${allList.length} kỳ — tính theo kỳ có giao với khoảng đang lọc).` : '';
+  }
   const isPartnerSelf = isPartnerAccount(currentUser());
   if(list.length===0){
-    const pf0 = partnerScopeFilter('bankId');
-    const allList0 = pf0 ? state.bankReconciliations.filter(pf0) : state.bankReconciliations;
-    tbl.outerHTML = `<div class="empty"><div class="big">${allList0.length===0?'Chưa có kỳ đối soát nào':'Không có kỳ nào trong khoảng đang lọc'}</div>${editable && allList0.length===0?'Thêm kỳ đối soát ở form phía trên.':''}</div>`; return;
+    tbl.outerHTML = `<div class="empty"><div class="big">${allList.length===0?'Chưa có kỳ đối soát nào':'Không có kỳ nào khớp bộ lọc hiện tại'}</div>${editable && allList.length===0?'Thêm kỳ đối soát ở form phía trên.':''}</div>`;
+    const moreBox = document.getElementById('bankReconMoreBox'); if(moreBox) moreBox.style.display='none';
+    return;
   }
+  if(tbl.nextElementSibling && tbl.nextElementSibling.classList.contains('empty')) tbl.nextElementSibling.remove();
+  const rows = list.slice(0, bankReconVisibleCount);
   const dis = editable?'':'disabled';
   tbl.innerHTML = `
     <thead><tr>
@@ -6701,7 +6790,7 @@ function renderBankReconTable(editable){
       <th class="num money-col">NH xác nhận</th><th class="num money-col">Đã nhận</th>
       <th class="num">Chênh lệch</th><th class="num">Còn phải thu</th><th>Trạng thái</th><th>Chốt</th><th></th>
     </tr></thead>
-    <tbody>${list.map(r=>{
+    <tbody>${rows.map(r=>{
       const b = bankById(r.bankId);
       const rc = bankReconCalc(r);
       const payments = ensureReconciliationPayments(r);
@@ -6736,13 +6825,13 @@ function renderBankReconTable(editable){
           <td class="num" style="font-weight:600">${fmt(p.amount)}</td>
           <td><span class="tag">${p.method||'—'}</span></td>
           <td class="wrap" style="color:var(--slate)">${escHtml(p.note||'')}</td>
-          <td>${editable?`<button class="row-del" data-del-pay="${r.id}|${p.id}" title="Xoá lần thanh toán này">✕</button>`:''}</td>
+          <td>${canPay?`<button class="row-del" data-del-pay="${r.id}|${p.id}" title="Xoá lần thanh toán này">✕</button>`:''}</td>
         </tr>`).join('');
       const detailRow = `<tr style="background:#FBFAF3">
         <td></td>
         <td colspan="12" style="padding:12px 16px 16px">
           <div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--slate);font-weight:600;margin-bottom:8px">Sổ nhận tiền — ${b?escHtml(b.name):''} · ${escHtml(r.period)}</div>
-          ${editable ? `
+          ${canPay ? `
           <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:end;margin-bottom:10px">
             <div class="field" style="width:150px"><label>Ngày nhận</label><input type="date" id="bpay_date_${r.id}" value="${todayISO()}"></div>
             <div class="field" style="width:160px"><label>Số tiền (VNĐ)</label><input type="text" inputmode="numeric" class="field-money" id="bpay_amount_${r.id}" placeholder="0"></div>
@@ -6759,8 +6848,20 @@ function renderBankReconTable(editable){
       </tr>`;
       return mainRow + detailRow;
     }).join('')}</tbody>`;
+  const bankReconMoreBox = document.getElementById('bankReconMoreBox');
+  if(bankReconMoreBox){
+    if(list.length > rows.length){
+      bankReconMoreBox.style.display = '';
+      document.getElementById('bankReconMoreBtn').textContent = `Xem thêm ${TX_PAGE_SIZE} dòng (còn ${list.length-rows.length} kỳ khớp bộ lọc)`;
+      document.getElementById('bankReconMoreBtn').onclick = ()=>{ bankReconVisibleCount += TX_PAGE_SIZE; renderBankReconTable(editable, canPay); };
+    } else {
+      bankReconMoreBox.style.display = 'none';
+    }
+  }
   if(editable || isPartnerSelf){
     wireCellEdits(tbl, state.bankReconciliations, 'Đối soát CK (NH)', r=>{ const b=bankById(r.bankId); return `${r.period} (${b?b.name:''})`; });
+  }
+  if(canPay){
     tbl.querySelectorAll('[data-add-pay]').forEach(el=>{
       const fld = document.getElementById('bpay_amount_'+el.dataset.addPay);
       if(fld) attachMoneyFormatting(fld);
@@ -6770,7 +6871,7 @@ function renderBankReconTable(editable){
     btn.addEventListener('click', ()=>{
       const id = btn.dataset.togglePay;
       if(bankReconExpanded.has(id)) bankReconExpanded.delete(id); else bankReconExpanded.add(id);
-      renderBankReconTable(editable);
+      renderBankReconTable(editable, canPay);
     });
   });
   if(editable){
@@ -6800,6 +6901,21 @@ function renderBankReconTable(editable){
         });
       });
     });
+    tbl.querySelectorAll('[data-del]').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        const r = state.bankReconciliations.find(x=>x.id===btn.dataset.del);
+        if(r && r.locked && currentRole()!=='Admin'){ toast('Kỳ đã chốt — chỉ Admin được xoá'); return; }
+        const b = r ? bankById(r.bankId) : null;
+        confirmModal(`Xoá kỳ "${r?r.period:''}"${r&&r.locked?' (đã chốt)':''}?`, ()=>{
+          const trashId = softDelete('bankReconciliations', r, 'Đối soát CK (NH)');
+          logActivity('delete','Đối soát CK (NH)', `Xoá kỳ "${r?r.period:''}" (${b?b.name:''})`);
+          toastUndo('Đã xoá kỳ "'+(r?r.period:'')+'"', trashId);
+          renderAll();
+        });
+      });
+    });
+  }
+  if(canPay){
     tbl.querySelectorAll('[data-add-pay]').forEach(btn=>{
       btn.addEventListener('click', ()=>{
         const id = btn.dataset.addPay;
@@ -6815,7 +6931,7 @@ function renderBankReconTable(editable){
         logActivity('create','Đối soát CK (NH)', `Ghi nhận thanh toán ${fmt(amount)}đ (${method}) cho kỳ "${r.period}" — ${b?b.name:''}`);
         toast('Đã ghi nhận thanh toán');
         saveState();
-        renderBankReconTable(editable);
+        renderBankReconTable(editable, canPay);
       });
     });
     tbl.querySelectorAll('[data-del-pay]').forEach(btn=>{
@@ -6827,20 +6943,7 @@ function renderBankReconTable(editable){
           r.payments = ensureReconciliationPayments(r).filter(p=>p.id!==pid);
           logActivity('delete','Đối soát CK (NH)', `Xoá 1 lần thanh toán ở kỳ "${r.period}"`);
           saveState();
-          renderBankReconTable(editable);
-        });
-      });
-    });
-    tbl.querySelectorAll('[data-del]').forEach(btn=>{
-      btn.addEventListener('click', ()=>{
-        const r = state.bankReconciliations.find(x=>x.id===btn.dataset.del);
-        if(r && r.locked && currentRole()!=='Admin'){ toast('Kỳ đã chốt — chỉ Admin được xoá'); return; }
-        const b = r ? bankById(r.bankId) : null;
-        confirmModal(`Xoá kỳ "${r?r.period:''}"${r&&r.locked?' (đã chốt)':''}?`, ()=>{
-          const trashId = softDelete('bankReconciliations', r, 'Đối soát CK (NH)');
-          logActivity('delete','Đối soát CK (NH)', `Xoá kỳ "${r?r.period:''}" (${b?b.name:''})`);
-          toastUndo('Đã xoá kỳ "'+(r?r.period:'')+'"', trashId);
-          renderAll();
+          renderBankReconTable(editable, canPay);
         });
       });
     });
@@ -7186,6 +7289,8 @@ let renewalPrefillContext = null;
 let insTxBadDateOnly = false; // true = chỉ hiện hợp đồng thiếu ngày hoặc ngày không hợp lệ — công cụ dọn dữ liệu cũ bị lỗi
 let insTxVisibleCount = TX_PAGE_SIZE; // phân trang kiểu "Xem thêm" — tránh vẽ hàng nghìn dòng input cùng lúc gây đơ máy
 let insReconExpanded = new Set();
+let insReconFilter = ''; // lọc Lịch sử đối soát theo tên NCC bảo hiểm
+let insReconVisibleCount = TX_PAGE_SIZE;
 let insRenewalUnitFilter = '';
 let insRenewalBankFilter = '';
 let insRenewalStatusFilter = 'attention'; // 'attention' (mặc định, gộp overdue+due_soon+in_progress) | '' = tất cả | 'overdue' | 'due_soon' | 'in_progress' | 'ok' | 'snoozed'
@@ -8529,12 +8634,14 @@ function renderInsRevenueTable(editable){
 function renderInsReconcile(c){
   setTitle('Đối soát CK', state.insReconciliations.length+' kỳ đối soát — theo dõi Hoa hồng phải hưởng / đã nhận theo từng NCC bảo hiểm');
   const editable = canEdit('bh_reconcile');
+  const canPay = canEdit('bh_reconcile_pay');
   const insOptions = state.insurers.map(i=>`<option value="${i.id}">${escHtml(i.name)}</option>`).join('');
   c.innerHTML = `
+    <div class="panel-row">
     ${editable ? `
     <div class="panel">
-      <div class="panel-head"><div><h2>Thêm kỳ đối soát</h2></div></div>
-      <div class="panel-body">
+      ${panelToggleHeadHTML('insReconAddPanel', 'Thêm kỳ đối soát', '', '', false, 'nhập')}
+      <div class="panel-body" ${panelBodyOpenAttr('insReconAddPanel', false)}>
         <div class="form-grid">
           <div class="field"><label>NCC bảo hiểm</label><select id="irf_ins">${insOptions}</select></div>
           <div class="field"><label>Tên kỳ</label><input id="irf_period" placeholder="VD: T5/2026"></div>
@@ -8543,14 +8650,35 @@ function renderInsReconcile(c){
           <button class="btn btn-primary" id="addInsReconBtn">+ Thêm kỳ đối soát</button>
         </div>
       </div>
-    </div>` : lockedNote('Bạn đang xem ở chế độ chỉ đọc — chỉ Admin/Quản lý mới thêm/sửa kỳ đối soát.')}
+    </div>` : lockedNote(canPay
+      ? 'Bạn có quyền ghi nhận thanh toán ở "Sổ nhận tiền" bên trong mỗi dòng bên dưới, nhưng không thêm/sửa được kỳ đối soát mới — chỉ Admin/Quản lý làm được việc đó.'
+      : 'Bạn đang xem ở chế độ chỉ đọc — chỉ Admin/Quản lý mới thêm/sửa kỳ đối soát.')}
+    <div class="panel">
+      ${panelToggleHeadHTML('insReconFilterPanel', 'Bộ lọc', 'Lọc Lịch sử đối soát bên dưới theo NCC bảo hiểm', '', false, 'lọc')}
+      <div class="panel-body" ${panelBodyOpenAttr('insReconFilterPanel', false)}>
+        <div class="form-grid">
+          <div class="field"><label>NCC bảo hiểm</label><input id="ircf_ins" list="ircf_ins_list" placeholder="Tất cả NCC bảo hiểm..." value="${escAttr(insReconFilter)}">
+            <datalist id="ircf_ins_list">${state.insurers.map(i=>`<option value="${escAttr(i.name)}">`).join('')}</datalist>
+          </div>
+          <button class="btn btn-ghost" id="ircfClearBtn">Xem tất cả</button>
+        </div>
+      </div>
+    </div>
+    </div>
     <div class="panel">
       <div class="panel-head"><div><h2>Tất cả kỳ đối soát</h2><div class="desc" id="insReconFilterNote"></div></div>
       <button class="btn btn-ghost" id="insReconExportBtn">⬇ Xuất Excel</button>
       </div>
       <div class="panel-body flush"><div class="tbl-wrap"><table class="data" id="insReconTable"></table></div></div>
+      <div class="panel-body" id="insReconMoreBox" style="display:none;text-align:center">
+        <button class="btn btn-ghost" id="insReconMoreBtn">Xem thêm</button>
+      </div>
     </div>
   `;
+  wirePanelToggles(c);
+  const redrawInsReconDebounced = debounce(()=>{ insReconVisibleCount = TX_PAGE_SIZE; renderInsReconTable(editable, canPay); }, 300);
+  document.getElementById('ircf_ins').addEventListener('input', ()=>{ insReconFilter = document.getElementById('ircf_ins').value; redrawInsReconDebounced(); });
+  document.getElementById('ircfClearBtn').addEventListener('click', ()=>{ insReconFilter=''; insReconVisibleCount=TX_PAGE_SIZE; renderAll(); });
   if(editable){
     document.getElementById('addInsReconBtn').addEventListener('click', ()=>{
       const insurerId = document.getElementById('irf_ins').value;
@@ -8580,27 +8708,38 @@ function renderInsReconcile(c){
     });
     exportToExcel('DoiSoatCK_BaoHiem_'+todayISO()+'.xlsx', [{name:'Đối soát CK Bảo hiểm', rows}]);
   });
-  renderInsReconTable(editable);
+  renderInsReconTable(editable, canPay);
 }
 function getFilteredInsRecon(){
   const pf = partnerScopeFilter('insurerId');
+  const insFilter = (insReconFilter||'').trim().toLowerCase();
   const list = pf ? state.insReconciliations.filter(pf) : state.insReconciliations;
-  return list.filter(r=>periodFilterMatchesRange(r.fromDate, r.toDate));
+  return list.filter(r=>{
+    if(insFilter){ const ins = insurerById(r.insurerId); if(!ins || !ins.name.trim().toLowerCase().includes(insFilter)) return false; }
+    return periodFilterMatchesRange(r.fromDate, r.toDate);
+  });
 }
-function renderInsReconTable(editable){
+function renderInsReconTable(editable, canPay){
   const tbl = document.getElementById('insReconTable');
   if(!tbl){ renderAll(); return; }
   const note = document.getElementById('insReconFilterNote');
+  const pf0 = partnerScopeFilter('insurerId');
+  const allList0 = pf0 ? state.insReconciliations.filter(pf0) : state.insReconciliations;
   const list = getFilteredInsRecon();
   if(note){
-    const pf0 = partnerScopeFilter('insurerId');
-    const allList0 = pf0 ? state.insReconciliations.filter(pf0) : state.insReconciliations;
-    note.innerHTML = globalYearFilter ? `Đang lọc theo <b>${escAttr(periodFilterDescText())}</b> (${list.length}/${allList0.length} kỳ — tính theo kỳ có giao với khoảng đang lọc).` : '';
+    const parts = [];
+    if((insReconFilter||'').trim()) parts.push(`NCC bảo hiểm <b>${escAttr(insReconFilter)}</b>`);
+    if(globalYearFilter) parts.push(`<b>${escAttr(periodFilterDescText())}</b>`);
+    note.innerHTML = parts.length ? `Đang lọc theo ${parts.join(' · ')} (${list.length}/${allList0.length} kỳ — tính theo kỳ có giao với khoảng đang lọc).` : '';
   }
   const isPartnerSelf = isPartnerAccount(currentUser());
   if(list.length===0){
-    tbl.outerHTML = `<div class="empty"><div class="big">Chưa có kỳ đối soát nào</div>${editable?'Thêm kỳ đối soát ở form phía trên.':''}</div>`; return;
+    tbl.outerHTML = `<div class="empty"><div class="big">${allList0.length===0?'Chưa có kỳ đối soát nào':'Không có kỳ nào khớp bộ lọc hiện tại'}</div>${editable && allList0.length===0?'Thêm kỳ đối soát ở form phía trên.':''}</div>`;
+    const moreBox = document.getElementById('insReconMoreBox'); if(moreBox) moreBox.style.display='none';
+    return;
   }
+  if(tbl.nextElementSibling && tbl.nextElementSibling.classList.contains('empty')) tbl.nextElementSibling.remove();
+  const rows = list.slice(0, insReconVisibleCount);
   const dis = editable?'':'disabled';
   tbl.innerHTML = `
     <thead><tr>
@@ -8609,7 +8748,7 @@ function renderInsReconTable(editable){
       <th class="num money-col">NCC xác nhận</th><th class="num money-col">Đã nhận</th>
       <th class="num">Chênh lệch</th><th class="num">Còn phải thu</th><th>Trạng thái</th><th>Chốt</th><th></th>
     </tr></thead>
-    <tbody>${list.map(r=>{
+    <tbody>${rows.map(r=>{
       const ins = insurerById(r.insurerId);
       const rc = insReconCalc(r);
       const payments = ensureReconciliationPayments(r);
@@ -8644,13 +8783,13 @@ function renderInsReconTable(editable){
           <td class="num" style="font-weight:600">${fmt(p.amount)}</td>
           <td><span class="tag">${p.method||'—'}</span></td>
           <td class="wrap" style="color:var(--slate)">${escHtml(p.note||'')}</td>
-          <td>${editable?`<button class="row-del" data-del-pay="${r.id}|${p.id}" title="Xoá lần thanh toán này">✕</button>`:''}</td>
+          <td>${canPay?`<button class="row-del" data-del-pay="${r.id}|${p.id}" title="Xoá lần thanh toán này">✕</button>`:''}</td>
         </tr>`).join('');
       const detailRow = `<tr style="background:#FBFAF3">
         <td></td>
         <td colspan="12" style="padding:12px 16px 16px">
           <div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--slate);font-weight:600;margin-bottom:8px">Sổ nhận tiền — ${ins?escHtml(ins.name):''} · ${escHtml(r.period)}</div>
-          ${editable ? `
+          ${canPay ? `
           <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:end;margin-bottom:10px">
             <div class="field" style="width:150px"><label>Ngày nhận</label><input type="date" id="irpay_date_${r.id}" value="${todayISO()}"></div>
             <div class="field" style="width:160px"><label>Số tiền (VNĐ)</label><input type="text" inputmode="numeric" class="field-money" id="irpay_amount_${r.id}" placeholder="0"></div>
@@ -8667,8 +8806,20 @@ function renderInsReconTable(editable){
       </tr>`;
       return mainRow + detailRow;
     }).join('')}</tbody>`;
+  const insReconMoreBox = document.getElementById('insReconMoreBox');
+  if(insReconMoreBox){
+    if(list.length > rows.length){
+      insReconMoreBox.style.display = '';
+      document.getElementById('insReconMoreBtn').textContent = `Xem thêm ${TX_PAGE_SIZE} dòng (còn ${list.length-rows.length} kỳ khớp bộ lọc)`;
+      document.getElementById('insReconMoreBtn').onclick = ()=>{ insReconVisibleCount += TX_PAGE_SIZE; renderInsReconTable(editable, canPay); };
+    } else {
+      insReconMoreBox.style.display = 'none';
+    }
+  }
   if(editable || isPartnerSelf){
     wireCellEdits(tbl, state.insReconciliations, 'Đối soát CK (Bảo hiểm)', r=>{ const ins=insurerById(r.insurerId); return `${r.period} (${ins?ins.name:''})`; });
+  }
+  if(canPay){
     tbl.querySelectorAll('[data-add-pay]').forEach(el=>{
       const fld = document.getElementById('irpay_amount_'+el.dataset.addPay);
       if(fld) attachMoneyFormatting(fld);
@@ -8678,7 +8829,7 @@ function renderInsReconTable(editable){
     btn.addEventListener('click', ()=>{
       const id = btn.dataset.togglePay;
       if(insReconExpanded.has(id)) insReconExpanded.delete(id); else insReconExpanded.add(id);
-      renderInsReconTable(editable);
+      renderInsReconTable(editable, canPay);
     });
   });
   if(editable){
@@ -8708,6 +8859,21 @@ function renderInsReconTable(editable){
         });
       });
     });
+    tbl.querySelectorAll('[data-del]').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        const r = state.insReconciliations.find(x=>x.id===btn.dataset.del);
+        if(r && r.locked && currentRole()!=='Admin'){ toast('Kỳ đã chốt — chỉ Admin được xoá'); return; }
+        const ins = r ? insurerById(r.insurerId) : null;
+        confirmModal(`Xoá kỳ "${r?r.period:''}"${r&&r.locked?' (đã chốt)':''}?`, ()=>{
+          const trashId = softDelete('insReconciliations', r, 'Đối soát CK (Bảo hiểm)');
+          logActivity('delete','Đối soát CK (Bảo hiểm)', `Xoá kỳ "${r?r.period:''}" (${ins?ins.name:''})`);
+          toastUndo('Đã xoá kỳ "'+(r?r.period:'')+'"', trashId);
+          renderAll();
+        });
+      });
+    });
+  }
+  if(canPay){
     tbl.querySelectorAll('[data-add-pay]').forEach(btn=>{
       btn.addEventListener('click', ()=>{
         const id = btn.dataset.addPay;
@@ -8723,7 +8889,7 @@ function renderInsReconTable(editable){
         logActivity('create','Đối soát CK (Bảo hiểm)', `Ghi nhận thanh toán ${fmt(amount)}đ (${method}) cho kỳ "${r.period}" — ${ins?ins.name:''}`);
         toast('Đã ghi nhận thanh toán');
         saveState();
-        renderInsReconTable(editable);
+        renderInsReconTable(editable, canPay);
       });
     });
     tbl.querySelectorAll('[data-del-pay]').forEach(btn=>{
@@ -8735,20 +8901,7 @@ function renderInsReconTable(editable){
           r.payments = ensureReconciliationPayments(r).filter(p=>p.id!==pid);
           logActivity('delete','Đối soát CK (Bảo hiểm)', `Xoá 1 lần thanh toán ở kỳ "${r.period}"`);
           saveState();
-          renderInsReconTable(editable);
-        });
-      });
-    });
-    tbl.querySelectorAll('[data-del]').forEach(btn=>{
-      btn.addEventListener('click', ()=>{
-        const r = state.insReconciliations.find(x=>x.id===btn.dataset.del);
-        if(r && r.locked && currentRole()!=='Admin'){ toast('Kỳ đã chốt — chỉ Admin được xoá'); return; }
-        const ins = r ? insurerById(r.insurerId) : null;
-        confirmModal(`Xoá kỳ "${r?r.period:''}"${r&&r.locked?' (đã chốt)':''}?`, ()=>{
-          const trashId = softDelete('insReconciliations', r, 'Đối soát CK (Bảo hiểm)');
-          logActivity('delete','Đối soát CK (Bảo hiểm)', `Xoá kỳ "${r?r.period:''}" (${ins?ins.name:''})`);
-          toastUndo('Đã xoá kỳ "'+(r?r.period:'')+'"', trashId);
-          renderAll();
+          renderInsReconTable(editable, canPay);
         });
       });
     });
