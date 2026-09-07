@@ -10234,6 +10234,7 @@ function renderTrash(c){
 
 let accountsSelected = new Set(); // chọn tạm để xoá hàng loạt — reset mỗi lần mở lại trang Quản trị tài khoản
 let unitPickerOpenIds = new Set(); // các dòng tài khoản đang mở khung tick chọn đơn vị phụ trách — không reset khi vẽ lại trang, chỉ đóng khi bấm "Xong"
+let acctSearchFilter = ''; // lọc Danh sách tài khoản theo Tên hiển thị / Tài khoản đăng nhập / Email
 // Bấm 1 ô trong bảng "Phân quyền theo vai trò" -> bật/tắt role đó cho TẤT CẢ key gộp trong dòng, đồng thời
 // (áp dụng ngay, không cần nút Lưu riêng — nhất quán với cách các cài đặt khác trong app hoạt động).
 function togglePermForRole(keys, role, grant){
@@ -10289,37 +10290,47 @@ function renderAccounts(c){
       <div class="desc">Đây là nơi DUY NHẤT tạo được tài khoản mới — màn đăng nhập không còn cho tự tạo. Gõ tên đơn vị thực tế để tự khoá đúng đơn vị khi tài khoản đó nhập Doanh số — đơn vị mới sẽ tự được thêm vào hệ thống.</div></div></div>
       <div class="panel-body">
         <div class="form-grid">
-          <div class="field" style="grid-column:1/-1">
+          <div class="field">
             <label>Loại tài khoản</label>
             <select id="af_kind">
               <option value="internal">Nội bộ (nhân viên công ty)</option>
               <option value="partner">Đối tác — NCC/Ngân hàng/Bảo hiểm tự đăng nhập</option>
             </select>
           </div>
-          <div class="field"><label>Tên hiển thị</label><input id="af_name" placeholder="VD: Trần Thị B"></div>
-          <div class="field"><label>Tài khoản (đăng nhập)</label><input id="af_username" placeholder="VD: tranthib — để trống sẽ tự gợi ý theo Tên"></div>
-          <div class="field"><label>Email (không bắt buộc)</label><input id="af_email" type="email" placeholder="Để trống nếu chưa có — dùng để gửi thông báo"></div>
           <div class="field" id="af_role_field"><label>Vai trò</label>
             <select id="af_role">${ROLES.filter(r=>r!=='Đối tác').map(r=>`<option>${r}</option>`).join('')}</select>
           </div>
-          <div class="field" id="af_unit_field" style="grid-column:1/-1">
-            <label>Đơn vị phụ trách</label>
-            <input id="af_unit" list="af_unit_list" placeholder="Gõ tên đơn vị thực tế...">
-            ${unitDatalistHTML('af_unit_list')}
-            <div class="helper" style="margin-top:6px">Đây vẫn là đơn vị chính như cũ — nếu chỉ gõ 1 đơn vị ở đây, tài khoản hoạt động y hệt trước giờ. Cần cho tài khoản này xem thêm đơn vị khác? Tick thêm bên dưới (tuỳ chọn).</div>
-            <div id="af_extra_units_box" style="display:flex;flex-wrap:wrap;gap:10px 16px;margin-top:8px"></div>
-          </div>
+          <div class="field"><label>Tên hiển thị</label><input id="af_name" placeholder="VD: Trần Thị B"></div>
+          <div class="field"><label>Tài khoản (đăng nhập)</label><input id="af_username" placeholder="VD: tranthib — để trống sẽ tự gợi ý theo Tên"></div>
+          <div class="field"><label>Email (không bắt buộc)</label><input id="af_email" type="email" placeholder="Để trống nếu chưa có — dùng để gửi thông báo"></div>
           <div class="field">
             <label>Mật khẩu (tuỳ chọn)</label>
             <input id="af_password" type="password" autocomplete="new-password" placeholder="Để trống nếu không cần mật khẩu">
           </div>
-          <div class="field" id="af_modules_field" style="grid-column:1/-1">
+          <div style="grid-column:1/-1;display:flex;gap:16px;flex-wrap:wrap">
+          <div class="field" id="af_unit_field" style="flex:1 1 340px">
+            <label>Đơn vị phụ trách</label>
+            <button type="button" id="afUnitToggleBtn" style="width:100%;display:flex;justify-content:space-between;align-items:center;gap:8px;text-align:left;padding:9px 12px;border:1px solid var(--line);border-radius:8px;background:#fff;cursor:pointer;font:inherit;color:var(--slate)">
+              <span id="afUnitToggleLabel" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">— Chọn đơn vị —</span><span>▾</span>
+            </button>
+            <div class="helper" style="margin-top:6px">Chọn 1 đơn vị thì tài khoản hoạt động y hệt trước giờ — tick thêm để tài khoản này xem được nhiều đơn vị cùng lúc.</div>
+          </div>
+          <div class="field" id="af_modules_field" style="flex:1 1 300px">
             <label>Module được phép dùng</label>
             <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:6px">
               ${MODULES.map(m=>`<label style="display:flex;align-items:center;gap:6px;font-weight:400;cursor:pointer">
                 <input type="checkbox" class="af_module" value="${m.id}" checked> ${m.label}
               </label>`).join('')}
             </div>
+          </div>
+          </div>
+          <div id="afUnitPanel" style="grid-column:1/-1;display:none;border:1px solid var(--line);border-radius:8px;padding:12px;background:#FBFAF3">
+            <div id="af_extra_units_box" style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px 12px"></div>
+            <div style="display:flex;gap:6px;margin-top:10px;max-width:420px">
+              <input id="af_unit_new" placeholder="+ Tên đơn vị mới...">
+              <button type="button" class="btn btn-ghost" id="afUnitAddNewBtn" style="white-space:nowrap">+ Thêm</button>
+            </div>
+            <button type="button" class="btn btn-ghost" id="afUnitDoneBtn" style="margin-top:10px">✓ Xong</button>
           </div>
           <div class="field" id="af_partner_module_field" style="display:none">
             <label>Module đối tác</label>
@@ -10336,8 +10347,11 @@ function renderAccounts(c){
     </div>
     <div class="panel">
       <div class="panel-head">
-        <div><h2>Danh sách tài khoản</h2></div>
-        <div id="acctsBulkBar" style="display:flex;gap:8px;align-items:center"></div>
+        <div><h2>Danh sách tài khoản</h2><div class="desc" id="acctsFilterNote"></div></div>
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+          <input id="acctsSearchInput" placeholder="Tìm theo tên / tài khoản / email..." value="${escAttr(acctSearchFilter)}" style="min-width:220px">
+          <div id="acctsBulkBar" style="display:flex;gap:8px;align-items:center"></div>
+        </div>
       </div>
       <div class="panel-body flush"><div class="tbl-wrap"><table class="data" id="accountsTable"></table></div></div>
     </div>
@@ -10380,6 +10394,18 @@ function renderAccounts(c){
   `;
   wireInfoToggles(c);
   if(isAdmin) wirePermsTable();
+  const redrawAcctsDebounced = debounce(()=>{
+    const el = document.getElementById('acctsSearchInput');
+    const hadFocus = document.activeElement === el;
+    const caret = hadFocus ? el.selectionStart : null;
+    renderAll();
+    if(hadFocus){
+      const el2 = document.getElementById('acctsSearchInput');
+      if(el2){ el2.focus(); if(caret!=null) el2.setSelectionRange(caret, caret); }
+    }
+  }, 300);
+  const acctsSearchEl = document.getElementById('acctsSearchInput');
+  if(acctsSearchEl) acctsSearchEl.addEventListener('input', ()=>{ acctSearchFilter = acctsSearchEl.value; redrawAcctsDebounced(); });
   const kindSel = document.getElementById('af_kind');
   const roleField = document.getElementById('af_role_field');
   const unitField = document.getElementById('af_unit_field');
@@ -10406,15 +10432,50 @@ function renderAccounts(c){
   kindSel.addEventListener('change', applyKindUI);
   partnerModuleSel.addEventListener('change', refreshPartnerEntityOptions);
   applyKindUI();
+  function updateAfUnitSummary(){
+    const label = document.getElementById('afUnitToggleLabel');
+    if(!label) return;
+    const checked = Array.from(document.querySelectorAll('.af_extra_unit:checked')).map(el=>el.value);
+    label.textContent = checked.length ? checked.join(' + ') : '— Chọn đơn vị —';
+    label.style.color = checked.length ? 'var(--ink)' : 'var(--slate)';
+  }
   function renderAfExtraUnits(){
     const box = document.getElementById('af_extra_units_box');
     if(!box) return;
     box.innerHTML = state.units.length
-      ? state.units.map(u=>`<label style="display:flex;align-items:center;gap:6px;font-weight:400;cursor:pointer;font-size:12.5px">
+      ? state.units.map(u=>`<label style="display:flex;align-items:center;gap:6px;font-weight:400;cursor:pointer;font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${escAttr(u)}">
           <input type="checkbox" class="af_extra_unit" value="${escAttr(u)}"> ${escHtml(u)}</label>`).join('')
-      : `<span class="helper">Chưa có đơn vị nào trong hệ thống — gõ đơn vị chính ở ô trên trước.</span>`;
+      : `<span class="helper">Chưa có đơn vị nào trong hệ thống — gõ tên đơn vị mới bên dưới.</span>`;
+    box.querySelectorAll('.af_extra_unit').forEach(cb=> cb.addEventListener('change', updateAfUnitSummary));
   }
   renderAfExtraUnits();
+  const afUnitToggleBtn = document.getElementById('afUnitToggleBtn');
+  const afUnitPanel = document.getElementById('afUnitPanel');
+  afUnitToggleBtn.addEventListener('click', ()=>{
+    afUnitPanel.style.display = afUnitPanel.style.display==='none' ? '' : 'none';
+  });
+  document.getElementById('afUnitDoneBtn').addEventListener('click', ()=>{ afUnitPanel.style.display='none'; });
+  document.getElementById('afUnitAddNewBtn').addEventListener('click', ()=>{
+    const newUnitInput = document.getElementById('af_unit_new');
+    const name = newUnitInput.value.trim();
+    if(!name) return;
+    const box = document.getElementById('af_extra_units_box');
+    const existing = Array.from(box.querySelectorAll('.af_extra_unit')).find(cb=>cb.value.toLowerCase()===name.toLowerCase());
+    if(existing){ existing.checked = true; }
+    else {
+      const emptyMsg = box.querySelector('.helper'); if(emptyMsg) emptyMsg.remove();
+      const label = document.createElement('label');
+      label.style.cssText = 'display:flex;align-items:center;gap:6px;font-weight:400;cursor:pointer;font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis';
+      label.title = name;
+      label.innerHTML = `<input type="checkbox" class="af_extra_unit" checked> ${escHtml(name)}`;
+      label.querySelector('input').value = name;
+      label.querySelector('input').addEventListener('change', updateAfUnitSummary);
+      box.appendChild(label);
+    }
+    newUnitInput.value = '';
+    updateAfUnitSummary();
+    newUnitInput.focus();
+  });
 
   document.getElementById('addAccountBtn').addEventListener('click', async ()=>{
     const name = document.getElementById('af_name').value.trim();
@@ -10442,11 +10503,10 @@ function renderAccounts(c){
       return;
     }
     const role = document.getElementById('af_role').value;
-    const primaryUnit = document.getElementById('af_unit').value.trim();
-    const extraUnits = Array.from(document.querySelectorAll('.af_extra_unit:checked')).map(el=>el.value);
+    const allUnits = Array.from(document.querySelectorAll('.af_extra_unit:checked')).map(el=>el.value);
     const modules = Array.from(document.querySelectorAll('.af_module:checked')).map(el=>el.value);
     const acc = {id:uid('u'), name, username, role, unit:'', units:[], modules, email, createdAt: todayISO()};
-    setAccountUnits(acc, [primaryUnit, ...extraUnits]);
+    setAccountUnits(acc, allUnits);
     await setAccountPassword(acc, password);
     state.accounts.push(acc);
     const modLabel = MODULES.filter(m=>modules.includes(m.id)).map(m=>m.label).join(', ') || '(không module nào)';
@@ -10457,9 +10517,17 @@ function renderAccounts(c){
   });
 
   const tbl = document.getElementById('accountsTable');
+  const acctSearchNorm = (acctSearchFilter||'').trim().toLowerCase();
+  const filteredAccounts = state.accounts.filter(a=>{
+    if(!acctSearchNorm) return true;
+    const hay = [a.name, a.username, a.email].filter(Boolean).join(' ').toLowerCase();
+    return hay.includes(acctSearchNorm);
+  });
+  const acctsNote = document.getElementById('acctsFilterNote');
+  if(acctsNote) acctsNote.textContent = acctSearchNorm ? `Đang tìm "${acctSearchFilter}" — ${filteredAccounts.length}/${state.accounts.length} tài khoản` : '';
   tbl.innerHTML = `
     <thead><tr><th style="width:32px"><input type="checkbox" id="acctsSelectAll" title="Chọn tất cả"></th><th>Tên hiển thị</th><th>Tài khoản (đăng nhập)</th><th>Email</th><th>Vai trò</th><th>Đơn vị phụ trách</th><th>Module</th><th>Mật khẩu</th><th>Ngày tạo</th><th></th></tr></thead>
-    <tbody>${state.accounts.map(a=>`
+    <tbody>${filteredAccounts.map(a=>`
       <tr>
         <td><input type="checkbox" class="acct-check" data-id="${a.id}" ${a.id===currentUserId?'disabled title="Không tự chọn xoá chính mình"':''}></td>
         <td><input class="cell-edit" data-field="name" data-id="${a.id}" value="${escAttr(a.name)}"></td>
