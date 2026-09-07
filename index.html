@@ -830,6 +830,9 @@ function attachMoneyFormatting(el){
 }
 const uid = (() => { let n = Date.now()%1000000; return (prefix)=> prefix+'_'+(++n).toString(36); })();
 const todayISO = () => new Date().toISOString().slice(0,10);
+// Số dòng vẽ mỗi lần / mỗi lần bấm "Xem thêm" ở các sổ có nhiều field input (Sổ hợp đồng bảo hiểm, Sổ hồ sơ
+// vay) — giảm số này giúp trang nhẹ hơn (ít input hơn mỗi lần tải) nhưng phải bấm "Xem thêm" nhiều lần hơn.
+const TX_PAGE_SIZE = 50;
 // Trì hoãn gọi `fn` cho tới khi ngừng gọi debounced() liên tục trong `wait`ms — dùng cho ô tìm kiếm/lọc
 // dạng gõ chữ (input) trên bảng có thể có hàng nghìn dòng, để không vẽ lại toàn bộ bảng trên MỖI phím bấm
 // (gây đơ máy khi dữ liệu lớn, ví dụ sau khi nhập Excel hàng loạt).
@@ -3641,6 +3644,7 @@ let activeTab = 'dashboard';
 let panelOpenState = {}; // { [id]: true nếu khối "Bộ lọc"/"Ghi nhận..." đang MỞ } — nhớ trạng thái trong lúc dùng app, mặc định thu gọn để nhường chỗ cho bảng Sổ chứng từ/hợp đồng/hồ sơ vay
 let txUnitFilter = '';
 let txSupplierFilter = '';
+let txVisibleCount = TX_PAGE_SIZE; // phân trang kiểu "Xem thêm" — nhất quán với Sổ hợp đồng bảo hiểm/Sổ hồ sơ vay
 let reconExpanded = new Set();
 // Bộ lọc Tháng/Năm dùng CHUNG cho cả 3 module (nút 📅 trên đầu trang) — chọn 1 lần, áp dụng cho Doanh số
 // ở mọi module, giữ nguyên lựa chọn khi chuyển tab. Rỗng = không lọc gì theo thời gian.
@@ -5092,14 +5096,18 @@ function renderTransactions(c){
         </div>
       </div>
       <div class="panel-body flush"><div class="tbl-wrap tbl-wrap-tall"><table class="data" id="txTable"></table></div></div>
+      <div class="panel-body" id="txMoreBox" style="display:none;text-align:center">
+        <button class="btn btn-ghost" id="txMoreBtn">Xem thêm</button>
+      </div>
     </div>
   `;
   wirePanelToggles(c);
+  const redrawTxDebounced = debounce(()=>{ txVisibleCount = TX_PAGE_SIZE; renderTxTable(editable); }, 300);
   const unitFFilter = document.getElementById('txf_unit');
-  if(unitFFilter && !lockedUnit) unitFFilter.addEventListener(lockedMulti?'change':'input', ()=>{ txUnitFilter = unitFFilter.value; renderTxTable(editable); });
-  document.getElementById('txf_supplier').addEventListener('input', ()=>{ txSupplierFilter = document.getElementById('txf_supplier').value; renderTxTable(editable); });
+  if(unitFFilter && !lockedUnit) unitFFilter.addEventListener(lockedMulti?'change':'input', ()=>{ txUnitFilter = unitFFilter.value; redrawTxDebounced(); });
+  document.getElementById('txf_supplier').addEventListener('input', ()=>{ txSupplierFilter = document.getElementById('txf_supplier').value; redrawTxDebounced(); });
   document.getElementById('txfClearBtn').addEventListener('click', ()=>{
-    txSupplierFilter = '';
+    txSupplierFilter = ''; txVisibleCount = TX_PAGE_SIZE;
     if(!lockedUnit) txUnitFilter = '';
     renderAll();
   });
@@ -5205,23 +5213,29 @@ function renderTxTable(editable){
     const clearBtn = document.getElementById('txClearFilter');
     if(clearBtn) clearBtn.addEventListener('click', e=>{
       e.preventDefault();
-      txUnitFilter = ''; txSupplierFilter = '';
+      txUnitFilter = ''; txSupplierFilter = ''; txVisibleCount = TX_PAGE_SIZE;
       renderAll(); // vẽ lại cả trang để đồng bộ luôn ô Bộ lọc phía trên
     });
   }
   if(all.length===0){
-    tbl.outerHTML = `<div class="empty"><div class="big">Chưa có chứng từ nào</div>${editable?'Ghi nhận doanh số đầu tiên ở form phía trên.':''}</div>`; return;
+    tbl.outerHTML = `<div class="empty"><div class="big">Chưa có chứng từ nào</div>${editable?'Ghi nhận doanh số đầu tiên ở form phía trên.':''}</div>`;
+    const moreBox = document.getElementById('txMoreBox'); if(moreBox) moreBox.style.display='none';
+    return;
   }
   if(sorted.length===0){
     tbl.innerHTML = `<thead><tr><th>Ngày</th><th>Đơn vị</th><th class="wrap">NCC</th><th>Số CT</th><th>Nhóm hàng</th>
       <th class="num">Trước VAT</th><th class="num">Trả hàng</th><th class="num">DS tính CK</th><th>Người nhập</th><th>Hoá đơn</th><th></th></tr></thead>`;
+    if(tbl.nextElementSibling && tbl.nextElementSibling.classList.contains('empty')) tbl.nextElementSibling.remove();
     tbl.insertAdjacentHTML('afterend', `<div class="empty"><div class="big">Không có chứng từ nào khớp bộ lọc hiện tại</div></div>`);
+    const moreBox = document.getElementById('txMoreBox'); if(moreBox) moreBox.style.display='none';
     return;
   }
+  if(tbl.nextElementSibling && tbl.nextElementSibling.classList.contains('empty')) tbl.nextElementSibling.remove();
+  const rows = sorted.slice(0, txVisibleCount);
   tbl.innerHTML = `
     <thead><tr><th>Ngày</th><th>Đơn vị</th><th class="wrap">NCC</th><th>Số CT</th><th>Nhóm hàng</th>
       <th class="num">Trước VAT</th><th class="num">Trả hàng</th><th class="num">DS tính CK</th><th>Người nhập</th><th>Hoá đơn</th><th></th></tr></thead>
-    <tbody>${sorted.map(t=>{
+    <tbody>${rows.map(t=>{
       const s = supplierById(t.supplierId);
       const net = (Number(t.gross)||0)-(Number(t.returns)||0);
       const creator = state.accounts.find(a=>a.id===t.createdBy);
@@ -5240,6 +5254,16 @@ function renderTxTable(editable){
         <td>${lockIconHTML(lockR,'ncc')}${canDeleteTx(t)?`<button class="row-del" data-del="${t.id}">✕</button>`:''}</td>
       </tr>`;
     }).join('')}</tbody>`;
+  const txMoreBox = document.getElementById('txMoreBox');
+  if(txMoreBox){
+    if(sorted.length > rows.length){
+      txMoreBox.style.display = '';
+      document.getElementById('txMoreBtn').textContent = `Xem thêm ${TX_PAGE_SIZE} dòng (còn ${sorted.length-rows.length} dòng khớp bộ lọc)`;
+      document.getElementById('txMoreBtn').onclick = ()=>{ txVisibleCount += TX_PAGE_SIZE; renderTxTable(editable); };
+    } else {
+      txMoreBox.style.display = 'none';
+    }
+  }
   wireInvoiceAttachColumn(tbl, state.transactions, 'Doanh số', t=>{ const s=supplierById(t.supplierId); return 'Doanh số NCC · '+(s?s.name:''); });
   wireLockToggle(tbl);
   tbl.querySelectorAll('[data-del]').forEach(btn=>{
@@ -5849,7 +5873,7 @@ let bankTxUnitFilter = '';
 let bankTxBankFilter = '';
 let bankTxSearchFilter = ''; // tìm theo Khách hàng / SĐT / Biển số / Mã hồ sơ NH — khớp gần đúng (chứa)
 let bankTxBadDateOnly = false; // true = chỉ hiện hồ sơ thiếu ngày hoặc ngày không hợp lệ — công cụ dọn dữ liệu cũ bị lỗi
-let bankTxVisibleCount = 150; // phân trang kiểu "Xem thêm" — tránh vẽ hàng nghìn dòng input cùng lúc gây đơ máy
+let bankTxVisibleCount = TX_PAGE_SIZE; // phân trang kiểu "Xem thêm" — tránh vẽ hàng nghìn dòng input cùng lúc gây đơ máy
 let bankReconExpanded = new Set();
 
 /* ---------------------------- Ngân hàng · Danh mục NCC ---------------------------- */
@@ -6180,7 +6204,7 @@ function renderBankTransactions(c){
     </div>
   `;
   wirePanelToggles(c);
-  const redrawBankTxDebounced = debounce(()=>{ bankTxVisibleCount = 150; renderBankTxTable(editable); }, 300);
+  const redrawBankTxDebounced = debounce(()=>{ bankTxVisibleCount = TX_PAGE_SIZE; renderBankTxTable(editable); }, 300);
   const unitFFilter = document.getElementById('btxf_unit');
   if(unitFFilter && !lockedUnit) unitFFilter.addEventListener(lockedMulti?'change':'input', ()=>{ bankTxUnitFilter = unitFFilter.value; redrawBankTxDebounced(); });
   document.getElementById('btxf_bank').addEventListener('input', ()=>{ bankTxBankFilter = document.getElementById('btxf_bank').value; redrawBankTxDebounced(); });
@@ -6188,7 +6212,7 @@ function renderBankTransactions(c){
   const btxBadDateChk = document.getElementById('btxf_baddate');
   if(btxBadDateChk) btxBadDateChk.addEventListener('change', ()=>{ bankTxBadDateOnly = btxBadDateChk.checked; bankTxVisibleCount=150; renderBankTxTable(editable); });
   document.getElementById('btxfClearBtn').addEventListener('click', ()=>{
-    bankTxBankFilter = ''; bankTxSearchFilter = ''; bankTxVisibleCount = 150; bankTxBadDateOnly = false;
+    bankTxBankFilter = ''; bankTxSearchFilter = ''; bankTxVisibleCount = TX_PAGE_SIZE; bankTxBadDateOnly = false;
     if(!lockedUnit) bankTxUnitFilter = '';
     renderAll();
   });
@@ -6486,8 +6510,8 @@ function renderBankTxTable(editable){
   if(btxMoreBox){
     if(sorted.length > rows.length){
       btxMoreBox.style.display = '';
-      document.getElementById('btxMoreBtn').textContent = `Xem thêm 150 dòng (còn ${sorted.length-rows.length} dòng khớp bộ lọc)`;
-      document.getElementById('btxMoreBtn').onclick = ()=>{ bankTxVisibleCount += 150; renderBankTxTable(editable); };
+      document.getElementById('btxMoreBtn').textContent = `Xem thêm ${TX_PAGE_SIZE} dòng (còn ${sorted.length-rows.length} dòng khớp bộ lọc)`;
+      document.getElementById('btxMoreBtn').onclick = ()=>{ bankTxVisibleCount += TX_PAGE_SIZE; renderBankTxTable(editable); };
     } else {
       btxMoreBox.style.display = 'none';
     }
@@ -7160,7 +7184,7 @@ let insCommHistoryFocusInsurerId = ''; // lọc trang "Lịch sử hoa hồng" t
 // hợp đồng mới ngay khi lưu, đảm bảo CHẮC CHẮN gộp đúng nhóm tái tục, không phụ thuộc khớp tự động.
 let renewalPrefillContext = null;
 let insTxBadDateOnly = false; // true = chỉ hiện hợp đồng thiếu ngày hoặc ngày không hợp lệ — công cụ dọn dữ liệu cũ bị lỗi
-let insTxVisibleCount = 150; // phân trang kiểu "Xem thêm" — tránh vẽ hàng nghìn dòng input cùng lúc gây đơ máy
+let insTxVisibleCount = TX_PAGE_SIZE; // phân trang kiểu "Xem thêm" — tránh vẽ hàng nghìn dòng input cùng lúc gây đơ máy
 let insReconExpanded = new Set();
 let insRenewalUnitFilter = '';
 let insRenewalBankFilter = '';
@@ -7849,7 +7873,7 @@ function renderInsTransactions(c){
   wirePanelToggles(c);
   // Debounce 300ms cho các ô lọc dạng gõ chữ — với sổ có hàng trăm/nghìn dòng, gõ mỗi phím mà vẽ lại cả
   // bảng ngay lập tức sẽ rất đơ; đợi người dùng ngừng gõ 1 chút rồi mới vẽ lại giúp mượt hẳn.
-  const redrawInsTxDebounced = debounce(()=>{ insTxVisibleCount = 150; renderInsTxTable(editable); }, 300);
+  const redrawInsTxDebounced = debounce(()=>{ insTxVisibleCount = TX_PAGE_SIZE; renderInsTxTable(editable); }, 300);
   const unitFFilter = document.getElementById('itxf_unit');
   if(unitFFilter && !lockedUnit) unitFFilter.addEventListener(lockedMulti?'change':'input', ()=>{ insTxUnitFilter = unitFFilter.value; redrawInsTxDebounced(); });
   document.getElementById('itxf_ins').addEventListener('input', ()=>{ insTxInsurerFilter = document.getElementById('itxf_ins').value; redrawInsTxDebounced(); });
@@ -7857,7 +7881,7 @@ function renderInsTransactions(c){
   const itxBadDateChk = document.getElementById('itxf_baddate');
   if(itxBadDateChk) itxBadDateChk.addEventListener('change', ()=>{ insTxBadDateOnly = itxBadDateChk.checked; insTxVisibleCount=150; renderInsTxTable(editable); });
   document.getElementById('itxfClearBtn').addEventListener('click', ()=>{
-    insTxInsurerFilter = ''; insTxSearchFilter = ''; insTxVisibleCount = 150; insTxBadDateOnly = false;
+    insTxInsurerFilter = ''; insTxSearchFilter = ''; insTxVisibleCount = TX_PAGE_SIZE; insTxBadDateOnly = false;
     if(!lockedUnit) insTxUnitFilter = '';
     renderAll();
   });
@@ -8183,8 +8207,8 @@ function renderInsTxTable(editable){
   if(itxMoreBox){
     if(sorted.length > rows.length){
       itxMoreBox.style.display = '';
-      document.getElementById('itxMoreBtn').textContent = `Xem thêm 150 dòng (còn ${sorted.length-rows.length} dòng khớp bộ lọc)`;
-      document.getElementById('itxMoreBtn').onclick = ()=>{ insTxVisibleCount += 150; renderInsTxTable(editable); };
+      document.getElementById('itxMoreBtn').textContent = `Xem thêm ${TX_PAGE_SIZE} dòng (còn ${sorted.length-rows.length} dòng khớp bộ lọc)`;
+      document.getElementById('itxMoreBtn').onclick = ()=>{ insTxVisibleCount += TX_PAGE_SIZE; renderInsTxTable(editable); };
     } else {
       itxMoreBox.style.display = 'none';
     }
