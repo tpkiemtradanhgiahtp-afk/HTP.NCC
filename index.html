@@ -7058,7 +7058,7 @@ function renderInsSuppliers(c){
   }
   const dis = editable?'':'disabled';
   tbl.innerHTML = `
-    <thead><tr><th>STT</th><th class="wrap">Tên NCC bảo hiểm</th><th class="num" title="Tỷ lệ hoa hồng ĐANG áp dụng cho hôm nay, cả Cấp mới lẫn Tái tục — gộp từ tab &quot;Lịch sử hoa hồng&quot; (nếu có mốc) hoặc tỷ lệ mặc định lúc tạo NCC. Tái tục ghi &quot;(= cấp mới)&quot; nghĩa là NCC chưa khai báo mốc Tái tục riêng, đang tự dùng chung tỷ lệ Cấp mới. Bấm nút Sửa để đổi, không sửa trực tiếp được ở đây nữa — tránh 2 nơi lệch số nhau.">BHVC</th><th class="num" title="Tỷ lệ hoa hồng ĐANG áp dụng cho hôm nay, cả Cấp mới lẫn Tái tục — gộp từ tab &quot;Lịch sử hoa hồng&quot; (nếu có mốc) hoặc tỷ lệ mặc định lúc tạo NCC. Tái tục ghi &quot;(= cấp mới)&quot; nghĩa là NCC chưa khai báo mốc Tái tục riêng, đang tự dùng chung tỷ lệ Cấp mới. Bấm nút Sửa để đổi, không sửa trực tiếp được ở đây nữa — tránh 2 nơi lệch số nhau.">BHDS</th><th class="wrap">Điều khoản nổi bật</th><th>Trạng thái</th><th>Hợp đồng</th><th></th></tr></thead>
+    <thead><tr><th>STT</th><th class="wrap">Tên NCC bảo hiểm</th><th class="wrap" title="Để trống = tự tính là 1 hãng riêng (mặc định). Đặt CÙNG 1 tên cho nhiều NCC (VD 'DBV (TI)' và 'DBV (NonTI)' cùng ghi 'DBV') để trang Phân bổ đơn vị GỘP LẠI thành 1 dòng duy nhất, cộng dồn doanh số và chỉ cần đặt 1 chỉ tiêu % chung — KHÔNG ảnh hưởng gì tới Doanh số/Đối soát CK/Hoa hồng, các mục đó vẫn tính riêng theo đúng NCC đã chọn.">Nhóm phân bổ</th><th class="num" title="Tỷ lệ hoa hồng ĐANG áp dụng cho hôm nay, cả Cấp mới lẫn Tái tục — gộp từ tab &quot;Lịch sử hoa hồng&quot; (nếu có mốc) hoặc tỷ lệ mặc định lúc tạo NCC. Tái tục ghi &quot;(= cấp mới)&quot; nghĩa là NCC chưa khai báo mốc Tái tục riêng, đang tự dùng chung tỷ lệ Cấp mới. Bấm nút Sửa để đổi, không sửa trực tiếp được ở đây nữa — tránh 2 nơi lệch số nhau.">BHVC</th><th class="num" title="Tỷ lệ hoa hồng ĐANG áp dụng cho hôm nay, cả Cấp mới lẫn Tái tục — gộp từ tab &quot;Lịch sử hoa hồng&quot; (nếu có mốc) hoặc tỷ lệ mặc định lúc tạo NCC. Tái tục ghi &quot;(= cấp mới)&quot; nghĩa là NCC chưa khai báo mốc Tái tục riêng, đang tự dùng chung tỷ lệ Cấp mới. Bấm nút Sửa để đổi, không sửa trực tiếp được ở đây nữa — tránh 2 nơi lệch số nhau.">BHDS</th><th class="wrap">Điều khoản nổi bật</th><th>Trạng thái</th><th>Hợp đồng</th><th></th></tr></thead>
     <tbody>${state.insurers.map(ins=>{
       const rows = insRateRowsFor(ins.id).length;
       const rateCellHTML = (product)=>{
@@ -7078,6 +7078,7 @@ function renderInsSuppliers(c){
         <td>${ins.stt}</td>
         <td class="wrap"><input class="cell-edit" data-field="name" data-id="${ins.id}" value="${escAttr(ins.name)}" ${dis}>
           <div class="meta-line">${rows} khoảng giá trị xe đã có biểu phí</div></td>
+        <td class="wrap"><input class="cell-edit" data-field="allocGroupName" data-id="${ins.id}" value="${escAttr(ins.allocGroupName||'')}" placeholder="Để trống = hãng riêng" ${dis} list="allocGroupList"></td>
         <td class="num">${rateCellHTML('BHVC')}</td>
         <td class="num">${rateCellHTML('BHDS')}</td>
         <td class="wrap"><input class="cell-edit" data-field="terms" data-id="${ins.id}" value="${escAttr(ins.terms||'')}" ${dis}></td>
@@ -7085,7 +7086,8 @@ function renderInsSuppliers(c){
         <td>${contractBadgeHTML(ins, 'NCC Bảo hiểm')}</td>
         <td>${editable?`<button class="row-del" data-del="${ins.id}" title="Xoá NCC">✕</button>`:''}</td>
       </tr>`;
-    }).join('')}</tbody>`;
+    }).join('')}</tbody>
+    <datalist id="allocGroupList">${Array.from(new Set(state.insurers.map(x=>(x.allocGroupName||'').trim()).filter(Boolean))).map(g=>`<option value="${escAttr(g)}">`).join('')}</datalist>`;
   tbl.querySelectorAll('[data-goto-comm-hist]').forEach(btn=>{
     btn.addEventListener('click', ()=>{
       insCommHistoryFocusInsurerId = btn.dataset.gotoCommHist;
@@ -7479,24 +7481,37 @@ function insAlertThreshold(){ return Number(state.insAllocAlertThreshold ?? 0.05
    Chênh lệch = Thực tế tỷ lệ bán − Tỷ lệ phân bổ tháng.
    status: 'over' (đang bán VƯỢT kế hoạch phân bổ — nên giảm), 'under' (đang bán DƯỚI kế hoạch — nên tăng),
            'noplan' (chưa đặt tỷ lệ phân bổ tháng nên chưa so sánh được), 'nodata' (chưa có BR/DV), 'ok' (trong ngưỡng) */
+// Nhóm phân bổ: nhiều NCC bảo hiểm (VD "DBV (TI)" và "DBV (NonTI)" — tách riêng chỉ để tính hoa hồng khác
+// nhau) có thể cùng đặt chung 1 "Nhóm phân bổ" (field ins.allocGroupName) để trang Phân bổ đơn vị coi là 1
+// hãng DUY NHẤT — cộng dồn doanh số bán ra, chỉ cần đặt 1 chỉ tiêu % chung. KHÔNG ảnh hưởng gì tới Doanh
+// số/Đối soát CK/Lịch sử hoa hồng — các chỗ đó vẫn dùng đúng insurerId riêng của từng NCC như trước giờ.
+function insAllocGroupKey(ins){ return (ins.allocGroupName||'').trim() || ins.id; }
+function insAllocGroupLabel(ins){ return (ins.allocGroupName||'').trim() || ins.name; }
+// NCC "đại diện" của 1 nhóm phân bổ — nơi DUY NHẤT lưu % chỉ tiêu / DT dịch vụ của cả nhóm (luôn là NCC
+// đứng ĐẦU TIÊN trong danh sách NCC thuộc nhóm đó theo đúng thứ tự trong Danh mục NCC, ổn định qua các lần
+// vẽ lại trang — thường là NCC được tạo trước, nên nếu nhóm đã có sẵn dữ liệu % ở NCC đó thì giữ nguyên).
+function insAllocGroupMembers(groupKey){ return state.insurers.filter(x=>insAllocGroupKey(x)===groupKey); }
 function insAllocRows(month){
   const sys = insSystemTotalsForMonth(month);
   const th = insAlertThreshold();
-  const rows = state.insurers.map(ins=>{
-    const br = insBRForMonth(ins.id, month);
-    const dv = insDVForMonth(ins.id, month);
+  const groupKeys = Array.from(new Set(state.insurers.map(insAllocGroupKey)));
+  const rows = groupKeys.map(key=>{
+    const members = insAllocGroupMembers(key);
+    const primary = members[0];
+    const br = members.reduce((s,m)=> s+insBRForMonth(m.id, month), 0);
+    const dv = insDVForMonth(primary.id, month);
     const scBr = br>0 ? dv/br : (dv>0 ? Infinity : null);
     const actualRate = sys.br>0 ? br/sys.br : 0;
     const proposedRate = sys.dv>0 ? dv/sys.dv : 0; // đề xuất tỷ lệ bán THÁNG SAU = tỷ trọng DT dịch vụ của hãng trong TỔNG DT dịch vụ toàn hệ thống — luôn cộng lại đúng 100% giữa các hãng, dùng làm căn cứ chia % bán ra tháng sau (không dùng để tính chênh lệch/cảnh báo tháng này)
     const hasData = br>0 || dv>0;
-    const allocationRate = insAllocationRateForMonth(ins.id, month);
+    const allocationRate = insAllocationRateForMonth(primary.id, month);
     const hasPlan = allocationRate!=null;
     const diff = hasPlan ? (actualRate - allocationRate) : null; // Chênh lệch = Thực tế − Phân bổ tháng
     let status = 'ok';
     if(!hasData) status = 'nodata';
     else if(!hasPlan) status = 'noplan';
     else if(Math.abs(diff) > th) status = diff>0 ? 'over' : 'under';
-    return {ins, br, dv, scBr, actualRate, proposedRate, diff, hasData, hasPlan, status, allocationRate};
+    return {ins:primary, groupKey:key, groupLabel:insAllocGroupLabel(primary), groupMembers:members, br, dv, scBr, actualRate, proposedRate, diff, hasData, hasPlan, status, allocationRate};
   });
   rows.sort((a,b)=> Math.abs(b.diff||0)-Math.abs(a.diff||0));
   return {rows, sys, threshold:th};
@@ -8541,7 +8556,7 @@ function renderInsRevenueTable(editable){
       ${breaches.length>0 ? `
       <div class="locked-note" style="border-color:var(--rust);color:var(--rust);background:var(--rust-soft);margin-top:0;padding:10px 14px">
         ⚠ <b>${breaches.length} hãng</b> đang bán lệch so với kế hoạch phân bổ quá ngưỡng (tháng ${monthLabel}):
-        ${breaches.map(r=>`<b>${escHtml(r.ins.name)}</b> (${r.status==='under'?'tăng':'giảm'} ${r.diff>0?'+':''}${fmtPct(r.diff)})`).join(' · ')}
+        ${breaches.map(r=>`<b>${escHtml(r.groupLabel)}</b>${r.groupMembers.length>1?` <span class="meta-line">(gồm ${r.groupMembers.length} NCC)</span>`:''} (${r.status==='under'?'tăng':'giảm'} ${r.diff>0?'+':''}${fmtPct(r.diff)})`).join(' · ')}
       </div>` : sys.total===0 ? `<div class="helper">Chưa có dữ liệu doanh thu (BR/DV) cho tháng ${monthLabel} — chọn tháng khác hoặc nhập DT dịch vụ bên dưới.</div>` : ''}
     `;
   }
@@ -8568,7 +8583,7 @@ function renderInsRevenueTable(editable){
       const meta = INS_STATUS_META[r.status];
       return `
       <tr style="${meta.row}">
-        <td>${escHtml(r.ins.name)}</td>
+        <td>${escHtml(r.groupLabel)}${r.groupMembers.length>1?` <span class="meta-line" title="Gộp doanh số của: ${r.groupMembers.map(m=>escAttr(m.name)).join(', ')}">(gồm ${r.groupMembers.length} NCC)</span>`:''}</td>
         <td class="num">
           ${rateEditable
             ? `<input class="cell-edit num mini-field" data-alloc="${r.ins.id}" type="text" inputmode="decimal" value="${r.allocationRate!=null?round2(r.allocationRate*100):''}" placeholder="—" style="text-align:right">`
