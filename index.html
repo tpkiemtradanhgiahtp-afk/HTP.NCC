@@ -4859,6 +4859,12 @@ function wireStickyHeaderRows(tbl){
 function thCompact(main, sub, fullTip, numeric){
   return `<th class="${numeric?'num':''}" title="${escAttr(fullTip||main)}"><span class="th-compact"><span class="th-main">${main}</span>${sub?`<span class="th-sub">${sub}</span>`:''}</span></th>`;
 }
+// Bản mờ nhạt của thCompact — dùng cho cột PHỤ (không phải trọng tâm cần chú ý ngay), để 4 cột chính
+// (Hãng/Phân bổ/Thực tế/Chênh lệch) nổi bật hơn hẳn theo đúng nguyên tắc thứ bậc thị giác, không cần thêm
+// biểu đồ/thanh tiến độ gì phức tạp — chỉ đơn giản làm phụ "lùi" lại để chính "nổi" lên.
+function thCompactDim(main, sub, fullTip, numeric){
+  return `<th class="${numeric?'num':''}" title="${escAttr(fullTip||main)}" style="opacity:.55;font-weight:400"><span class="th-compact"><span class="th-main">${main}</span>${sub?`<span class="th-sub">${sub}</span>`:''}</span></th>`;
+}
 /* wireCellEdits: gắn sự kiện sửa trực tiếp trên bảng + ghi Nhật ký hoạt động.
    labelFn(item) trả về tên hiển thị của dòng để ghi log cho dễ đọc. */
 function wireCellEdits(tbl, arr, entityName, labelFn){
@@ -8595,35 +8601,36 @@ function renderInsRevenueTable(editable){
     <tr>
       <th>Hãng</th>
       ${thCompact('Phân bổ', 'tháng (%)', 'Tỷ lệ phân bổ tháng (%) — kế hoạch bán ra Admin/Quản lý giao cho hãng trong tháng, thường lấy từ Đề xuất tháng trước'+(monthLocked?' — ĐÃ CHỐT, chỉ Admin mở khoá mới sửa được':''), true)}
-      ${thCompact('BR', 'bán ra', 'DT bán ra (BR) — phí bảo hiểm thu, tự tính từ hợp đồng "Đã cấp đơn" trong tháng', true)}
-      ${thCompact('DV', 'dịch vụ', 'DT dịch vụ/sửa chữa (DV) — nhập tay theo tháng', true)}
-      ${thCompact('SC/BR', 'DV÷BR', 'Tỷ lệ DT dịch vụ/sửa chữa so với DT bán ra (DV÷BR)', true)}
+      ${thCompact('BR', 'bán ra', 'DT bán ra (BR) — phí bảo hiểm thu, tự tính từ hợp đồng "Đã cấp đơn" trong tháng', true).replace('<th class="num"', '<th class="num" style="color:var(--gold)"')}
+      ${thCompactDim('DV', 'dịch vụ', 'DT dịch vụ/sửa chữa (DV) — nhập tay theo tháng', true)}
+      ${thCompactDim('SC/BR', 'DV÷BR', 'Tỷ lệ DT dịch vụ/sửa chữa so với DT bán ra (DV÷BR)', true)}
       ${thCompact('Thực tế', '% bán', 'Thực tế tỷ lệ bán — % đóng góp BR của hãng trong tổng BR toàn hệ thống tháng này', true)}
-      ${thCompact('Đề xuất', 'T sau', 'Đề xuất tỷ lệ bán tháng sau = DT dịch vụ hãng ÷ Tổng DT dịch vụ toàn hệ thống tháng này (các hãng cộng lại đúng 100%)', true)}
+      ${thCompactDim('Đề xuất', 'T sau', 'Đề xuất tỷ lệ bán tháng sau = DT dịch vụ hãng ÷ Tổng DT dịch vụ toàn hệ thống tháng này (các hãng cộng lại đúng 100%)', true)}
       ${thCompact('Chênh lệch', '', 'Chênh lệch = Thực tế tỷ lệ bán − Tỷ lệ phân bổ tháng', true)}
       <th>Trạng thái</th>
     </tr>
     </thead>
     <tbody>${rows.map(r=>{
       const meta = INS_STATUS_META[r.status];
+      const diffColor = (r.status==='over'||r.status==='under') ? 'var(--rust)' : (r.status==='ok' ? 'var(--forest)' : 'var(--slate)');
       return `
       <tr style="${meta.row}">
-        <td>${escHtml(r.groupLabel)}${r.groupMembers.length>1?` <span class="meta-line" title="Gộp doanh số của: ${r.groupMembers.map(m=>escAttr(m.name)).join(', ')}">(gồm ${r.groupMembers.length} NCC)</span>`:''}</td>
-        <td class="num">
+        <td style="font-weight:700">${escHtml(r.groupLabel)}${r.groupMembers.length>1?` <span class="meta-line" style="font-weight:400" title="Gộp doanh số của: ${r.groupMembers.map(m=>escAttr(m.name)).join(', ')}">(gồm ${r.groupMembers.length} NCC)</span>`:''}</td>
+        <td class="num" style="font-weight:700">
           ${rateEditable
-            ? `<input class="cell-edit num mini-field" data-alloc="${r.ins.id}" type="text" inputmode="decimal" value="${r.allocationRate!=null?round2(r.allocationRate*100):''}" placeholder="—" style="text-align:right">`
+            ? `<input class="cell-edit num mini-field" data-alloc="${r.ins.id}" type="text" inputmode="decimal" value="${r.allocationRate!=null?round2(r.allocationRate*100):''}" placeholder="—" style="text-align:right;font-weight:700">`
             : (r.allocationRate!=null?fmtPct(r.allocationRate):'—')}${monthLocked?' 🔒':''}
         </td>
-        <td class="num">${r.br>0?fmt(r.br):'—'}</td>
-        <td class="num">
+        <td class="num" style="color:var(--gold);font-weight:600">${r.br>0?fmt(r.br):'—'}</td>
+        <td class="num" style="opacity:.55">
           ${editable
             ? `<input class="cell-edit num money mini-field" data-ins="${r.ins.id}" type="text" inputmode="numeric" value="${r.dv>0?formatMoneyValue(r.dv):''}" placeholder="0" style="text-align:right">`
             : (r.dv>0?fmt(r.dv):'—')}
         </td>
-        <td class="num">${r.scBr===null ? '—' : (isFinite(r.scBr) ? fmtPct(r.scBr) : '—')}</td>
-        <td class="num">${r.hasData ? fmtPct(r.actualRate) : '—'}</td>
-        <td class="num" style="font-weight:700">${r.hasData ? fmtPct(r.proposedRate) : '—'}</td>
-        <td class="num" style="font-weight:600">${r.diff!=null ? (r.diff>0?'+':'')+fmtPct(r.diff) : '—'}</td>
+        <td class="num" style="opacity:.55">${r.scBr===null ? '—' : (isFinite(r.scBr) ? fmtPct(r.scBr) : '—')}</td>
+        <td class="num" style="font-weight:700">${r.hasData ? fmtPct(r.actualRate) : '—'}</td>
+        <td class="num" style="opacity:.55">${r.hasData ? fmtPct(r.proposedRate) : '—'}</td>
+        <td class="num" style="font-weight:700;color:${diffColor}">${r.diff!=null ? (r.diff>0?'+':'')+fmtPct(r.diff) : '—'}</td>
         <td><span class="${meta.badge}" title="${escAttr(meta.label)}">${meta.short}</span></td>
       </tr>`;
     }).join('')}
