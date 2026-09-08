@@ -7327,6 +7327,7 @@ let insReconVisibleCount = TX_PAGE_SIZE;
 let insRenewalUnitFilter = '';
 let insRenewalBankFilter = '';
 let insRenewalStatusFilter = 'attention'; // 'attention' (mặc định, gộp overdue+due_soon+in_progress) | '' = tất cả | 'overdue' | 'due_soon' | 'in_progress' | 'ok' | 'snoozed'
+let renewalVisibleCount = TX_PAGE_SIZE; // phân trang kiểu "Xem thêm" — nhất quán với Sổ hợp đồng bảo hiểm/Sổ hồ sơ vay
 
 // Hoa hồng chỉ tính khi hợp đồng đã "Đã cấp đơn", theo đúng tỷ lệ BHVC/BHDS của NCC đó
 // (khác Ngân hàng: hoa hồng bảo hiểm không đổi theo tháng, chỉ đổi theo loại sản phẩm).
@@ -9130,16 +9131,19 @@ function renderInsRenewal(c){
         </div>` : ''}
       </div>
       <div class="panel-body flush"><div class="tbl-wrap"><table class="data" id="renewalTable"></table></div></div>
+      <div class="panel-body" id="renewalMoreBox" style="display:none;text-align:center">
+        <button class="btn btn-ghost" id="renewalMoreBtn">Xem thêm</button>
+      </div>
     </div>
   `;
   wireInfoToggles(c);
   wirePanelToggles(c);
-  document.getElementById('irwf_unit').addEventListener(lockedMulti?'change':'input', e=>{ insRenewalUnitFilter=e.target.value; drawRenewalTable(); });
-  document.getElementById('irwf_bank').addEventListener('input', e=>{ insRenewalBankFilter=e.target.value; drawRenewalTable(); });
-  document.getElementById('irwf_status').addEventListener('change', e=>{ insRenewalStatusFilter=e.target.value; drawRenewalTable(); });
+  document.getElementById('irwf_unit').addEventListener(lockedMulti?'change':'input', e=>{ insRenewalUnitFilter=e.target.value; renewalVisibleCount=TX_PAGE_SIZE; drawRenewalTable(); });
+  document.getElementById('irwf_bank').addEventListener('input', e=>{ insRenewalBankFilter=e.target.value; renewalVisibleCount=TX_PAGE_SIZE; drawRenewalTable(); });
+  document.getElementById('irwf_status').addEventListener('change', e=>{ insRenewalStatusFilter=e.target.value; renewalVisibleCount=TX_PAGE_SIZE; drawRenewalTable(); });
   document.getElementById('irwfClearBtn').addEventListener('click', ()=>{
     if(!lockedUnit) insRenewalUnitFilter='';
-    insRenewalBankFilter=''; insRenewalStatusFilter='';
+    insRenewalBankFilter=''; insRenewalStatusFilter=''; renewalVisibleCount=TX_PAGE_SIZE;
     renderAll();
   });
   const scanBtn = document.getElementById('irwScanSuggestBtn');
@@ -9358,7 +9362,7 @@ function renderInsRenewal(c){
     document.getElementById('renewalDeleteAllBtn').addEventListener('click', ()=>{
       const rowsNow = currentRenewalRows();
       if(rowsNow.length===0){ toast('Không có hồ sơ nào để bỏ theo dõi'); return; }
-      confirmModal(`Bỏ theo dõi tái tục cho TOÀN BỘ ${rowsNow.length} hồ sơ đang hiển thị theo bộ lọc hiện tại?\n\nCác hồ sơ này sẽ không hiện lại trong Lịch tái tục nữa — có thể bật lại bằng cách sửa trực tiếp ở Doanh số Ngân hàng/Bảo hiểm nếu cần.`, ()=>{
+      confirmModal(`Bỏ theo dõi tái tục cho TOÀN BỘ ${rowsNow.length} hồ sơ khớp bộ lọc hiện tại (không chỉ trang đang xem)?\n\nCác hồ sơ này sẽ không hiện lại trong Lịch tái tục nữa — có thể bật lại bằng cách sửa trực tiếp ở Doanh số Ngân hàng/Bảo hiểm nếu cần.`, ()=>{
         rowsNow.forEach(r=> exemptRenewalRow(r));
         saveState();
         toast(`Đã bỏ theo dõi toàn bộ ${rowsNow.length} hồ sơ`);
@@ -9387,15 +9391,19 @@ function renderInsRenewal(c){
   }
   function drawRenewalTable(){
     const tbl = document.getElementById('renewalTable');
-    const rows = currentRenewalRows();
+    const allFiltered = currentRenewalRows();
     if(allRows.length===0){
       tbl.outerHTML = `<div class="empty"><div class="big">Chưa có hồ sơ nào cần theo dõi</div>Chưa có đơn bảo hiểm "Đã cấp đơn" nào trong hệ thống, hoặc tất cả đã bị đánh dấu "Không theo dõi tái tục".</div>`;
+      const moreBox0 = document.getElementById('renewalMoreBox'); if(moreBox0) moreBox0.style.display='none';
       return;
     }
-    if(rows.length===0){
+    if(allFiltered.length===0){
       tbl.outerHTML = `<div class="empty"><div class="big">Không có hồ sơ khớp bộ lọc</div></div>`;
+      const moreBox1 = document.getElementById('renewalMoreBox'); if(moreBox1) moreBox1.style.display='none';
       return;
     }
+    if(tbl.nextElementSibling && tbl.nextElementSibling.classList.contains('empty')) tbl.nextElementSibling.remove();
+    const rows = allFiltered.slice(0, renewalVisibleCount);
     tbl.innerHTML = `
       <thead><tr>
         ${isAdmin ? `<th style="width:32px"><input type="checkbox" id="renewalSelectAll" title="Chọn tất cả"></th>` : ''}
@@ -9442,6 +9450,16 @@ function renderInsRenewal(c){
         return `<tr><td colspan="9" style="color:var(--rust)">⚠ Lỗi hiển thị 1 hồ sơ (id: ${escHtml(String(r && r.t && r.t.id || '?'))}) — có thể do dữ liệu ngày bị sai/thiếu. Xem console hoặc báo Admin kiểm tra.</td></tr>`;
        }
       }).join('')}</tbody>`;
+    const renewalMoreBox = document.getElementById('renewalMoreBox');
+    if(renewalMoreBox){
+      if(allFiltered.length > rows.length){
+        renewalMoreBox.style.display = '';
+        document.getElementById('renewalMoreBtn').textContent = `Xem thêm ${TX_PAGE_SIZE} dòng (còn ${allFiltered.length-rows.length} hồ sơ khớp bộ lọc)`;
+        document.getElementById('renewalMoreBtn').onclick = ()=>{ renewalVisibleCount += TX_PAGE_SIZE; drawRenewalTable(); };
+      } else {
+        renewalMoreBox.style.display = 'none';
+      }
+    }
     if(canManageLinks){
       tbl.querySelectorAll('[data-editlink]').forEach(btn=>{
         btn.addEventListener('click', ()=> openRenewalLinkModal(btn.dataset.editlink));
