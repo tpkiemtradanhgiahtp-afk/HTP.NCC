@@ -3775,6 +3775,18 @@ function sidebarActiveId(){
   return t.parent ? t.parent : activeTab;
 }
 
+// Rút gọn nhãn "Doanh số - Đối soát CK - Phân bổ" thành đúng "Doanh số" cho tài khoản KHÔNG có quyền sửa
+// Đối soát CK / Phân bổ (đa số Nhân viên) — tên đầy đủ chỉ đúng ý với Admin/Quản lý/Kế toán vì họ mới thực
+// sự dùng cả 3 mục con, còn lại chỉ gây rối mắt/hiểu lầm phải quan tâm cả 3 trong khi chỉ cần Doanh số.
+function txMenuLabel(fullLabel, moduleKey){
+  const permsByModule = {
+    ncc: ['reconcile','reconcile_pay'],
+    nh: ['nh_reconcile','nh_reconcile_pay'],
+    bh: ['bh_reconcile','bh_reconcile_pay','bh_allocation'],
+  };
+  const perms = permsByModule[moduleKey] || [];
+  return perms.some(p=>canEdit(p)) ? fullLabel : 'Doanh số';
+}
 function renderNav(){
   recomputeBadgeCacheIfNeeded();
   const nav = document.getElementById('navList');
@@ -3795,7 +3807,11 @@ function renderNav(){
           : t.id==='nh_requests' ? badgeCache.nhRequests
           : t.id==='bh_requests' ? badgeCache.bhRequests
           : '';
-        html += `<div class="nav-item ${t.id===activeId?'active':''}" data-tab="${t.id}" title="${escAttr(t.label)}"><span class="dot"></span><span class="label-text">${t.label}</span>${t.comingSoon?'<span class="soon-tag">Sắp có</span>':''}${badge}</div>`;
+        const label = t.id==='transactions' ? txMenuLabel(t.label,'ncc')
+          : t.id==='nh_transactions' ? txMenuLabel(t.label,'nh')
+          : t.id==='bh_transactions' ? txMenuLabel(t.label,'bh')
+          : t.label;
+        html += `<div class="nav-item ${t.id===activeId?'active':''}" data-tab="${t.id}" title="${escAttr(label)}"><span class="dot"></span><span class="label-text">${label}</span>${t.comingSoon?'<span class="soon-tag">Sắp có</span>':''}${badge}</div>`;
         i++;
       }
       html += `</div>`;
@@ -4040,6 +4056,15 @@ function renderLoginScreen(){
     saveSession();
     resetInactivityTimer(); // bắt đầu đếm 10 phút không thao tác kể từ lúc đăng nhập
     await syncBranchesForCurrentUser(); // tải thêm đúng nhánh module của tài khoản vừa đăng nhập (nếu đang dùng Firebase)
+    // Nhân viên vào thẳng đúng trang Doanh số của module đầu tiên họ có quyền nhập (theo thứ tự NCC → NH →
+    // BH), thay vì rơi vào Dashboard rồi phải tự tìm trong sidebar — đúng trọng tâm công việc hằng ngày của
+    // họ là NHẬP Doanh số, không cần thấy Dashboard/báo cáo tổng quan trước.
+    if(acc.role==='Nhân viên' && !isPartnerAccount(acc)){
+      const moduleTabMap = {ncc:'transactions', nh:'nh_transactions', bh:'bh_transactions'};
+      for(const m of MODULES){
+        if(hasModuleAccess(m.id, acc) && canEdit(moduleTabMap[m.id])){ activeTab = moduleTabMap[m.id]; break; }
+      }
+    }
     screen.remove();
     renderAll();
   };
@@ -4753,9 +4778,9 @@ function renderSuppliers(c){
   }
   tbl.innerHTML = `
     <thead><tr><th>STT</th><th class="wrap">Tên NCC</th><th>Nhóm hàng</th><th>Xếp hạng</th><th>Trạng thái</th><th>Hợp đồng</th><th></th></tr></thead>
-    <tbody>${state.suppliers.map(s=>`
+    <tbody>${state.suppliers.map((s,idx)=>`
       <tr data-rowid="${s.id}">
-        <td>${s.stt}</td>
+        <td>${idx+1}</td>
         <td class="wrap"><input class="cell-edit" data-field="name" data-id="${s.id}" value="${escAttr(s.name)}" ${editable?'':'disabled'}></td>
         <td><input class="cell-edit" data-field="category" data-id="${s.id}" value="${escAttr(s.category||'')}" ${editable?'':'disabled'}></td>
         <td><select class="cell-edit" data-field="priority" data-id="${s.id}" ${editable?'':'disabled'}>${['P1','P2','P3','P4','P5'].map(p=>`<option ${s.priority===p?'selected':''}>${p}</option>`).join('')}</select></td>
@@ -5978,9 +6003,9 @@ function renderBankSuppliers(c){
   }
   tbl.innerHTML = `
     <thead><tr><th>STT</th><th class="wrap">Tên ngân hàng</th><th>Đầu mối liên hệ</th><th>Trạng thái</th><th>Hợp đồng</th><th></th></tr></thead>
-    <tbody>${state.banks.map(b=>`
+    <tbody>${state.banks.map((b,idx)=>`
       <tr data-rowid="${b.id}">
-        <td>${b.stt}</td>
+        <td>${idx+1}</td>
         <td class="wrap"><input class="cell-edit" data-field="name" data-id="${b.id}" value="${escAttr(b.name)}" ${editable?'':'disabled'}></td>
         <td><input class="cell-edit" data-field="contact" data-id="${b.id}" value="${escAttr(b.contact||'')}" ${editable?'':'disabled'}></td>
         <td><select class="cell-edit" data-field="status" data-id="${b.id}" ${editable?'':'disabled'}>${['Đang hợp tác','Theo dõi','Thử nghiệm','Ngừng hợp tác'].map(p=>`<option ${b.status===p?'selected':''}>${p}</option>`).join('')}</select></td>
@@ -7059,7 +7084,7 @@ function renderInsSuppliers(c){
   const dis = editable?'':'disabled';
   tbl.innerHTML = `
     <thead><tr><th>STT</th><th class="wrap">Tên NCC bảo hiểm</th><th class="wrap" title="Để trống = tự tính là 1 hãng riêng (mặc định). Đặt CÙNG 1 tên cho nhiều NCC (VD 'DBV (TI)' và 'DBV (NonTI)' cùng ghi 'DBV') để trang Phân bổ đơn vị GỘP LẠI thành 1 dòng duy nhất, cộng dồn doanh số và chỉ cần đặt 1 chỉ tiêu % chung — KHÔNG ảnh hưởng gì tới Doanh số/Đối soát CK/Hoa hồng, các mục đó vẫn tính riêng theo đúng NCC đã chọn.">Nhóm phân bổ</th><th class="num" title="Tỷ lệ hoa hồng ĐANG áp dụng cho hôm nay, cả Cấp mới lẫn Tái tục — gộp từ tab &quot;Lịch sử hoa hồng&quot; (nếu có mốc) hoặc tỷ lệ mặc định lúc tạo NCC. Tái tục ghi &quot;(= cấp mới)&quot; nghĩa là NCC chưa khai báo mốc Tái tục riêng, đang tự dùng chung tỷ lệ Cấp mới. Bấm nút Sửa để đổi, không sửa trực tiếp được ở đây nữa — tránh 2 nơi lệch số nhau.">BHVC</th><th class="num" title="Tỷ lệ hoa hồng ĐANG áp dụng cho hôm nay, cả Cấp mới lẫn Tái tục — gộp từ tab &quot;Lịch sử hoa hồng&quot; (nếu có mốc) hoặc tỷ lệ mặc định lúc tạo NCC. Tái tục ghi &quot;(= cấp mới)&quot; nghĩa là NCC chưa khai báo mốc Tái tục riêng, đang tự dùng chung tỷ lệ Cấp mới. Bấm nút Sửa để đổi, không sửa trực tiếp được ở đây nữa — tránh 2 nơi lệch số nhau.">BHDS</th><th class="wrap">Điều khoản nổi bật</th><th>Trạng thái</th><th>Hợp đồng</th><th></th></tr></thead>
-    <tbody>${state.insurers.map(ins=>{
+    <tbody>${state.insurers.map((ins,idx)=>{
       const rows = insRateRowsFor(ins.id).length;
       const rateCellHTML = (product)=>{
         const rNew = insCurrentDisplayRate(ins.id, product, 'new');
@@ -7075,7 +7100,7 @@ function renderInsSuppliers(c){
           ${editable?`<button class="btn btn-ghost" data-goto-comm-hist="${ins.id}" style="font-size:11px;padding:2px 8px;margin-top:3px">✎ Sửa</button>`:''}`;
       };
       return `<tr data-rowid="${ins.id}">
-        <td>${ins.stt}</td>
+        <td>${idx+1}</td>
         <td class="wrap"><input class="cell-edit" data-field="name" data-id="${ins.id}" value="${escAttr(ins.name)}" ${dis}>
           <div class="meta-line">${rows} khoảng giá trị xe đã có biểu phí</div></td>
         <td class="wrap"><input class="cell-edit" data-field="allocGroupName" data-id="${ins.id}" value="${escAttr(ins.allocGroupName||'')}" placeholder="Để trống = hãng riêng" ${dis} list="allocGroupList"></td>
