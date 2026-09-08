@@ -6147,9 +6147,15 @@ function renderBankPolicies(c){
   });
   tbl.innerHTML = `
     <thead><tr>
-      <th class="wrap">Ngân hàng</th><th class="wrap">Gói vay</th><th>Ngày áp dụng</th><th class="num">Tỷ lệ vay tối đa</th><th class="num">TG vay tối đa</th>
-      <th class="num">LS ưu đãi năm đầu</th><th class="num">Biên độ sau ưu đãi</th><th class="num">Phí trả trước hạn</th>
-      <th class="num">Hoa hồng (trước thuế)</th><th>Tái tục hằng năm</th><th class="wrap">Phê duyệt</th><th>Giải ngân</th><th>Giấy tờ</th><th class="wrap">Đánh giá</th><th></th>
+      <th class="wrap">Ngân hàng</th><th class="wrap">Gói vay</th><th>Ngày áp dụng</th>
+      ${thCompact('Tỷ lệ vay', 'tối đa (%)', 'Tỷ lệ vay tối đa (%)', true)}
+      ${thCompact('TG vay', 'tối đa (năm)', 'Thời gian vay tối đa (năm)', true)}
+      ${thCompact('LS ưu đãi', 'năm đầu (%)', 'Lãi suất ưu đãi năm đầu (%)', true)}
+      ${thCompact('Biên độ', 'sau ưu đãi (%)', 'Biên độ lãi suất sau ưu đãi (%)', true)}
+      ${thCompact('Phí trả', 'trước hạn (%)', 'Phí trả nợ trước hạn (%)', true)}
+      ${thCompact('Hoa hồng', 'trước thuế (%)', 'Hoa hồng trước thuế (%)', true)}
+      ${thCompact('Tái tục', 'hằng năm', 'Xe vay theo gói này phải mua lại bảo hiểm mỗi năm', false)}
+      <th class="wrap">Phê duyệt</th><th>Giải ngân</th><th>Giấy tờ</th><th class="wrap">Đánh giá</th><th></th>
     </tr></thead>
     <tbody>${sorted.map(p=>{
       const b = bankById(p.bankId);
