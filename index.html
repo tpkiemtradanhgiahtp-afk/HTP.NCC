@@ -8986,8 +8986,12 @@ function startNewContractFromRenewal(r){
   panelOpenState['itxEntryPanel'] = true; // buộc mở panel, bất kể trước đó người dùng đã thu gọn hay chưa
   renderAll();
 }
-function allInsRenewalGroupsForSuggestion(){
-  const active = state.insTransactions.filter(t=>t.status!=='Huỷ');
+function allInsRenewalGroupsForSuggestion(lockedUnits){
+  let active = state.insTransactions.filter(t=>t.status!=='Huỷ');
+  // Khoá đúng theo đơn vị của tài khoản đang xem — GIỐNG HỆT cách currentRenewalRows() lọc bảng chính, để
+  // Nhân viên bị khoá 1/nhiều đơn vị KHÔNG BAO GIỜ thấy gợi ý trùng khách dính tới đơn vị khác (trước đây bị
+  // sót bước này, khiến 1 tài khoản có thể "quét được" cả data của đơn vị khác không thuộc phạm vi của mình).
+  if(lockedUnits && lockedUnits.length) active = active.filter(t=>lockedUnits.includes(t.unit));
   const byId = new Map(active.map(t=>[t.id, t]));
   const groups = new Map();
   active.forEach(t=>{
@@ -9011,8 +9015,8 @@ function allInsRenewalGroupsForSuggestion(){
 // có thể gõ lệch; (3) biển số lệch đúng 1 ký tự VÀ trùng tên khách — có thể gõ lệch biển số. Chỉ đưa ra GỢI
 // Ý để người dùng tự xem xét và xác nhận bằng nút "🔗 Sửa liên kết", KHÔNG tự động gộp (biển số lệch 1 ký tự thường là 2 XE THẬT KHÁC NHAU, tự động gộp rất rủi ro). Đây là thao tác
 // quét thủ công (Admin/Quản lý bấm nút), không chạy tự động mỗi lần vẽ trang để tránh chậm khi dữ liệu lớn.
-function findRenewalMatchSuggestions(){
-  const rows = allInsRenewalGroupsForSuggestion();
+function findRenewalMatchSuggestions(lockedUnits){
+  const rows = allInsRenewalGroupsForSuggestion(lockedUnits);
   const dismissed = new Set(state.renewalDismissedSuggestions||[]);
   const suggestions = [];
   for(let i=0;i<rows.length;i++){
@@ -9136,7 +9140,7 @@ function renderInsRenewal(c){
     const renderSuggestBox = ()=>{
       const box = document.getElementById('irwSuggestResultBox');
       if(!box) return;
-      const suggestions = findRenewalMatchSuggestions();
+      const suggestions = findRenewalMatchSuggestions(lockedUnits);
       if(suggestions.length===0){
         box.innerHTML = `<div class="helper">Không tìm thấy cặp nào nghi ngờ trùng khách hàng.</div>`;
         return;
