@@ -3657,8 +3657,9 @@ let reconExpanded = new Set();
 let reconSupplierFilter = ''; // lọc Lịch sử đối soát theo tên NCC
 let reconVisibleCount = TX_PAGE_SIZE; // phân trang kiểu "Xem thêm"
 // Bộ lọc Tháng/Năm dùng CHUNG cho cả 3 module (nút 📅 trên đầu trang) — chọn 1 lần, áp dụng cho Doanh số
-// ở mọi module, giữ nguyên lựa chọn khi chuyển tab. Rỗng = không lọc gì theo thời gian.
-let globalYearFilter = '';  // '' hoặc 'YYYY'
+// ở mọi module, giữ nguyên lựa chọn khi chuyển tab. Mặc định = năm hiện tại (đỡ phải tự lọc lại mỗi lần vào
+// app) — bấm "Tất cả thời gian" trên đầu trang bất cứ lúc nào cần tra cứu lịch sử nhiều năm.
+let globalYearFilter = String(new Date().getFullYear());  // '' hoặc 'YYYY'
 let globalMonthFilter = ''; // '' hoặc 'MM' (chỉ có nghĩa khi đã chọn globalYearFilter)
 function periodFilterMatches(dateStr){
   if(!globalYearFilter) return true;
@@ -6666,18 +6667,18 @@ function renderBankTxTable(editable){
 /* ---------------------------- Ngân hàng · Phân bổ đơn vị ---------------------------- */
 function renderBankAllocation(c){
   const partnerAcc = isPartnerAccount(currentUser()) ? currentUser() : null;
-  setTitle('Phân bổ đơn vị', (partnerAcc?'Số tiền giải ngân của bạn theo từng đơn vị':'Đóng góp số tiền vay giải ngân của từng đơn vị cho từng ngân hàng')+(globalYearFilter?' — '+periodFilterDescText():' — cộng dồn toàn thời gian'));
+  setTitle('Phân bổ đơn vị', (partnerAcc?'Số tiền giải ngân của bạn theo từng đơn vị':'Đóng góp số tiền vay giải ngân của từng đơn vị cho từng ngân hàng')+' — cộng dồn toàn thời gian');
   const unitOwners = {};
   state.units.forEach(u=>{ unitOwners[u] = state.accounts.filter(a=>accountUnits(a).includes(u)).map(a=>a.name); });
   const tbl0 = `<div class="panel"><div class="panel-head"><div><h2>${partnerAcc?'Số tiền giải ngân theo Đơn vị':'Ma trận Ngân hàng × Đơn vị (số tiền giải ngân)'}</h2>
-    <div class="desc">${state.units.length} đơn vị hiện có · chỉ tính hồ sơ trạng thái "Đã giải ngân"${globalYearFilter?' · đang lọc theo '+escHtml(periodFilterDescText()):''}</div></div></div>
+    <div class="desc">${state.units.length} đơn vị hiện có · chỉ tính hồ sơ trạng thái "Đã giải ngân" · cộng dồn toàn thời gian (không theo Bộ lọc thời gian trên đầu trang, vì đây là số liệu luỹ kế)</div></div></div>
     <div class="panel-body flush"><div class="matrix-scroll"><table class="data matrix-fixed" id="bankAllocTable"></table></div></div></div>`;
   c.innerHTML = tbl0;
   const tbl = document.getElementById('bankAllocTable');
   const pf = partnerScopeFilter('bankId');
   const bankScope = pf ? state.banks.filter(b=>pf({bankId:b.id})) : state.banks;
   if(bankScope.length===0){ tbl.outerHTML = `<div class="empty"><div class="big">Chưa có ngân hàng</div></div>`; return; }
-  const {from: pfFrom, to: pfTo} = periodFilterDateObjects();
+  const pfFrom = null, pfTo = null; // LUÔN cộng dồn toàn thời gian — cố ý KHÔNG dùng periodFilterDateObjects() ở đúng bảng này
   const rows = bankScope.map(b=>{
     const perUnit = state.units.map(u=>bankLoanSum(b.id, pfFrom, pfTo, u));
     const total = perUnit.reduce((a,x)=>a+x,0);
@@ -8475,7 +8476,7 @@ function renderInsAllocation(c){
       ${editable && !isAdmin ? `<div class="helper" style="padding:0 20px 16px">🔒 Chỉ Admin mới đổi được ngưỡng cảnh báo chênh lệch.</div>` : ''}
     </div>`}
     <div class="panel"><div class="panel-head"><div><h2>${partnerAcc?'Phí bảo hiểm thu theo Đơn vị':'Ma trận NCC bảo hiểm × Đơn vị (phí bảo hiểm thu)'}</h2>
-      <div class="desc">${state.units.length} đơn vị hiện có · chỉ tính hợp đồng trạng thái "Đã cấp đơn"${globalYearFilter?' · đang lọc theo '+escHtml(periodFilterDescText()):' · cộng dồn toàn thời gian'}</div></div></div>
+      <div class="desc">${state.units.length} đơn vị hiện có · chỉ tính hợp đồng trạng thái "Đã cấp đơn" · cộng dồn toàn thời gian (không theo Bộ lọc thời gian trên đầu trang, vì đây là số liệu luỹ kế)</div></div></div>
       <div class="panel-body flush"><div class="matrix-scroll"><table class="data matrix-fixed" id="insAllocTable"></table></div></div></div>
   `;
   if(!partnerAcc){
@@ -8534,14 +8535,16 @@ function renderInsAllocation(c){
   const pf = partnerScopeFilter('insurerId');
   const insurerScope = pf ? state.insurers.filter(ins=>pf({insurerId:ins.id})) : state.insurers;
   if(insurerScope.length===0){ tbl.outerHTML = `<div class="empty"><div class="big">Chưa có NCC bảo hiểm</div></div>`; return; }
-  const {from: pfFrom, to: pfTo} = periodFilterDateObjects();
-  const rows = insurerScope.map(ins=>{
-    const perUnit = state.units.map(u=>insPremiumSum(ins.id, pfFrom, pfTo, u));
+  const pfFrom = null, pfTo = null; // LUÔN cộng dồn toàn thời gian — cố ý KHÔNG dùng periodFilterDateObjects() ở đúng bảng này, vì đây là số liệu luỹ kế
+  const rows = Array.from(new Set(insurerScope.map(insAllocGroupKey))).map(key=>{
+    const members = insurerScope.filter(x=>insAllocGroupKey(x)===key);
+    const primary = members[0];
+    const perUnit = state.units.map(u=> members.reduce((s,m)=> s+insPremiumSum(m.id, pfFrom, pfTo, u), 0));
     const total = perUnit.reduce((a,x)=>a+x,0);
-    const commTotal = insCommissionSum(ins.id, pfFrom, pfTo);
+    const commTotal = members.reduce((s,m)=> s+insCommissionSum(m.id, pfFrom, pfTo), 0);
     const max = Math.max(0,...perUnit);
     const topIdx = perUnit.indexOf(max);
-    return {ins, perUnit, total, commTotal, topUnit: total>0?state.units[topIdx]:'—'};
+    return {ins:primary, groupLabel:insAllocGroupLabel(primary), groupMembers:members, perUnit, total, commTotal, topUnit: total>0?state.units[topIdx]:'—'};
   });
   tbl.innerHTML = `
     ${matrixColgroupHTML(state.units.length, [11, 11, 13])}
@@ -8553,7 +8556,7 @@ function renderInsAllocation(c){
     </thead>
     <tbody>${rows.map(r=>`
       <tr>
-        ${matrixRowLabelCell(r.ins.name)}
+        <td class="row-label" title="${r.groupMembers.length>1?escAttr('Gộp doanh số của: '+r.groupMembers.map(m=>m.name).join(', ')):escAttr(r.groupLabel)}">${escHtml(r.groupLabel)}${r.groupMembers.length>1?` <span class="meta-line">(gồm ${r.groupMembers.length} NCC)</span>`:''}</td>
         ${r.perUnit.map(v=>`<td class="num">${v>0?fmt(v):'—'}</td>`).join('')}
         <td class="num" style="font-weight:700">${fmt(r.total)}</td>
         <td class="num">${fmt(r.commTotal)}</td>
