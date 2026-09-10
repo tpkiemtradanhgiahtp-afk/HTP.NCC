@@ -234,7 +234,8 @@
     font-family:var(--font-display); font-weight:600; font-size:21px; margin:0;
     letter-spacing:0.01em;
   }
-  .topbar .meta{ font-size:12px; color:var(--slate); margin-top:2px; }
+  .topbar .meta{ font-size:12px; color:var(--slate); margin-top:2px; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+  .topbar h1{ white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:100%; }
   .subtabs{
     display:flex; gap:6px; padding:14px 32px 0; background:var(--panel);
     border-bottom:1px solid var(--line);
@@ -760,7 +761,7 @@
   .period-filter-menu.open{ display:block; }
   .user-chip{
     display:flex; align-items:center; gap:8px; padding:6px 12px 6px 6px; border-radius:999px;
-    background:var(--panel); border:1px solid var(--line); font-size:12.5px; cursor:pointer;
+    background:var(--panel); border:1px solid var(--line); font-size:12.5px; cursor:pointer; white-space:nowrap;
   }
   .user-chip:hover{ border-color:var(--gold); }
   .user-avatar{
@@ -804,14 +805,14 @@
 
   <div class="main">
     <div class="topbar">
-      <div style="display:flex;align-items:center">
+      <div style="display:flex;align-items:center;min-width:0;flex:1 1 auto;overflow:hidden">
         <button type="button" id="sidebarToggleBtn" class="sidebar-toggle-btn" title="Mở menu" aria-label="Mở menu">☰</button>
-        <div>
+        <div style="min-width:0;overflow:hidden">
           <h1 id="pageTitle">Dashboard</h1>
           <div class="meta" id="pageMeta">—</div>
         </div>
       </div>
-      <div class="topbar-right">
+      <div class="topbar-right" style="flex:0 0 auto">
         <button type="button" id="globalSearchBtn" class="btn btn-ghost" title="Tìm kiếm toàn hệ thống (khách hàng, NCC, mã chứng từ...)">🔍 Tìm kiếm</button>
         <div class="period-filter-wrap">
           <button type="button" id="periodFilterBtn" class="btn btn-ghost" title="Lọc theo tháng/năm — áp dụng cho Doanh số ở mọi module">📅 <span id="periodFilterLabel">Tất cả thời gian</span></button>
@@ -3882,7 +3883,9 @@ function renderNav(){
 
 function setTitle(title, meta){
   document.getElementById('pageTitle').textContent = title;
-  document.getElementById('pageMeta').textContent = meta||'';
+  const metaEl = document.getElementById('pageMeta');
+  metaEl.textContent = meta||'';
+  metaEl.title = meta||''; // mô tả giờ chỉ hiện gọn 1 dòng (cắt bớt nếu dài) — di chuột vào xem được đầy đủ
 }
 
 /* ---------------------------- Tab phụ (gộp Chính sách CK vào Danh mục NCC, Đối soát CK vào Doanh số) ---------------------------- */
@@ -4174,7 +4177,7 @@ function renderDashboard(c){
   const {from: pfFrom, to: pfTo} = periodFilterDateObjects();
   const dashMonthKeys = lastNMonthKeys(6);
   const dashMonthShortLabel = 'T'+Number(dashMonthKeys[0].slice(5,7))+'–T'+Number(dashMonthKeys[dashMonthKeys.length-1].slice(5,7));
-  setTitle('Dashboard', 'Tổng quan doanh số & chiết khấu toàn hệ thống'+(globalYearFilter?' — đang lọc theo '+periodFilterDescText()+' (riêng Doanh số/CK dự kiến của NCC vẫn theo đúng Chu kỳ theo dõi riêng, không theo bộ lọc này)':' — ngày báo cáo '+(toDate(state.reportDate)||new Date()).toLocaleDateString('vi-VN')));
+  setTitle('Dashboard', 'Tổng quan doanh số & chiết khấu toàn hệ thống'+(globalYearFilter?' — đang lọc theo '+periodFilterDescText():' — ngày báo cáo '+(toDate(state.reportDate)||new Date()).toLocaleDateString('vi-VN')));
 
   let blocks = '';
 
