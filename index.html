@@ -4,24 +4,37 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Quản trị mục tiêu Đối tác/NCC · Doanh số &amp; Chiết khấu</title>
+<script>
+  // Áp dụng Dark Mode đã lưu NGAY LẬP TỨC (trước khi trình duyệt kịp vẽ giao diện sáng mặc định) — tránh
+  // hiện tượng "nháy" 1 khoảnh khắc sáng rồi mới chuyển tối khi tải lại trang. Đặt ở đây (trong <head>, chạy
+  // trước cả CSS) thay vì trong <script> chính ở cuối trang vì lúc đó trình duyệt đã vẽ xong khung sáng rồi.
+  try{
+    const saved = localStorage.getItem('qtncc_theme');
+    if(saved==='dark') document.documentElement.setAttribute('data-theme','dark');
+  }catch(e){}
+</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Playfair+Display:wght@700;800;900&display=swap" rel="stylesheet">
 <style>
   :root{
     --ink:#12172B;
+    --ink-fixed:#12172B; /* LUÔN giữ nguyên navy đậm ở cả 2 chế độ sáng/tối — dùng cho sidebar, nút chính, toast... (bề mặt "thương hiệu" cố định, không đổi theo theme). Tách riêng khỏi --ink vì --ink còn dùng làm MÀU CHỮ mặc định, cần đảo thành màu sáng khi bật Dark Mode. */
     --ink-soft:#1E2540;
-    --paper:#F6F4EF;
+    --paper:#FAFAF8; /* sáng/trắng hơn hẳn so với #F6F4EF cũ (bớt tông kem) — hiện đại, gọn gàng hơn. Card trắng (--panel) vẫn tách biệt rõ nhờ bóng đổ đã tăng độ đậm ở bước trước, không cần dựa vào chênh lệch màu nền nữa. */
     --panel:#FFFFFF;
-    --line:#E4DFD3;
+    --line:#E9E6DE; /* nhạt hơn tương ứng với nền --paper sáng hơn, giữ tông ấm nhẹ đồng bộ với vàng đồng accent thay vì chuyển hẳn sang xám lạnh */
     --gold:#B8863B;
+    --gold-text:#8F6425; /* Đậm hơn --gold, đạt chuẩn tương phản WCAG AA (~5,2:1 trên nền trắng, --gold gốc chỉ ~3,2:1) — dùng cho CHỮ (số liệu, link) thay vì --gold để dễ đọc hơn. --gold gốc vẫn giữ cho nền/viền/chấm tròn trang trí, nơi không áp dụng chuẩn tương phản chữ. */
     --gold-soft:#EFE2C6;
     --slate:#5B6472;
     --forest:#2F6B4F;
     --forest-soft:#E3EEE7;
     --rust:#B54834;
     --rust-soft:#F5E4DF;
-    --amber:#9C6B12;
+    --amber:#7A5310; /* đậm hơn giá trị cũ #9C6B12 — tương phản từ ~4,6:1 (biên giới chuẩn) lên ~6,8:1 trên nền trắng, để số liệu/badge dùng màu này (VD "Cơ hội tăng thêm") thực sự dễ đọc rõ rệt */
+    --tint:#FBFAF6; /* nền phớt nhẹ dùng cho hover/dòng chi tiết mở rộng/tiêu đề bảng dính (sticky) — gộp chung các mã màu gần-trắng-kem trước đây rải rác nhiều chỗ, để đổi 1 chỗ là toàn bộ đồng bộ (kể cả khi bật Dark Mode) */
+    --muted-bg:#EFEDE6; /* nền cho badge/nhãn dạng "mờ/vô hiệu hoá" (VD trạng thái "Chưa có DL") */
     /* Font chính: Inter (tải qua Google Fonts) — hỗ trợ đầy đủ dấu tiếng Việt (kể cả dấu đôi: ố, ệ, ẫ...),
        trông hiện đại/chuyên nghiệp hơn font hệ thống mặc định, phổ biến trong các app quản trị/SaaS hiện nay.
        Vẫn giữ chuỗi fallback hệ thống phía sau để app không "trắng trang" nếu mất mạng/chặn Google Fonts. */
@@ -35,6 +48,29 @@
     /* Chỉ dùng cho tiêu đề màn hình đăng nhập — font serif đậm tạo điểm nhấn "thương hiệu" khác biệt
        so với phần còn lại của app (vẫn dùng Inter). */
     --font-login-title: 'Playfair Display', Georgia, 'Times New Roman', serif;
+  }
+
+  /* ============================== DARK MODE ==============================
+     Bật bằng cách gắn thuộc tính data-theme="dark" lên <html> (xem hàm applyTheme() ở phần JS) — chỉ cần
+     override đúng các biến màu, MỌI nơi trong app dùng var(--xxx) sẽ tự đổi theo, không cần sửa lại từng chỗ.
+     --ink-fixed / --ink-soft KHÔNG override ở đây (cố tình) — sidebar/nút chính luôn giữ nguyên navy đậm ở
+     cả 2 chế độ, tạo điểm neo thị giác nhất quán, không "nhấp nháy" đổi màu khi chuyển theme. */
+  html[data-theme="dark"]{
+    --ink:#E7E5DD;           /* chữ chính: kem sáng thay vì navy đậm */
+    --paper:#14171F;         /* nền trang: navy-đen sâu, gần với màu sidebar để cảm giác liền mạch */
+    --panel:#1C202C;         /* nền card: sáng hơn --paper 1 chút để card vẫn nổi khối rõ trên nền trang */
+    --line:#333949;          /* viền: xám-navy nhạt, đủ rõ trên nền tối */
+    --gold:#C99A52;          /* vàng đồng sáng hơn — nổi rõ trên nền tối thay vì chìm như bản gốc dùng cho nền sáng */
+    --gold-text:#E0B36E;     /* vàng đồng cho CHỮ: cần SÁNG hơn (ngược hướng với bản sáng phải làm ĐẬM hơn) để đủ tương phản trên nền tối */
+    --gold-soft:#3D3320;     /* nền badge màu vàng: tối + ám vàng nhẹ, thay vì nền kem sáng */
+    --slate:#9AA1B4;         /* chữ phụ/nhãn: xám sáng, đủ đọc trên nền tối */
+    --forest:#5FA07E;        /* xanh lá sáng hơn cho trạng thái tốt/OK */
+    --forest-soft:#1B2E24;   /* nền badge xanh: tối + ám xanh nhẹ */
+    --rust:#E08165;          /* đỏ cam sáng hơn cho cảnh báo/vượt ngưỡng */
+    --rust-soft:#332019;     /* nền badge đỏ: tối + ám đỏ nhẹ */
+    --amber:#D6A559;         /* hổ phách sáng hơn — ngược hướng với bản sáng (phải làm đậm), ở đây cần SÁNG để đọc được trên nền tối */
+    --tint:#232838;          /* nền phớt cho hover/dòng mở rộng: sáng hơn --panel 1 chút, thay vì nền kem gần-trắng */
+    --muted-bg:#2A2F3D;      /* nền badge "mờ/vô hiệu hoá": tối trung tính */
   }
 
   *{ box-sizing:border-box; }
@@ -54,7 +90,7 @@
 
   .sidebar{
     width:288px; flex:0 0 288px;
-    background:var(--ink);
+    background:var(--ink-fixed);
     color:#E8E6DE;
     display:flex; flex-direction:column;
     position:sticky; top:0; height:100vh;
@@ -156,7 +192,7 @@
     background:none; border:1px solid var(--line); border-radius:6px; padding:3px 10px;
     font-size:11.5px; color:var(--slate); cursor:pointer;
   }
-  .info-toggle:hover{ background:#FBFAF3; color:var(--ink); }
+  .info-toggle:hover{ background:var(--tint); color:var(--ink); }
   .nav-section{
     font-size:10.5px; text-transform:uppercase; letter-spacing:0.06em; font-weight:700;
     color:#9BA3C4; margin:0 2px 8px; padding:8px 10px 8px;
@@ -230,6 +266,7 @@
   .kpi-card{
     background:var(--panel); border:1px solid var(--line); border-radius:8px;
     padding:12px 14px 10px; position:relative; overflow:hidden;
+    box-shadow:0 2px 6px rgba(18,23,43,0.09), 0 1px 3px rgba(18,23,43,0.07);
   }
   .kpi-card::before{
     content:""; position:absolute; left:0; top:0; bottom:0; width:3px; background:var(--gold);
@@ -267,7 +304,7 @@
   }
   .stat-chip{
     display:flex; align-items:center; gap:10px;
-    background:#FBFAF6; border:1px solid var(--line); border-radius:8px;
+    background:var(--tint); border:1px solid var(--line); border-radius:8px;
     padding:8px 14px; font-size:12.5px;
   }
   .stat-chip .stat-dot{ width:8px; height:8px; border-radius:50%; background:var(--gold); flex:0 0 auto; }
@@ -284,7 +321,9 @@
   .panel{
     background:var(--panel); border:1px solid var(--line); border-radius:10px;
     margin-bottom:24px; overflow:hidden;
+    box-shadow:0 2px 6px rgba(18,23,43,0.09), 0 1px 3px rgba(18,23,43,0.07); /* bóng đổ nhẹ — tách rõ card trắng khỏi nền kem (--paper) phía sau, đỡ trông "phẳng lì" như trước */
   }
+  .panel-row > *{ box-shadow:0 2px 6px rgba(18,23,43,0.09), 0 1px 3px rgba(18,23,43,0.07); }
   .panel-head{
     padding:16px 20px; border-bottom:1px solid var(--line);
     display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;
@@ -311,7 +350,7 @@
   table.data th{
     text-align:left; font-size:10.8px; text-transform:uppercase; letter-spacing:0.06em;
     color:var(--slate); font-weight:600; padding:9px 12px; border-bottom:1px solid var(--line);
-    background:#FBFAF6; white-space:nowrap;
+    background:var(--tint); white-space:nowrap;
     /* Đã THỬ dán cứng (position:sticky) để không mất tiêu đề khi cuộn bảng dài, nhưng khi trang có NHIỀU
        bảng liên tiếp (VD "Bảng theo dõi mốc CK" + "Tất cả NCC"), mỗi bảng tự dán ở cùng 1 mốc pixel khiến
        tiêu đề của bảng dưới đè chồng lên giữa các dòng dữ liệu của chính nó hoặc bảng khác — che mất dữ
@@ -319,9 +358,9 @@
        vì che mất dữ liệu là lỗi nghiêm trọng hơn nhiều so với bất tiện thiếu tiêu đề khi cuộn. */
   }
   table.data td{
-    padding:9px 12px; border-bottom:1px solid #F0EDE4; vertical-align:middle; white-space:nowrap;
+    padding:9px 12px; border-bottom:1px solid var(--line); vertical-align:middle; white-space:nowrap;
   }
-  table.data tbody tr:hover{ background:#FBFAF3; }
+  table.data tbody tr:hover{ background:var(--tint); }
   table.data td.num, table.data th.num{ font-family:var(--font-tabular); font-variant-numeric:tabular-nums; text-align:right; }
   table.data td.wrap, table.data th.wrap{ white-space:normal; min-width:180px; }
   /* Bảng "Lịch tái tục" — ít cột, mỗi cột thường chỉ vài chữ ngắn, nên nếu để mặc định width:100% + padding
@@ -345,7 +384,7 @@
     position:sticky; left:150px; z-index:2; width:150px; max-width:150px; min-width:150px;
     white-space:normal; background:var(--panel); border-right:1px solid var(--line);
   }
-  .sticky-cols-2 th:nth-child(1), .sticky-cols-2 th:nth-child(2){ background:#FBFAF6; z-index:3; }
+  .sticky-cols-2 th:nth-child(1), .sticky-cols-2 th:nth-child(2){ background:var(--tint); z-index:3; }
   /* Cố định 4 cột đầu (NCC, Mã CS, Loại, Chu kỳ) khi cuộn ngang bảng Chính sách CK NCC — cùng nguyên tắc
      ép cứng chiều rộng như .sticky-cols-2 ở trên, để mốc "left" từng cột luôn khớp chính xác tuyệt đối. */
   .sticky-cols-4 th:nth-child(1), .sticky-cols-4 td:nth-child(1){
@@ -364,7 +403,7 @@
     position:sticky; left:410px; z-index:2; width:120px; max-width:120px; min-width:120px;
     white-space:normal; background:var(--panel); border-right:1px solid var(--line);
   }
-  .sticky-cols-4 th:nth-child(1), .sticky-cols-4 th:nth-child(2), .sticky-cols-4 th:nth-child(3), .sticky-cols-4 th:nth-child(4){ background:#FBFAF6; z-index:3; }
+  .sticky-cols-4 th:nth-child(1), .sticky-cols-4 th:nth-child(2), .sticky-cols-4 th:nth-child(3), .sticky-cols-4 th:nth-child(4){ background:var(--tint); z-index:3; }
   .row-del{
     border:none; background:none; color:var(--rust); cursor:pointer; font-size:15px;
     padding:2px 6px; border-radius:5px; line-height:1;
@@ -378,7 +417,7 @@
   }
   td input.cell-edit:hover, td select.cell-edit:hover{ border-color:var(--line); }
   td input.cell-edit:focus, td select.cell-edit:focus{
-    outline:none; border-color:var(--gold); background:#fff; box-shadow:0 0 0 2px var(--gold-soft);
+    outline:none; border-color:var(--gold); background:var(--panel); box-shadow:0 0 0 2px var(--gold-soft);
   }
   td input.cell-edit.num{ text-align:right; font-family:var(--font-tabular); font-variant-numeric:tabular-nums; }
   td input.cell-edit.money, input.field-money{
@@ -392,7 +431,7 @@
   .field{ display:flex; flex-direction:column; gap:5px; }
   .field label{ font-size:10.8px; text-transform:uppercase; letter-spacing:0.06em; color:var(--slate); }
   .field input, .field select{
-    padding:8px 10px; border:1px solid var(--line); border-radius:7px; font:inherit; background:#fff; color:var(--ink);
+    padding:8px 10px; border:1px solid var(--line); border-radius:7px; font:inherit; background:var(--panel); color:var(--ink);
   }
   .field input:focus, .field select:focus{ outline:none; border-color:var(--gold); box-shadow:0 0 0 3px var(--gold-soft); }
 
@@ -400,10 +439,10 @@
     display:inline-flex; align-items:center; gap:6px; padding:8px 16px; border-radius:7px;
     font-size:13px; font-weight:600; cursor:pointer; border:1px solid transparent; white-space:nowrap;
   }
-  .btn-primary{ background:var(--ink); color:#F3ECD9; }
+  .btn-primary{ background:var(--ink-fixed); color:#F3ECD9; }
   .btn-primary:hover{ background:var(--ink-soft); }
   .btn-ghost{ background:transparent; color:var(--ink); border-color:var(--line); }
-  .btn-ghost:hover{ background:#FBFAF3; }
+  .btn-ghost:hover{ background:var(--tint); }
   .btn-gold{ background:var(--gold); color:#fff; }
   .btn-gold:hover{ background:var(--amber); }
   .btn-sm{ padding:5px 10px; font-size:11.5px; border-radius:6px; }
@@ -414,7 +453,7 @@
   .contract-badge{
     border:none; cursor:pointer; font:inherit; font-size:11.3px; font-weight:700;
     padding:5px 10px; border-radius:999px; display:inline-flex; align-items:center; gap:5px;
-    background:#EFEDE6; color:var(--slate);
+    background:var(--muted-bg); color:var(--slate);
   }
   .contract-badge:hover{ filter:brightness(0.97); }
   .contract-badge.st-active{ background:var(--forest-soft); color:var(--forest); }
@@ -441,7 +480,7 @@
     border:none; background:none; cursor:pointer; font-size:18px; color:var(--slate);
     padding:4px 8px; border-radius:6px; line-height:1;
   }
-  .modal-close:hover{ background:#F0EDE4; color:var(--ink); }
+  .modal-close:hover{ background:var(--tint); color:var(--ink); }
   .modal-body{ padding:20px 22px 22px; max-height:74vh; overflow-y:auto; }
 
   .contract-list{ display:flex; flex-direction:column; gap:10px; margin-bottom:18px; }
@@ -449,14 +488,14 @@
     border:1px solid var(--line); border-radius:9px; padding:12px 14px;
     display:flex; align-items:flex-start; justify-content:space-between; gap:12px; flex-wrap:wrap;
   }
-  .contract-row.is-superseded{ opacity:0.6; background:#FBFAF6; }
+  .contract-row.is-superseded{ opacity:0.6; background:var(--tint); }
   .contract-main{ display:flex; flex-direction:column; gap:4px; min-width:200px; }
   .contract-main .c-title{ font-weight:700; font-size:13.2px; }
   .contract-main .c-meta{ font-size:11.3px; color:var(--slate); }
   .contract-main .c-note{ font-size:11.3px; color:var(--slate); font-style:italic; }
   .contract-actions{ display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
   .contract-link{
-    font-size:12px; font-weight:600; color:var(--gold); text-decoration:none;
+    font-size:12px; font-weight:600; color:var(--gold-text); text-decoration:none;
     padding:5px 10px; border:1px solid var(--gold-soft); border-radius:6px;
   }
   .contract-link:hover{ background:var(--gold-soft); }
@@ -474,14 +513,14 @@
   .stamp.ok{ color:var(--forest); background:var(--forest-soft); }
   .stamp.warn{ color:var(--rust); background:var(--rust-soft); }
   .stamp.pending{ color:var(--amber); background:var(--gold-soft); }
-  .stamp.muted{ color:var(--slate); background:#EFEDE6; border-color:#C7C2B2; }
+  .stamp.muted{ color:var(--slate); background:var(--muted-bg); border-color:var(--line); }
 
   .mini-field{
     border:1px solid transparent; background:transparent; padding:2px 4px; border-radius:4px;
     font-size:12.5px; width:100%; color:var(--ink); font-family:inherit;
   }
-  .mini-field:hover{ border-color:var(--line); background:#fff; }
-  .mini-field:focus{ border-color:var(--gold); background:#fff; outline:none; }
+  .mini-field:hover{ border-color:var(--line); background:var(--panel); }
+  .mini-field:focus{ border-color:var(--gold); background:var(--panel); outline:none; }
   .mini-field.muted{ color:var(--slate); font-size:11.5px; }
   .mini-field.italic{ font-style:italic; }
   .th-compact{ display:flex; flex-direction:column; gap:1px; cursor:help; }
@@ -509,7 +548,7 @@
   .ins-missing-row td{ color:var(--slate); font-style:italic; }
 
   .tag{
-    font-size:10.5px; padding:3px 8px; border-radius:5px; background:#EFEDE6; color:var(--slate);
+    font-size:10.5px; padding:3px 8px; border-radius:5px; background:var(--muted-bg); color:var(--slate);
     display:inline-block;
   }
   .tag.gold{ background:var(--gold-soft); color:var(--amber); }
@@ -523,7 +562,7 @@
   .empty .big{ font-family:var(--font-display); font-weight:700; font-size:15.5px; color:var(--ink); margin-bottom:6px; }
 
   .toast{
-    position:fixed; bottom:22px; right:26px; background:var(--ink); color:#F3ECD9;
+    position:fixed; bottom:22px; right:26px; background:var(--ink-fixed); color:#F3ECD9;
     padding:11px 18px; border-radius:8px; font-size:12.5px; box-shadow:0 8px 24px rgba(0,0,0,.25);
     opacity:0; transform:translateY(8px); pointer-events:none; transition:all .25s ease; z-index:50;
   }
@@ -538,10 +577,10 @@
 
   .method-toggle{ display:flex; gap:6px; }
   .method-toggle button{
-    padding:5px 10px; border-radius:6px; border:1px solid var(--line); background:#fff;
+    padding:5px 10px; border-radius:6px; border:1px solid var(--line); background:var(--panel);
     font-size:11.5px; cursor:pointer; color:var(--slate);
   }
-  .method-toggle button.active{ background:var(--ink); color:#F3ECD9; border-color:var(--ink); }
+  .method-toggle button.active{ background:var(--ink-fixed); color:#F3ECD9; border-color:var(--ink-fixed); }
 
   /* ---------- Bảng "Tất cả chính sách" — chống mất chữ ---------- */
   #policyTable{ width:100%; min-width:1240px; table-layout:auto; }
@@ -561,7 +600,7 @@
 
   .matrix-scroll{ max-height:520px; overflow:auto; }
   .matrix-scroll table.data th:first-child{
-    position:sticky; left:0; background:#FBFAF6; z-index:5; /* góc trên-trái: cần z-index cao nhất vì gim cả top lẫn left */
+    position:sticky; left:0; background:var(--tint); z-index:5; /* góc trên-trái: cần z-index cao nhất vì gim cả top lẫn left */
   }
   .matrix-scroll table.data td:first-child{
     position:sticky; left:0; background:var(--panel); font-weight:600; z-index:2;
@@ -700,7 +739,7 @@
   .user-chip-wrap{ position:relative; }
   .user-menu{
     position:absolute; right:0; top:calc(100% + 8px); z-index:60;
-    min-width:190px; background:#fff; border:1px solid var(--line); border-radius:10px;
+    min-width:190px; background:var(--panel); border:1px solid var(--line); border-radius:10px;
     box-shadow:0 16px 34px rgba(18,23,43,0.16); overflow:hidden; display:none;
   }
   .user-menu.open{ display:block; }
@@ -715,17 +754,17 @@
   .period-filter-wrap{ position:relative; }
   .period-filter-menu{
     position:absolute; right:0; top:calc(100% + 8px); z-index:60;
-    min-width:260px; background:#fff; border:1px solid var(--line); border-radius:10px;
+    min-width:260px; background:var(--panel); border:1px solid var(--line); border-radius:10px;
     box-shadow:0 16px 34px rgba(18,23,43,0.16); overflow:hidden; display:none; padding:14px;
   }
   .period-filter-menu.open{ display:block; }
   .user-chip{
     display:flex; align-items:center; gap:8px; padding:6px 12px 6px 6px; border-radius:999px;
-    background:#fff; border:1px solid var(--line); font-size:12.5px; cursor:pointer;
+    background:var(--panel); border:1px solid var(--line); font-size:12.5px; cursor:pointer;
   }
   .user-chip:hover{ border-color:var(--gold); }
   .user-avatar{
-    width:24px;height:24px;border-radius:50%; background:var(--ink); color:#F3ECD9;
+    width:24px;height:24px;border-radius:50%; background:var(--ink-fixed); color:#F3ECD9;
     display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:700;
   }
   .user-chip .role-tag{ font-size:10px; color:var(--slate); }
@@ -738,12 +777,12 @@
 
   .locked-note{
     display:flex; align-items:center; gap:8px; padding:10px 14px; border-radius:8px;
-    background:#F5F3EC; border:1px dashed var(--line); color:var(--slate); font-size:12px; margin-bottom:14px;
+    background:var(--tint); border:1px dashed var(--line); color:var(--slate); font-size:12px; margin-bottom:14px;
   }
 
   .log-row .who{ font-weight:600; }
   .log-row .action-badge{
-    font-size:10.5px; padding:2px 8px; border-radius:5px; background:#EFEDE6; color:var(--slate);
+    font-size:10.5px; padding:2px 8px; border-radius:5px; background:var(--muted-bg); color:var(--slate);
   }
   .log-row .action-badge.create{ background:var(--forest-soft); color:var(--forest); }
   .log-row .action-badge.update{ background:var(--gold-soft); color:var(--amber); }
@@ -779,6 +818,7 @@
           <div class="period-filter-menu" id="periodFilterMenu"></div>
         </div>
         <span class="storage-pill" id="storagePill"><span class="blip"></span><span>Đang tải…</span></span>
+        <button type="button" id="themeToggleBtn" class="btn btn-ghost" title="Chuyển giao diện Sáng/Tối" aria-label="Chuyển giao diện Sáng/Tối" style="padding:8px 11px"></button>
         <div class="user-chip-wrap">
           <div class="user-chip" id="userChip"></div>
           <div class="user-menu" id="userMenu"></div>
@@ -793,6 +833,16 @@
 <div class="toast" id="toast"></div>
 
 <script>
+/* ---------------------------- Dark Mode ---------------------------- */
+function currentTheme(){ return document.documentElement.getAttribute('data-theme')==='dark' ? 'dark' : 'light'; }
+function applyTheme(theme){
+  document.documentElement.setAttribute('data-theme', theme==='dark' ? 'dark' : 'light');
+  try{ localStorage.setItem('qtncc_theme', theme); }catch(e){}
+  const btn = document.getElementById('themeToggleBtn');
+  if(btn) btn.textContent = theme==='dark' ? '☀️' : '🌙';
+}
+function toggleTheme(){ applyTheme(currentTheme()==='dark' ? 'light' : 'dark'); }
+
 /* =========================================================================
    SỔ CÁI NCC — Quản trị doanh số & chiết khấu
    Bản HTML app độc lập, tái hiện đúng logic đã kiểm toán & sửa trong file Excel:
@@ -1779,7 +1829,7 @@ function panelToggleHeadHTML(id, title, desc, rightHTML, defaultOpen, actionLabe
   const label = actionLabel || 'mở rộng';
   const stateText = open ? 'Thu gọn' : `Bấm để ${label}`;
   return `<div class="panel-head" data-panel-toggle="${escAttr(id)}" style="cursor:pointer;user-select:none" title="${open?'Thu gọn':'Bấm để '+label}">
-    <div><h2>${title} <span style="font-size:11.5px;color:var(--gold);font-weight:600;margin-left:6px;letter-spacing:0.01em">${open?'▾':'▸'} ${stateText}</span></h2>${desc?`<div class="desc">${desc}</div>`:''}</div>
+    <div><h2>${title} <span style="font-size:11.5px;color:var(--gold-text);font-weight:600;margin-left:6px;letter-spacing:0.01em">${open?'▾':'▸'} ${stateText}</span></h2>${desc?`<div class="desc">${desc}</div>`:''}</div>
     ${rightHTML||''}
   </div>`;
 }
@@ -5250,7 +5300,7 @@ function renderTxTable(editable){
     if(supFilter) parts.push(`NCC <b>${escAttr(txSupplierFilter)}</b>`);
     if(globalYearFilter) parts.push(`<b>${escAttr(periodFilterDescText())}</b>`);
     note.innerHTML = parts.length
-      ? `Đang lọc theo ${parts.join(' · ')} (${sorted.length}/${all.length} chứng từ) · <a href="#" id="txClearFilter" style="color:var(--gold)">Xem tất cả</a>`
+      ? `Đang lọc theo ${parts.join(' · ')} (${sorted.length}/${all.length} chứng từ) · <a href="#" id="txClearFilter" style="color:var(--gold-text)">Xem tất cả</a>`
       : `Đang xem tất cả (${all.length} chứng từ)`;
     const clearBtn = document.getElementById('txClearFilter');
     if(clearBtn) clearBtn.addEventListener('click', e=>{
@@ -5723,14 +5773,14 @@ function renderReconTable(editable, canPay){
       </tr>`;
       if(!expanded) return mainRow;
       const payRows = payments.slice().sort((a,b)=> b.date.localeCompare(a.date)).map(p=>`
-        <tr style="background:#fff">
+        <tr style="background:var(--panel)">
           <td style="padding-left:4px;color:var(--slate)">${new Date(p.date+'T00:00:00').toLocaleDateString('vi-VN')}</td>
           <td class="num" style="font-weight:600">${fmt(p.amount)}</td>
           <td><span class="tag">${p.method||'—'}</span></td>
           <td class="wrap" style="color:var(--slate)">${escHtml(p.note||'')}</td>
           <td>${canPay?`<button class="row-del" data-del-pay="${r.id}|${p.id}" title="Xoá lần thanh toán này">✕</button>`:''}</td>
         </tr>`).join('');
-      const detailRow = `<tr style="background:#FBFAF3">
+      const detailRow = `<tr style="background:var(--tint)">
         <td></td>
         <td colspan="14" style="padding:12px 16px 16px">
           <div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--slate);font-weight:600;margin-bottom:8px">Sổ nhận tiền — ${s?escHtml(s.name):''} · ${escHtml(r.period)}</div>
@@ -6531,7 +6581,7 @@ function renderBankTxTable(editable){
     if(searchFilter) parts.push(`từ khoá <b>"${escAttr(searchFilter)}"</b>`);
     if(globalYearFilter) parts.push(`<b>${escAttr(periodFilterDescText())}</b>`);
     note.innerHTML = parts.length
-      ? `Đang lọc theo ${parts.join(' · ')} (${sorted.length}/${all.length} hồ sơ) · <a href="#" id="btxClearFilter" style="color:var(--gold)">Xem tất cả</a>`
+      ? `Đang lọc theo ${parts.join(' · ')} (${sorted.length}/${all.length} hồ sơ) · <a href="#" id="btxClearFilter" style="color:var(--gold-text)">Xem tất cả</a>`
       : `Đang xem tất cả (${all.length} hồ sơ)`;
     const clearBtn = document.getElementById('btxClearFilter');
     if(clearBtn) clearBtn.addEventListener('click', e=>{
@@ -6858,14 +6908,14 @@ function renderBankReconTable(editable, canPay){
       </tr>`;
       if(!expanded) return mainRow;
       const payRows = payments.slice().sort((a,b)=> b.date.localeCompare(a.date)).map(p=>`
-        <tr style="background:#fff">
+        <tr style="background:var(--panel)">
           <td style="padding-left:4px;color:var(--slate)">${new Date(p.date+'T00:00:00').toLocaleDateString('vi-VN')}</td>
           <td class="num" style="font-weight:600">${fmt(p.amount)}</td>
           <td><span class="tag">${p.method||'—'}</span></td>
           <td class="wrap" style="color:var(--slate)">${escHtml(p.note||'')}</td>
           <td>${canPay?`<button class="row-del" data-del-pay="${r.id}|${p.id}" title="Xoá lần thanh toán này">✕</button>`:''}</td>
         </tr>`).join('');
-      const detailRow = `<tr style="background:#FBFAF3">
+      const detailRow = `<tr style="background:var(--tint)">
         <td></td>
         <td colspan="12" style="padding:12px 16px 16px">
           <div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--slate);font-weight:600;margin-bottom:8px">Sổ nhận tiền — ${b?escHtml(b.name):''} · ${escHtml(r.period)}</div>
@@ -7853,7 +7903,7 @@ function renderInsCommissionHistory(c){
       </div>
     </div>` : lockedNote('Bạn đang xem ở chế độ chỉ đọc — chỉ Admin/Quản lý mới thêm/sửa mốc tỷ lệ hoa hồng.')}
     <div class="panel">
-      <div class="panel-head"><div><h2>Toàn bộ mốc đã khai báo</h2><div class="desc">${insCommHistoryFocusInsurerId ? `Đang lọc theo NCC <b>${escHtml(insurerById(insCommHistoryFocusInsurerId)?.name||'')}</b> · <a href="#" id="ichClearFocus" style="color:var(--gold)">Xem tất cả NCC</a>` : 'Mới nhất lên đầu — cột "Áp dụng đến" tự suy ra từ mốc kế tiếp CÙNG loại, không cần tự nhập'}</div></div></div>
+      <div class="panel-head"><div><h2>Toàn bộ mốc đã khai báo</h2><div class="desc">${insCommHistoryFocusInsurerId ? `Đang lọc theo NCC <b>${escHtml(insurerById(insCommHistoryFocusInsurerId)?.name||'')}</b> · <a href="#" id="ichClearFocus" style="color:var(--gold-text)">Xem tất cả NCC</a>` : 'Mới nhất lên đầu — cột "Áp dụng đến" tự suy ra từ mốc kế tiếp CÙNG loại, không cần tự nhập'}</div></div></div>
       <div class="panel-body flush"><div class="tbl-wrap"><table class="data" id="insCommHistTable"></table></div></div>
     </div>
   `;
@@ -7895,7 +7945,7 @@ function renderInsCommHistTable(editable, insurerScope){
     .sort((a,b)=> b.startDate.localeCompare(a.startDate));
   if(all.length===0){
     tbl.outerHTML = insCommHistoryFocusInsurerId
-      ? `<div class="empty"><div class="big">NCC này chưa khai báo mốc thay đổi tỷ lệ nào</div>Đang tính hoa hồng theo đúng tỷ lệ mặc định ở tab "Danh mục NCC". <a href="#" id="ichClearFocusEmpty" style="color:var(--gold)">Xem tất cả NCC</a></div>`
+      ? `<div class="empty"><div class="big">NCC này chưa khai báo mốc thay đổi tỷ lệ nào</div>Đang tính hoa hồng theo đúng tỷ lệ mặc định ở tab "Danh mục NCC". <a href="#" id="ichClearFocusEmpty" style="color:var(--gold-text)">Xem tất cả NCC</a></div>`
       : `<div class="empty"><div class="big">Chưa khai báo mốc thay đổi tỷ lệ nào</div>Mọi hợp đồng đang tính hoa hồng theo đúng tỷ lệ mặc định ở tab "Danh mục NCC".</div>`;
     const clearBtn = document.getElementById('ichClearFocusEmpty');
     if(clearBtn) clearBtn.addEventListener('click', e=>{ e.preventDefault(); insCommHistoryFocusInsurerId=''; renderAll(); });
@@ -7912,7 +7962,7 @@ function renderInsCommHistTable(editable, insurerScope){
       return `<tr>
         <td class="wrap"><b>${ins?escHtml(ins.name):'<em>(đã xoá)</em>'}</b></td>
         <td><span class="tag">${escHtml(p.product)}</span></td>
-        <td><span class="tag" style="${issueType==='renewal'?'color:var(--gold)':''}">${issueType==='renewal'?'Tái tục':'Cấp mới'}</span></td>
+        <td><span class="tag" style="${issueType==='renewal'?'color:var(--gold-text)':''}">${issueType==='renewal'?'Tái tục':'Cấp mới'}</span></td>
         <td class="num" style="font-weight:700">${fmtPct(p.rate)}</td>
         <td>${p.startDate}</td>
         <td class="meta-line">${period?escHtml(period.endLabel):'—'}</td>
@@ -8281,7 +8331,7 @@ function renderInsTxTable(editable){
     if(searchFilter) parts.push(`từ khoá <b>"${escAttr(searchFilter)}"</b>`);
     if(globalYearFilter) parts.push(`<b>${escAttr(periodFilterDescText())}</b>`);
     note.innerHTML = parts.length
-      ? `Đang lọc theo ${parts.join(' · ')} (${sorted.length}/${all.length} hợp đồng) · <a href="#" id="itxClearFilter" style="color:var(--gold)">Xem tất cả</a>`
+      ? `Đang lọc theo ${parts.join(' · ')} (${sorted.length}/${all.length} hợp đồng) · <a href="#" id="itxClearFilter" style="color:var(--gold-text)">Xem tất cả</a>`
       : `Đang xem tất cả (${all.length} hợp đồng)`;
     const clearBtn = document.getElementById('itxClearFilter');
     if(clearBtn) clearBtn.addEventListener('click', e=>{
@@ -8611,7 +8661,7 @@ function renderInsRevenueTable(editable){
     <tr>
       <th>Hãng</th>
       ${thCompact('Phân bổ', 'tháng (%)', 'Tỷ lệ phân bổ tháng (%) — kế hoạch bán ra Admin/Quản lý giao cho hãng trong tháng, thường lấy từ Đề xuất tháng trước'+(monthLocked?' — ĐÃ CHỐT, chỉ Admin mở khoá mới sửa được':''), true)}
-      ${thCompact('BR', 'bán ra', 'DT bán ra (BR) — phí bảo hiểm thu, tự tính từ hợp đồng "Đã cấp đơn" trong tháng', true).replace('<th class="num"', '<th class="num" style="color:var(--gold)"')}
+      ${thCompact('BR', 'bán ra', 'DT bán ra (BR) — phí bảo hiểm thu, tự tính từ hợp đồng "Đã cấp đơn" trong tháng', true).replace('<th class="num"', '<th class="num" style="color:var(--gold-text)"')}
       ${thCompactDim('DV', 'dịch vụ', 'DT dịch vụ/sửa chữa (DV) — nhập tay theo tháng', true)}
       ${thCompactDim('SC/BR', 'DV÷BR', 'Tỷ lệ DT dịch vụ/sửa chữa so với DT bán ra (DV÷BR)', true)}
       ${thCompact('Thực tế', '% bán', 'Thực tế tỷ lệ bán — % đóng góp BR của hãng trong tổng BR toàn hệ thống tháng này', true)}
@@ -8631,7 +8681,7 @@ function renderInsRevenueTable(editable){
             ? `<input class="cell-edit num mini-field" data-alloc="${r.ins.id}" type="text" inputmode="decimal" value="${r.allocationRate!=null?round2(r.allocationRate*100):''}" placeholder="—" style="text-align:right;font-weight:700">`
             : (r.allocationRate!=null?fmtPct(r.allocationRate):'—')}${monthLocked?' 🔒':''}
         </td>
-        <td class="num" style="color:var(--gold);font-weight:600">${r.br>0?fmt(r.br):'—'}</td>
+        <td class="num" style="color:var(--gold-text);font-weight:600">${r.br>0?fmt(r.br):'—'}</td>
         <td class="num" style="opacity:.55">
           ${editable
             ? `<input class="cell-edit num money mini-field" data-ins="${r.ins.id}" type="text" inputmode="numeric" value="${r.dv>0?formatMoneyValue(r.dv):''}" placeholder="0" style="text-align:right">`
@@ -8835,14 +8885,14 @@ function renderInsReconTable(editable, canPay){
       </tr>`;
       if(!expanded) return mainRow;
       const payRows = payments.slice().sort((a,b)=> b.date.localeCompare(a.date)).map(p=>`
-        <tr style="background:#fff">
+        <tr style="background:var(--panel)">
           <td style="padding-left:4px;color:var(--slate)">${new Date(p.date+'T00:00:00').toLocaleDateString('vi-VN')}</td>
           <td class="num" style="font-weight:600">${fmt(p.amount)}</td>
           <td><span class="tag">${p.method||'—'}</span></td>
           <td class="wrap" style="color:var(--slate)">${escHtml(p.note||'')}</td>
           <td>${canPay?`<button class="row-del" data-del-pay="${r.id}|${p.id}" title="Xoá lần thanh toán này">✕</button>`:''}</td>
         </tr>`).join('');
-      const detailRow = `<tr style="background:#FBFAF3">
+      const detailRow = `<tr style="background:var(--tint)">
         <td></td>
         <td colspan="12" style="padding:12px 16px 16px">
           <div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--slate);font-weight:600;margin-bottom:8px">Sổ nhận tiền — ${ins?escHtml(ins.name):''} · ${escHtml(r.period)}</div>
@@ -10388,7 +10438,7 @@ function renderAccounts(c){
           <div style="grid-column:1/-1;display:flex;gap:16px;flex-wrap:wrap">
           <div class="field" id="af_unit_field" style="flex:1 1 340px">
             <label>Đơn vị phụ trách</label>
-            <button type="button" id="afUnitToggleBtn" style="width:100%;display:flex;justify-content:space-between;align-items:center;gap:8px;text-align:left;padding:9px 12px;border:1px solid var(--line);border-radius:8px;background:#fff;cursor:pointer;font:inherit;color:var(--slate)">
+            <button type="button" id="afUnitToggleBtn" style="width:100%;display:flex;justify-content:space-between;align-items:center;gap:8px;text-align:left;padding:9px 12px;border:1px solid var(--line);border-radius:8px;background:var(--panel);cursor:pointer;font:inherit;color:var(--slate)">
               <span id="afUnitToggleLabel" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">— Chọn đơn vị —</span><span>▾</span>
             </button>
             <div class="helper" style="margin-top:6px">Chọn 1 đơn vị thì tài khoản hoạt động y hệt trước giờ — tick thêm để tài khoản này xem được nhiều đơn vị cùng lúc.</div>
@@ -10402,7 +10452,7 @@ function renderAccounts(c){
             </div>
           </div>
           </div>
-          <div id="afUnitPanel" style="grid-column:1/-1;display:none;border:1px solid var(--line);border-radius:8px;padding:12px;background:#FBFAF3">
+          <div id="afUnitPanel" style="grid-column:1/-1;display:none;border:1px solid var(--line);border-radius:8px;padding:12px;background:var(--tint)">
             <div id="af_extra_units_box" style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px 12px"></div>
             <div style="display:flex;gap:6px;margin-top:10px;max-width:420px">
               <input id="af_unit_new" placeholder="+ Tên đơn vị mới...">
@@ -11074,6 +11124,8 @@ function migrateContractsRequestsToRecordsV1(){
     if(willOpen) renderPeriodFilterMenu();
     menu.classList.toggle('open', willOpen);
   });
+  document.getElementById('themeToggleBtn').addEventListener('click', toggleTheme);
+  applyTheme(currentTheme()); // đồng bộ icon nút bấm (🌙/☀️) đúng theo trạng thái đã áp dụng sẵn từ script sớm trong <head>
   // Luôn có sẵn 1 bộ khung dữ liệu đầy đủ (mẫu) TRƯỚC khi tải dữ liệu thật — để subscribeBranch() có chỗ
   // gộp từng nhánh vào ngay khi tải xong (đặc biệt cần thiết cho luồng Firebase — xem loadShared()).
   state = seedState();
