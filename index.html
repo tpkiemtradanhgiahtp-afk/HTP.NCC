@@ -5015,10 +5015,76 @@ function renderPolicies(c){
       </div>
     </div>` : lockedNote('Bạn đang xem ở chế độ chỉ đọc — chỉ Admin/Quản lý mới thêm/sửa chính sách CK.')}
     <div class="panel">
-      <div class="panel-head"><div><h2>Tất cả chính sách</h2></div></div>
+      <div class="panel-head"><div><h2>Tất cả chính sách</h2></div>
+        <div style="display:flex;gap:10px">
+          ${editable ? `<button class="btn btn-ghost" id="pImportBtn">⬆ Nhập Excel</button><input type="file" id="pImportFile" accept=".xlsx,.xls" style="display:none">` : ''}
+          <button class="btn btn-ghost" id="pExportBtn">⬇ Xuất Excel</button>
+        </div>
+      </div>
       <div class="panel-body flush"><div class="tbl-wrap"><table class="data sticky-cols-4" id="policyTable"></table></div></div>
     </div>
   `;
+  document.getElementById('pExportBtn').addEventListener('click', ()=>{
+    const rows = policyList.map(p=>{
+      const s = supplierById(p.supplierId);
+      return {
+        'NCC': s?s.name:'(đã xoá)', 'Mã CS': p.code||'', 'Loại chính sách': p.type,
+        'Chu kỳ': p.cycle, 'Mốc doanh số (VNĐ)': p.threshold||0,
+        'Tỷ lệ CK (%)': round2((p.rate||0)*100), 'Thưởng thêm (%)': round2((p.bonusRate||0)*100),
+        'Ngày bắt đầu': p.startDate||'', 'Ngày kết thúc': p.endDate||'',
+        'Phương pháp áp dụng': p.method||'', 'Điều kiện / Ghi chú': p.condition||'',
+      };
+    });
+    exportToExcel('ChinhSachCK_NCC_'+todayISO()+'.xlsx', [{name:'Chính sách CK', rows}]);
+  });
+  if(editable){
+    document.getElementById('pImportBtn').addEventListener('click', ()=> document.getElementById('pImportFile').click());
+    document.getElementById('pImportFile').addEventListener('change', async (e)=>{
+      const file = e.target.files[0]; if(!file) return;
+      const rawRows = await readExcelRows(file);
+      const validTypes = ['CK theo doanh số','CK cố định','Thưởng thêm'];
+      const validMethods = ['Hồi tố toàn bộ','Chỉ phần vượt mốc'];
+      const validCycles = ['Cần xác nhận','THANG','QUY','YTD','Cố định'];
+      const toInsert = []; const errors = []; const previewRows = [];
+      rawRows.forEach((row, idx)=>{
+        const line = `Dòng ${idx+2}`;
+        const supName = String(row['NCC']||'').trim();
+        const supplier = state.suppliers.find(x=>x.name.trim().toLowerCase()===supName.toLowerCase());
+        if(!supplier){ errors.push(`${line}: không tìm thấy NCC "${supName}"`); return; }
+        const type = String(row['Loại chính sách']||'').trim();
+        if(!validTypes.includes(type)){ errors.push(`${line}: "Loại chính sách" phải là ${validTypes.join(' / ')} (đang ghi "${row['Loại chính sách']}")`); return; }
+        let cycle = String(row['Chu kỳ']||'').trim() || 'Cần xác nhận';
+        if(type!=='Thưởng thêm') cycle = 'Cần xác nhận'; // mốc CK cơ bản luôn khoá theo đúng logic form thêm tay
+        else if(!validCycles.includes(cycle)){ errors.push(`${line}: "Chu kỳ" phải là ${validCycles.join(' / ')} (đang ghi "${row['Chu kỳ']}")`); return; }
+        const method = String(row['Phương pháp áp dụng']||'').trim() || 'Hồi tố toàn bộ';
+        if(!validMethods.includes(method)){ errors.push(`${line}: "Phương pháp áp dụng" phải là ${validMethods.join(' / ')} (đang ghi "${row['Phương pháp áp dụng']}")`); return; }
+        const startDate = row['Ngày bắt đầu'] ? parseImportDate(row['Ngày bắt đầu']) : '';
+        if(row['Ngày bắt đầu'] && !startDate){ errors.push(`${line}: "Ngày bắt đầu" không đọc được (${row['Ngày bắt đầu']})`); return; }
+        const endDate = row['Ngày kết thúc'] ? parseImportDate(row['Ngày kết thúc']) : '';
+        if(row['Ngày kết thúc'] && !endDate){ errors.push(`${line}: "Ngày kết thúc" không đọc được (${row['Ngày kết thúc']})`); return; }
+        if(startDate && endDate && endDate<startDate){ errors.push(`${line}: "Ngày kết thúc" sớm hơn "Ngày bắt đầu"`); return; }
+        const rec = {
+          id: uid('p'), supplierId: supplier.id, code: String(row['Mã CS']||'').trim(), type, cycle,
+          threshold: Number(row['Mốc doanh số (VNĐ)'])||0,
+          rate: (Number(row['Tỷ lệ CK (%)'])||0)/100,
+          bonusRate: (Number(row['Thưởng thêm (%)'])||0)/100,
+          startDate, endDate, method, condition: String(row['Điều kiện / Ghi chú']||'').trim(),
+          status:'Cần xác nhận', note:'',
+        };
+        toInsert.push(rec);
+        previewRows.push({'NCC':supplier.name,'Mã CS':rec.code,'Loại':type,'Mốc':fmt(rec.threshold)+'đ','Tỷ lệ CK':fmtPct(rec.rate),'Thưởng thêm':fmtPct(rec.bonusRate),'Bắt đầu':startDate||'—','Kết thúc':endDate||'—'});
+      });
+      e.target.value = '';
+      if(toInsert.length===0 && errors.length===0){ toast('File không có dòng dữ liệu nào'); return; }
+      openImportPreviewModal('Xem trước nhập Excel — Chính sách CK NCC', previewRows, errors, ()=>{
+        toInsert.forEach(rec=> state.policies.push(rec));
+        logActivity('create','Chính sách CK', `Nhập Excel: thêm ${toInsert.length} dòng chính sách`);
+        toast(`Đã nhập ${toInsert.length} dòng chính sách — kiểm tra lại cảnh báo xung đột mốc (nếu có) ở đầu trang`);
+        saveState();
+        renderAll();
+      });
+    });
+  }
   if(editable){
     attachMoneyFormatting(document.getElementById('pf_threshold'));
     document.getElementById('addPolicyBtn').addEventListener('click', ()=>{
@@ -6136,18 +6202,82 @@ function renderBankPolicies(c){
       <div class="panel-head">
         <div><h2>Tất cả chính sách theo tháng</h2>
         <div class="desc">1 ngân hàng có thể có nhiều gói vay song song trong cùng 1 tháng — mỗi gói 1 dòng, chỉ cần khác "Tên gói vay". Chính sách của 1 gói áp dụng từ tháng nhập cho tới khi có dòng chính sách tháng mới hơn của ĐÚNG gói đó.</div></div>
-        <div class="field" style="max-width:220px"><label>Lọc theo tái tục hằng năm</label>
-          <select id="bankPolicyRenewalFilterSel">
-            <option value="">Tất cả gói vay</option>
-            <option value="yes" ${bankPolicyRenewalFilter==='yes'?'selected':''}>Chỉ gói YÊU CẦU tái tục</option>
-            <option value="no" ${bankPolicyRenewalFilter==='no'?'selected':''}>Chỉ gói KHÔNG yêu cầu</option>
-          </select>
+        <div style="display:flex;gap:10px;align-items:end;flex-wrap:wrap">
+          <div class="field" style="max-width:220px;margin-bottom:0"><label>Lọc theo tái tục hằng năm</label>
+            <select id="bankPolicyRenewalFilterSel">
+              <option value="">Tất cả gói vay</option>
+              <option value="yes" ${bankPolicyRenewalFilter==='yes'?'selected':''}>Chỉ gói YÊU CẦU tái tục</option>
+              <option value="no" ${bankPolicyRenewalFilter==='no'?'selected':''}>Chỉ gói KHÔNG yêu cầu</option>
+            </select>
+          </div>
+          ${editable ? `<button class="btn btn-ghost" id="bpImportBtn">⬆ Nhập Excel</button><input type="file" id="bpImportFile" accept=".xlsx,.xls" style="display:none">` : ''}
+          <button class="btn btn-ghost" id="bpExportBtn">⬇ Xuất Excel</button>
         </div>
       </div>
       <div class="panel-body flush"><div class="tbl-wrap"><table class="data sticky-cols-2" id="bankPolicyTable"></table></div></div>
     </div>
   `;
   document.getElementById('bankPolicyRenewalFilterSel').addEventListener('change', e=>{ bankPolicyRenewalFilter = e.target.value; renderAll(); });
+  document.getElementById('bpExportBtn').addEventListener('click', ()=>{
+    const pf2 = partnerScopeFilter('bankId');
+    const list = pf2 ? state.bankPolicies.filter(pf2) : state.bankPolicies;
+    const rows = list.map(p=>{
+      const b = bankById(p.bankId);
+      return {
+        'Ngân hàng': b?b.name:'(đã xoá)', 'Tên gói vay': p.product||DEFAULT_BANK_PRODUCT, 'Ngày áp dụng': bankPolicyEffectiveDate(p),
+        'Tỷ lệ vay tối đa (%)': round2((p.maxLoanRatio||0)*100), 'TG vay tối đa (năm)': p.maxLoanTerm||0,
+        'LS ưu đãi năm đầu (%)': round2((p.promoRateY1||0)*100), 'Biên độ sau ưu đãi (%)': round2((p.marginAfterPromo||0)*100),
+        'Phí trả trước hạn (%)': round2((p.prepaymentFee||0)*100), 'Hoa hồng trước thuế (%)': round2((p.commissionRate||0)*100),
+        'Tái tục hằng năm': p.annualRenewalRequired?'Có':'Không',
+        'Điều kiện phê duyệt': p.approvalCondition||'', 'Thời gian giải ngân': p.disbursementTime||'', 'Giấy tờ giải ngân': p.disbursementDocs||'', 'Đánh giá': p.review||'',
+      };
+    });
+    exportToExcel('ChinhSachCK_NganHang_'+todayISO()+'.xlsx', [{name:'Chính sách CK', rows}]);
+  });
+  if(editable){
+    document.getElementById('bpImportBtn').addEventListener('click', ()=> document.getElementById('bpImportFile').click());
+    document.getElementById('bpImportFile').addEventListener('change', async (e)=>{
+      const file = e.target.files[0]; if(!file) return;
+      const rawRows = await readExcelRows(file);
+      const toInsert = []; const errors = []; const previewRows = [];
+      rawRows.forEach((row, idx)=>{
+        const line = `Dòng ${idx+2}`;
+        const bankName = String(row['Ngân hàng']||'').trim();
+        const bank = state.banks.find(x=>x.name.trim().toLowerCase()===bankName.toLowerCase());
+        if(!bank){ errors.push(`${line}: không tìm thấy ngân hàng "${bankName}"`); return; }
+        const dateRaw = row['Ngày áp dụng'];
+        const startDate = parseImportDate(dateRaw);
+        if(!startDate){ errors.push(`${line}: "Ngày áp dụng" không đọc được (${dateRaw})`); return; }
+        const product = String(row['Tên gói vay']||'').trim() || DEFAULT_BANK_PRODUCT;
+        const renewRaw = String(row['Tái tục hằng năm']||'').trim().toLowerCase();
+        const rec = {
+          id: uid('bp'), bankId: bank.id, month: monthKey(startDate), startDate, product,
+          maxLoanRatio: (Number(row['Tỷ lệ vay tối đa (%)'])||0)/100,
+          maxLoanTerm: Number(row['TG vay tối đa (năm)'])||0,
+          promoRateY1: (Number(row['LS ưu đãi năm đầu (%)'])||0)/100,
+          marginAfterPromo: (Number(row['Biên độ sau ưu đãi (%)'])||0)/100,
+          prepaymentFee: (Number(row['Phí trả trước hạn (%)'])||0)/100,
+          commissionRate: (Number(row['Hoa hồng trước thuế (%)'])||0)/100,
+          annualRenewalRequired: renewRaw==='có'||renewRaw==='co'||renewRaw==='yes'||renewRaw==='true',
+          approvalCondition: String(row['Điều kiện phê duyệt']||'').trim(),
+          disbursementTime: String(row['Thời gian giải ngân']||'').trim(),
+          disbursementDocs: String(row['Giấy tờ giải ngân']||'').trim(),
+          review: String(row['Đánh giá']||'').trim(),
+        };
+        toInsert.push(rec);
+        previewRows.push({'Ngân hàng':bank.name,'Gói vay':product,'Ngày áp dụng':startDate,'Vay tối đa':fmtPct(rec.maxLoanRatio),'Hoa hồng':fmtPct(rec.commissionRate),'Tái tục':rec.annualRenewalRequired?'Có':'Không'});
+      });
+      e.target.value = '';
+      if(toInsert.length===0 && errors.length===0){ toast('File không có dòng dữ liệu nào'); return; }
+      openImportPreviewModal('Xem trước nhập Excel — Chính sách CK Ngân hàng', previewRows, errors, ()=>{
+        toInsert.forEach(rec=> state.bankPolicies.push(rec));
+        logActivity('create','Chính sách CK (NH)', `Nhập Excel: thêm ${toInsert.length} dòng chính sách`);
+        toast(`Đã nhập ${toInsert.length} dòng chính sách`);
+        saveState();
+        renderAll();
+      });
+    });
+  }
   if(editable){
     document.getElementById('addBankPolicyBtn').addEventListener('click', ()=>{
       const bankId = document.getElementById('bpf_bank').value;
@@ -7247,7 +7377,12 @@ function renderInsPolicies(c){
       </div>
     </div>` : lockedNote('Bạn đang xem ở chế độ chỉ đọc — chỉ Admin/Quản lý mới thêm/sửa biểu phí.')}
     <div class="panel">
-      <div class="panel-head"><div><h2>Toàn bộ biểu phí theo NCC</h2></div></div>
+      <div class="panel-head"><div><h2>Toàn bộ biểu phí theo NCC</h2></div>
+        <div style="display:flex;gap:10px">
+          ${editable ? `<button class="btn btn-ghost" id="irImportBtn">⬆ Nhập Excel</button><input type="file" id="irImportFile" accept=".xlsx,.xls" style="display:none">` : ''}
+          <button class="btn btn-ghost" id="irExportBtn">⬇ Xuất Excel</button>
+        </div>
+      </div>
       <div class="panel-body flush"><div class="tbl-wrap"><table class="data" id="insRateTable"></table></div></div>
     </div>
   `;
@@ -7303,6 +7438,56 @@ function renderInsPolicies(c){
     });
   }
 
+  document.getElementById('irExportBtn').addEventListener('click', ()=>{
+    const scope = pf ? state.insRates.filter(pf) : state.insRates;
+    const pctOrBlank = v => v==null ? '' : round2(v*100);
+    const rows = scope.map(r=>{
+      const ins = insurerById(r.insurerId);
+      return {
+        'NCC bảo hiểm': ins?ins.name:'(đã xoá)', 'Khoảng giá trị xe (nhãn hiển thị)': r.valueLabel,
+        'Mốc dưới (triệu đồng)': r.valueOrder||0,
+        'Tỷ lệ phí - Dưới 3 năm (%)': pctOrBlank(r.lt3), 'Tỷ lệ phí - Từ 3-6 năm (%)': pctOrBlank(r.y3to6),
+        'Tỷ lệ phí - Từ 6-10 năm (%)': pctOrBlank(r.y6to10), 'Tỷ lệ phí - Từ 10 năm (%)': pctOrBlank(r.gte10),
+        'Ghi chú': r.note||'',
+      };
+    });
+    exportToExcel('BieuPhiBaoHiem_'+todayISO()+'.xlsx', [{name:'Biểu phí bảo hiểm', rows}]);
+  });
+  if(editable){
+    document.getElementById('irImportBtn').addEventListener('click', ()=> document.getElementById('irImportFile').click());
+    document.getElementById('irImportFile').addEventListener('change', async (e)=>{
+      const file = e.target.files[0]; if(!file) return;
+      const rawRows = await readExcelRows(file);
+      const toInsert = []; const errors = []; const previewRows = [];
+      const pctOrNull = v => (v===''||v==null) ? null : (Number(v)||0)/100;
+      rawRows.forEach((row, idx)=>{
+        const line = `Dòng ${idx+2}`;
+        const insName = String(row['NCC bảo hiểm']||'').trim();
+        const ins = state.insurers.find(x=>x.name.trim().toLowerCase()===insName.toLowerCase());
+        if(!ins){ errors.push(`${line}: không tìm thấy NCC bảo hiểm "${insName}"`); return; }
+        const valueLabel = String(row['Khoảng giá trị xe (nhãn hiển thị)']||'').trim();
+        if(!valueLabel){ errors.push(`${line}: thiếu "Khoảng giá trị xe (nhãn hiển thị)"`); return; }
+        const rec = {
+          id: uid('ir'), insurerId: ins.id, valueLabel,
+          valueOrder: Number(row['Mốc dưới (triệu đồng)'])||0,
+          lt3: pctOrNull(row['Tỷ lệ phí - Dưới 3 năm (%)']), y3to6: pctOrNull(row['Tỷ lệ phí - Từ 3-6 năm (%)']),
+          y6to10: pctOrNull(row['Tỷ lệ phí - Từ 6-10 năm (%)']), gte10: pctOrNull(row['Tỷ lệ phí - Từ 10 năm (%)']),
+          note: String(row['Ghi chú']||'').trim(),
+        };
+        toInsert.push(rec);
+        previewRows.push({'NCC bảo hiểm':ins.name,'Khoảng giá trị':valueLabel,'<3 năm':rec.lt3!=null?fmtPct(rec.lt3):'—','3-6 năm':rec.y3to6!=null?fmtPct(rec.y3to6):'—','6-10 năm':rec.y6to10!=null?fmtPct(rec.y6to10):'—','>10 năm':rec.gte10!=null?fmtPct(rec.gte10):'—'});
+      });
+      e.target.value = '';
+      if(toInsert.length===0 && errors.length===0){ toast('File không có dòng dữ liệu nào'); return; }
+      openImportPreviewModal('Xem trước nhập Excel — Biểu phí bảo hiểm', previewRows, errors, ()=>{
+        toInsert.forEach(rec=> state.insRates.push(rec));
+        logActivity('create','Biểu phí Bảo hiểm', `Nhập Excel: thêm ${toInsert.length} khoảng giá trị xe`);
+        toast(`Đã nhập ${toInsert.length} khoảng giá trị xe`);
+        saveState();
+        renderAll();
+      });
+    });
+  }
   if(editable){
     document.getElementById('addInsRateBtn').addEventListener('click', ()=>{
       const insurerId = document.getElementById('if_ins').value;
@@ -7906,12 +8091,67 @@ function renderInsCommissionHistory(c){
       </div>
     </div>` : lockedNote('Bạn đang xem ở chế độ chỉ đọc — chỉ Admin/Quản lý mới thêm/sửa mốc tỷ lệ hoa hồng.')}
     <div class="panel">
-      <div class="panel-head"><div><h2>Toàn bộ mốc đã khai báo</h2><div class="desc">${insCommHistoryFocusInsurerId ? `Đang lọc theo NCC <b>${escHtml(insurerById(insCommHistoryFocusInsurerId)?.name||'')}</b> · <a href="#" id="ichClearFocus" style="color:var(--gold-text)">Xem tất cả NCC</a>` : 'Mới nhất lên đầu — cột "Áp dụng đến" tự suy ra từ mốc kế tiếp CÙNG loại, không cần tự nhập'}</div></div></div>
+      <div class="panel-head"><div><h2>Toàn bộ mốc đã khai báo</h2><div class="desc">${insCommHistoryFocusInsurerId ? `Đang lọc theo NCC <b>${escHtml(insurerById(insCommHistoryFocusInsurerId)?.name||'')}</b> · <a href="#" id="ichClearFocus" style="color:var(--gold-text)">Xem tất cả NCC</a>` : 'Mới nhất lên đầu — cột "Áp dụng đến" tự suy ra từ mốc kế tiếp CÙNG loại, không cần tự nhập'}</div></div>
+        <div style="display:flex;gap:10px">
+          ${editable ? `<button class="btn btn-ghost" id="ichImportBtn">⬆ Nhập Excel</button><input type="file" id="ichImportFile" accept=".xlsx,.xls" style="display:none">` : ''}
+          <button class="btn btn-ghost" id="ichExportBtn">⬇ Xuất Excel</button>
+        </div>
+      </div>
       <div class="panel-body flush"><div class="tbl-wrap"><table class="data" id="insCommHistTable"></table></div></div>
     </div>
   `;
   const clearFocusLink = document.getElementById('ichClearFocus');
   if(clearFocusLink) clearFocusLink.addEventListener('click', e=>{ e.preventDefault(); insCommHistoryFocusInsurerId=''; renderAll(); });
+  document.getElementById('ichExportBtn').addEventListener('click', ()=>{
+    const scopeIds = new Set(insurerScope.map(i=>i.id));
+    const list = (state.insCommissionRates||[]).filter(p=>scopeIds.has(p.insurerId));
+    const rows = list.map(p=>{
+      const ins = insurerById(p.insurerId);
+      return {
+        'NCC bảo hiểm': ins?ins.name:'(đã xoá)', 'Sản phẩm': p.product, 'Loại hợp đồng': (p.issueType||'new')==='renewal'?'Tái tục':'Cấp mới',
+        'Tỷ lệ hoa hồng (%)': round2((p.rate||0)*100), 'Áp dụng từ ngày': p.startDate, 'Ghi chú': p.note||'',
+      };
+    });
+    exportToExcel('LichSuHoaHong_BaoHiem_'+todayISO()+'.xlsx', [{name:'Lịch sử hoa hồng', rows}]);
+  });
+  if(editable){
+    document.getElementById('ichImportBtn').addEventListener('click', ()=> document.getElementById('ichImportFile').click());
+    document.getElementById('ichImportFile').addEventListener('change', async (e)=>{
+      const file = e.target.files[0]; if(!file) return;
+      const rawRows = await readExcelRows(file);
+      const toInsert = []; const errors = []; const previewRows = [];
+      if(!state.insCommissionRates) state.insCommissionRates = [];
+      rawRows.forEach((row, idx)=>{
+        const line = `Dòng ${idx+2}`;
+        const insName = String(row['NCC bảo hiểm']||'').trim();
+        const ins = state.insurers.find(x=>x.name.trim().toLowerCase()===insName.toLowerCase());
+        if(!ins){ errors.push(`${line}: không tìm thấy NCC bảo hiểm "${insName}"`); return; }
+        const product = String(row['Sản phẩm']||'').trim().toUpperCase();
+        if(!INS_PRODUCTS.includes(product)){ errors.push(`${line}: "Sản phẩm" phải là ${INS_PRODUCTS.join(' hoặc ')} (đang ghi "${row['Sản phẩm']}")`); return; }
+        const issueTypeRaw = String(row['Loại hợp đồng']||'').trim().toLowerCase();
+        const issueType = issueTypeRaw==='tái tục' ? 'renewal' : 'new';
+        const startDate = parseImportDate(row['Áp dụng từ ngày']);
+        if(!startDate){ errors.push(`${line}: "Áp dụng từ ngày" không đọc được (${row['Áp dụng từ ngày']})`); return; }
+        const rate = Number(row['Tỷ lệ hoa hồng (%)']);
+        if(!(rate>=0)){ errors.push(`${line}: "Tỷ lệ hoa hồng (%)" không hợp lệ (${row['Tỷ lệ hoa hồng (%)']})`); return; }
+        const dup = state.insCommissionRates.find(p=>p.insurerId===ins.id && p.product===product && (p.issueType||'new')===issueType && p.startDate===startDate)
+          || toInsert.find(p=>p.insurerId===ins.id && p.product===product && (p.issueType||'new')===issueType && p.startDate===startDate);
+        if(dup){ errors.push(`${line}: đã có mốc ${product} (${issueType==='renewal'?'Tái tục':'Cấp mới'}) ngày ${startDate} cho ${ins.name} — bỏ qua dòng trùng`); return; }
+        const rec = { id: uid('icr'), insurerId: ins.id, product, issueType, rate: rate/100, startDate, note: String(row['Ghi chú']||'').trim(), createdBy: currentUserId, createdAt: new Date().toISOString() };
+        toInsert.push(rec);
+        previewRows.push({'NCC bảo hiểm':ins.name,'Sản phẩm':product,'Loại':issueType==='renewal'?'Tái tục':'Cấp mới','Tỷ lệ':fmtPct(rec.rate),'Áp dụng từ':startDate});
+      });
+      e.target.value = '';
+      if(toInsert.length===0 && errors.length===0){ toast('File không có dòng dữ liệu nào'); return; }
+      openImportPreviewModal('Xem trước nhập Excel — Lịch sử hoa hồng Bảo hiểm', previewRows, errors, ()=>{
+        toInsert.forEach(rec=> state.insCommissionRates.push(rec));
+        logActivity('create','Chính sách CK (Bảo hiểm)', `Nhập Excel: thêm ${toInsert.length} mốc tỷ lệ hoa hồng`);
+        toast(`Đã nhập ${toInsert.length} mốc tỷ lệ hoa hồng`);
+        saveState();
+        renderAll();
+      });
+    });
+  }
   if(editable){
     document.getElementById('addInsCommRateBtn').addEventListener('click', ()=>{
       const insurerId = document.getElementById('ich_ins').value;
