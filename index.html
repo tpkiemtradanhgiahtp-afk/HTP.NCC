@@ -9427,10 +9427,12 @@ function renderInsRenewal(c){
     <div class="panel">
       <div class="panel-head">
         <div><h2>Danh sách hồ sơ cần theo dõi</h2><div class="desc">Mặc định chỉ hiện hồ sơ Quá hạn/Sắp đến hạn/Đang xử lý — đổi ô "Trạng thái" ở Bộ lọc thành "Tất cả trạng thái" để xem cả hồ sơ Chưa tới hạn. Quá hạn/Sắp đến hạn luôn nổi lên đầu và nhấp nháy để dễ nhận ra.</div></div>
-        ${isAdmin ? `<div style="display:flex;gap:8px;flex-wrap:wrap">
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-ghost" id="renewalExportBtn">⬇ Xuất Excel</button>
+          ${isAdmin ? `
           <button class="btn btn-ghost" id="renewalDeleteSelectedBtn" disabled>🗑 Bỏ theo dõi mục đã chọn (<span id="renewalSelectedCount">0</span>)</button>
-          <button class="btn btn-ghost" id="renewalDeleteAllBtn">🗑 Bỏ theo dõi toàn bộ</button>
-        </div>` : ''}
+          <button class="btn btn-ghost" id="renewalDeleteAllBtn">🗑 Bỏ theo dõi toàn bộ</button>` : ''}
+        </div>
       </div>
       <div class="panel-body flush"><div class="tbl-wrap"><table class="data" id="renewalTable"></table></div></div>
       <div class="panel-body" id="renewalMoreBox" style="display:none;text-align:center">
@@ -9694,6 +9696,25 @@ function renderInsRenewal(c){
   function drawRenewalTable(){
     const tbl = document.getElementById('renewalTable');
     const allFiltered = currentRenewalRows();
+    const exportBtn = document.getElementById('renewalExportBtn');
+    if(exportBtn) exportBtn.onclick = ()=>{
+      if(allFiltered.length===0){ toast('Không có hồ sơ nào để xuất theo bộ lọc hiện tại'); return; }
+      const exportRows = allFiltered.map(r=>{
+        const isBank = r.source==='bank';
+        const b = isBank ? bankById(r.t.bankId) : null;
+        return {
+          'Nguồn': isBank ? `🏦 ${b?b.name:'(đã xoá)'}` : 'BH độc lập',
+          'Khách hàng': r.t.customer||'', 'SĐT': r.t.phone||'', 'Đơn vị': r.t.unit||'', 'Biển số': r.t.vehicle||'',
+          'Lần cấp đơn BH gần nhất': r.lastIssued ? r.lastIssued.date : (r.pendingMatches.length ? `Đang xử lý (${r.pendingMatches[0].date})` : 'Chưa có'),
+          'Cách khớp': matchMethodLabel(r.matchMethod),
+          'Mốc đến hạn tiếp theo': r.nextDue.toISOString().slice(0,10),
+          'Số ngày': r.daysLeft<0 ? `Quá ${-r.daysLeft} ngày` : `Còn ${r.daysLeft} ngày`,
+          'Trạng thái': renewalStatusLabel(r.status),
+          'Lỡ tái tục (lần)': r.missedCycles||0,
+        };
+      });
+      exportToExcel('LichTaiTuc_'+todayISO()+'.xlsx', [{name:'Lịch tái tục', rows:exportRows}]);
+    };
     if(allRows.length===0){
       tbl.outerHTML = `<div class="empty"><div class="big">Chưa có hồ sơ nào cần theo dõi</div>Chưa có đơn bảo hiểm "Đã cấp đơn" nào trong hệ thống, hoặc tất cả đã bị đánh dấu "Không theo dõi tái tục".</div>`;
       const moreBox0 = document.getElementById('renewalMoreBox'); if(moreBox0) moreBox0.style.display='none';
