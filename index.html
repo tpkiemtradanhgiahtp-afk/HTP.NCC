@@ -166,9 +166,25 @@
   @keyframes renewalPulseSoon{ 0%,100%{ background:transparent; } 50%{ background:var(--gold-soft); } }
   tr.renewal-pulse-overdue{ animation: renewalPulseOverdue 1.6s ease-in-out infinite; }
   tr.renewal-pulse-soon{ animation: renewalPulseSoon 1.9s ease-in-out infinite; }
+  /* Tiêu đề bảng "Phân bổ đơn vị" (Bảo hiểm) — in đậm + to hơn hẳn mức mặc định dùng chung cho mọi bảng
+     khác trong app, vì đây là bảng theo dõi KPI quan trọng cần nổi bật ngay khi liếc mắt. */
+  #insRevenueTable thead th{ font-size:12px; font-weight:800; color:var(--ink); }
+  #insRevenueTable thead th .th-main{ font-weight:800; color:var(--ink); font-size:12.5px; }
+  #insRevenueTable thead th .th-sub{ font-weight:500; }
   @media (prefers-reduced-motion: reduce){
     tr.renewal-pulse-overdue{ animation:none; background:var(--rust-soft); }
     tr.renewal-pulse-soon{ animation:none; background:var(--gold-soft); }
+  }
+  /* Nhấp nháy cho dòng "hãng" đang bán lệch quá ngưỡng ở bảng Phân bổ đơn vị (Bảo hiểm) — riêng 2 class này
+     (khác renewal-pulse-*) vì cần khớp ĐÚNG màu badge trạng thái đã dùng sẵn trong bảng đó (đỏ=vượt kế
+     hoạch nên giảm bán, xanh lá=dưới kế hoạch nên tăng bán) — không dùng nhầm màu vàng của Lịch tái tục. */
+  @keyframes allocPulseOver{ 0%,100%{ background:transparent; } 50%{ background:var(--rust-soft); } }
+  @keyframes allocPulseUnder{ 0%,100%{ background:transparent; } 50%{ background:var(--forest-soft); } }
+  tr.alloc-pulse-over{ animation: allocPulseOver 1.6s ease-in-out infinite; }
+  tr.alloc-pulse-under{ animation: allocPulseUnder 1.9s ease-in-out infinite; }
+  @media (prefers-reduced-motion: reduce){
+    tr.alloc-pulse-over{ animation:none; background:var(--rust-soft); }
+    tr.alloc-pulse-under{ animation:none; background:var(--forest-soft); }
   }
   /* Spinner nhỏ dùng cho các trạng thái "đang xử lý" (upload, gửi email...) — cho người dùng thấy rõ hệ
      thống đang chạy chứ không phải bị đứng, nhất là khi mạng chậm và phải chờ lâu. */
@@ -8916,8 +8932,9 @@ function renderInsRevenueTable(editable){
     <tbody>${rows.map(r=>{
       const meta = INS_STATUS_META[r.status];
       const diffColor = (r.status==='over'||r.status==='under') ? 'var(--rust)' : (r.status==='ok' ? 'var(--forest)' : 'var(--slate)');
+      const isPulsing = r.status==='over' || r.status==='under'; // đang lệch quá ngưỡng cảnh báo -> nhấp nháy để dễ nhận ra ngay
       return `
-      <tr style="${meta.row}">
+      <tr class="${isPulsing?(r.status==='over'?'alloc-pulse-over':'alloc-pulse-under'):''}" style="${isPulsing?'':meta.row}">
         <td style="font-weight:700">${escHtml(r.groupLabel)}${r.groupMembers.length>1?` <span class="meta-line" style="font-weight:400" title="Gộp doanh số của: ${r.groupMembers.map(m=>escAttr(m.name)).join(', ')}">(gồm ${r.groupMembers.length} NCC)</span>`:''}</td>
         <td class="num" style="font-weight:700">
           ${rateEditable
