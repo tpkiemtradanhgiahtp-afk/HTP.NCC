@@ -7764,6 +7764,12 @@ function applyPrevMonthSuggestionToAllocation(month){
   return {prev, applied};
 }
 /* Tổng hợp DT bán ra (BR) + DT dịch vụ (DV) của TOÀN hệ thống trong 1 tháng, cộng dồn mọi hãng bảo hiểm */
+// br = Tổng doanh thu BÁN RA (phí bảo hiểm thu) — đây mới là "Tổng DT hệ thống" đúng nghĩa.
+// dv = Tổng doanh thu DỊCH VỤ/SỬA XE — khoản RIÊNG, tính khi hãng mang khách quay lại dùng dịch vụ sửa
+// chữa/bảo dưỡng (không phải doanh thu bán bảo hiểm) — CHỈ dùng để tính "Đề xuất tỷ lệ bán tháng sau"
+// (thưởng hãng nào mang nhiều khách vào dịch vụ), KHÔNG cộng vào Tổng DT hệ thống.
+// total giữ lại cho tương thích ngược (nơi khác có thể còn dùng để kiểm tra "có dữ liệu gì không"),
+// nhưng KHÔNG dùng total để hiển thị "Tổng DT hệ thống" — phải dùng đúng br.
 function insSystemTotalsForMonth(month){
   let br=0, dv=0;
   state.insurers.forEach(ins=>{ br += insBRForMonth(ins.id, month); dv += insDVForMonth(ins.id, month); });
@@ -8900,7 +8906,7 @@ function renderInsRevenueTable(editable){
     kpiWrap.innerHTML = `
       ${lockedBanner}
       <div class="stat-strip" style="margin-bottom:${breaches.length>0?'10px':'0'}">
-        <div class="stat-chip"><span class="stat-dot"></span><span class="stat-label">Tổng DT hệ thống ${monthLabel}:</span> <b>${sys.total>0?fmt(sys.total):'—'}</b><span class="stat-label">(BR ${fmt(sys.br)} · DV ${fmt(sys.dv)})</span></div>
+        <div class="stat-chip"><span class="stat-dot"></span><span class="stat-label">Tổng DT hệ thống ${monthLabel}:</span> <b>${sys.br>0?fmt(sys.br):'—'}</b><span class="stat-label" title="DV = doanh thu hãng mang khách vào dịch vụ/sửa xe — khoản riêng, KHÔNG cộng vào Tổng DT hệ thống (chỉ tính đúng doanh thu bán ra BR)">(DV dịch vụ/sửa xe: ${fmt(sys.dv)})</span></div>
         <div class="stat-chip ${breaches.length>0?'rust':'forest'}"><span class="stat-dot"></span><span class="stat-label">Vượt ngưỡng ${fmtPct(threshold)}:</span> <b>${breaches.length}/${rows.length} hãng</b></div>
       </div>
       ${breaches.length>0 ? `
@@ -8919,12 +8925,12 @@ function renderInsRevenueTable(editable){
     <thead>
     <tr>
       <th>Hãng</th>
-      ${thCompact('Phân bổ', 'tháng (%)', 'Tỷ lệ phân bổ tháng (%) — kế hoạch bán ra Admin/Quản lý giao cho hãng trong tháng, thường lấy từ Đề xuất tháng trước'+(monthLocked?' — ĐÃ CHỐT, chỉ Admin mở khoá mới sửa được':''), true)}
-      ${thCompact('BR', 'bán ra', 'DT bán ra (BR) — phí bảo hiểm thu, tự tính từ hợp đồng "Đã cấp đơn" trong tháng', true).replace('<th class="num"', '<th class="num" style="color:var(--gold-text)"')}
-      ${thCompactDim('DV', 'dịch vụ', 'DT dịch vụ/sửa chữa (DV) — nhập tay theo tháng', true)}
+      ${thCompact('Phân bổ', 'Tháng (%)', 'Tỷ lệ phân bổ tháng (%) — kế hoạch bán ra Admin/Quản lý giao cho hãng trong tháng, thường lấy từ Đề xuất tháng trước'+(monthLocked?' — ĐÃ CHỐT, chỉ Admin mở khoá mới sửa được':''), true)}
+      ${thCompact('BR', 'Bán ra', 'DT bán ra (BR) — phí bảo hiểm thu, tự tính từ hợp đồng "Đã cấp đơn" trong tháng', true).replace('<th class="num"', '<th class="num" style="color:var(--gold-text)"')}
+      ${thCompactDim('DV', 'Dịch vụ', 'DT dịch vụ/sửa chữa (DV) — nhập tay theo tháng', true)}
       ${thCompactDim('SC/BR', 'DV÷BR', 'Tỷ lệ DT dịch vụ/sửa chữa so với DT bán ra (DV÷BR)', true)}
-      ${thCompact('Thực tế', '% bán', 'Thực tế tỷ lệ bán — % đóng góp BR của hãng trong tổng BR toàn hệ thống tháng này', true)}
-      ${thCompactDim('Đề xuất', 'T sau', 'Đề xuất tỷ lệ bán tháng sau = DT dịch vụ hãng ÷ Tổng DT dịch vụ toàn hệ thống tháng này (các hãng cộng lại đúng 100%)', true)}
+      ${thCompact('Thực tế', '% Bán', 'Thực tế tỷ lệ bán — % đóng góp BR của hãng trong tổng BR toàn hệ thống tháng này', true)}
+      ${thCompactDim('Đề xuất', 'T Sau', 'Đề xuất tỷ lệ bán tháng sau = DT dịch vụ hãng ÷ Tổng DT dịch vụ toàn hệ thống tháng này (các hãng cộng lại đúng 100%)', true)}
       ${thCompact('Chênh lệch', '', 'Chênh lệch = Thực tế tỷ lệ bán − Tỷ lệ phân bổ tháng', true)}
       <th>Trạng thái</th>
     </tr>
