@@ -6785,7 +6785,6 @@ function renderBankTxTable(editable){
             ${editable
               ? `<input class="cell-edit mini-field" data-field="date" data-id="${t.id}" type="date" value="${t.date}" ${dis}>`
               : `<div class="mini-field">${new Date(t.date+'T00:00:00').toLocaleDateString('vi-VN')}</div>`}
-            ${t.disbursedDate && t.disbursedDate!==t.date ? `<div class="meta-line" title="Hoa hồng tính theo đúng ngày này (khác ngày ghi nhận hồ sơ ở trên), theo đúng chính sách CK áp dụng tại thời điểm giải ngân thực tế">📅 Giải ngân: ${new Date(t.disbursedDate+'T00:00:00').toLocaleDateString('vi-VN')}</div>` : ''}
             <div class="meta-line">${escHtml(t.unit)} → ${b?escHtml(b.name):'<em>(đã xoá)</em>'} ${lockIconHTML(lockR,'nh')}</div>
             <input class="cell-edit mini-field muted" data-field="product" data-id="${t.id}" value="${escAttr(t.product||DEFAULT_BANK_PRODUCT)}" ${dis} placeholder="Gói vay" list="btxRowProductList_${t.id}">
             <datalist id="btxRowProductList_${t.id}">${bankProductsFor(t.bankId).map(pr=>`<option value="${escAttr(pr)}">`).join('')}</datalist>
@@ -6802,9 +6801,18 @@ function renderBankTxTable(editable){
           </div>
         </td>
         <td class="num"><input class="cell-edit num money mini-field" data-field="loanAmount" data-id="${t.id}" type="text" inputmode="numeric" value="${formatMoneyValue(t.loanAmount)}" ${dis} style="text-align:right;font-weight:600;min-width:120px"></td>
-        <td>${(editable && !lockedForMe)
-          ? `<select class="cell-edit status-select ${statusClass(t.status)}" data-status-id="${t.id}">${BANK_TX_STATUSES.map(s=>`<option ${t.status===s?'selected':''}>${s}</option>`).join('')}</select>`
-          : `<span class="stamp ${t.status==='Đã giải ngân'?'ok':(t.status==='Từ chối'?'warn':'pending')}">${t.status}</span>`}</td>
+        <td>
+          <div class="stack-cell">
+            ${(editable && !lockedForMe)
+              ? `<select class="cell-edit status-select ${statusClass(t.status)}" data-status-id="${t.id}">${BANK_TX_STATUSES.map(s=>`<option ${t.status===s?'selected':''}>${s}</option>`).join('')}</select>`
+              : `<span class="stamp ${t.status==='Đã giải ngân'?'ok':(t.status==='Từ chối'?'warn':'pending')}">${t.status}</span>`}
+            ${t.status==='Đã giải ngân' ? (
+              t.disbursedDate
+                ? `<div class="meta-line" title="Hoa hồng tính theo đúng ngày này, theo đúng chính sách CK áp dụng tại thời điểm giải ngân thực tế (có thể khác Ngày ghi nhận hồ sơ)">📅 ${new Date(t.disbursedDate+'T00:00:00').toLocaleDateString('vi-VN')}${editable?` <a href="#" data-edit-disburse="${t.id}" style="color:var(--gold-text)">✎</a>`:''}</div>`
+                : (editable ? `<div class="meta-line"><a href="#" data-edit-disburse="${t.id}" style="color:var(--gold-text)">+ Ngày giải ngân thực tế</a></div>` : '')
+            ) : ''}
+          </div>
+        </td>
         <td class="num">${commCell}</td>
         <td class="meta-line">${creator?escHtml(creator.name):'<em>—</em>'}</td>
         <td>${invoiceCellHTML(t, editable && !lockedForMe)}</td>
@@ -6845,6 +6853,37 @@ function renderBankTxTable(editable){
     tbl.querySelectorAll('[data-field="date"]').forEach(el=>{
       el.addEventListener('change', ()=>{ renderBankTxTable(editable); }); // đổi ngày có thể đổi chính sách áp dụng -> cần vẽ lại Hoa hồng
     });
+    // Hỏi/sửa NGÀY GIẢI NGÂN THỰC TẾ cho 1 hồ sơ vay — dùng chung cho cả 2 tình huống: (1) vừa chuyển trạng
+    // thái sang "Đã giải ngân", (2) hồ sơ đã "Đã giải ngân" từ trước khi có tính năng này (chưa có ngày giải
+    // ngân riêng) hoặc cần sửa lại ngày đã ghi nhầm — bấm nút "✎"/"+ Ghi ngày giải ngân thực tế" ở cột Ngày.
+    function openDisburseDateModal(t, onSaved){
+      openModal('Ngày giải ngân thực tế', 'Dùng đúng ngày này để tính hoa hồng theo chính sách CK đang áp dụng tại đúng thời điểm đó — không phải ngày ghi nhận hồ sơ ban đầu.',
+        `<div class="field"><label>Ngày giải ngân</label><input type="date" id="disburseDateInput" value="${t.disbursedDate||todayISO()}"></div>
+         <button class="btn btn-primary" id="confirmDisburseBtn" style="margin-top:14px">Xác nhận</button>`,
+        (body)=>{
+          body.querySelector('#confirmDisburseBtn').addEventListener('click', ()=>{
+            const d = body.querySelector('#disburseDateInput').value || todayISO();
+            closeModal();
+            onSaved(d);
+          });
+        });
+    }
+    tbl.querySelectorAll('[data-edit-disburse]').forEach(link=>{
+      link.addEventListener('click', e=>{
+        e.preventDefault();
+        const t = state.bankTransactions.find(x=>x.id===link.dataset.editDisburse);
+        if(!t) return;
+        openDisburseDateModal(t, (d)=>{
+          const before = t.disbursedDate;
+          t.disbursedDate = d;
+          const b = bankById(t.bankId);
+          logActivity('update','Doanh số (NH)', `${t.unit} → ${b?b.name:''}: ${before?'sửa lại':'bổ sung'} ngày giải ngân thực tế thành ${d}`);
+          saveState();
+          toast('Đã lưu ngày giải ngân thực tế');
+          renderBankTxTable(editable);
+        });
+      });
+    });
     tbl.querySelectorAll('[data-status-id]').forEach(sel=>{
       sel.addEventListener('change', e=>{
         const t = state.bankTransactions.find(x=>x.id===sel.dataset.statusId);
@@ -6864,16 +6903,7 @@ function renderBankTxTable(editable){
           // lúc NH thực sự giải ngân) — dùng đúng ngày này để chọn chính sách CK/tính hoa hồng, thay vì lấy
           // nhầm "Ngày" ban đầu (có thể là ngày duyệt hồ sơ, khác tháng với lúc thực sự giải ngân).
           sel.value = before; // trả dropdown về trạng thái cũ trong lúc chờ xác nhận — applyChange() sẽ tự vẽ lại đúng khi bấm Xác nhận
-          openModal('Ngày giải ngân thực tế', 'Dùng đúng ngày này để tính hoa hồng theo chính sách CK đang áp dụng tại đúng thời điểm đó — không phải ngày ghi nhận hồ sơ ban đầu.',
-            `<div class="field"><label>Ngày giải ngân</label><input type="date" id="disburseDateInput" value="${todayISO()}"></div>
-             <button class="btn btn-primary" id="confirmDisburseBtn" style="margin-top:14px">Xác nhận</button>`,
-            (body)=>{
-              body.querySelector('#confirmDisburseBtn').addEventListener('click', ()=>{
-                const d = body.querySelector('#disburseDateInput').value || todayISO();
-                closeModal();
-                applyChange(d);
-              });
-            });
+          openDisburseDateModal(t, (d)=>{ applyChange(d); });
         } else {
           applyChange(null);
         }
@@ -7681,6 +7711,7 @@ function insCommissionRatePeriods(insurerId, product, issueType){
 // tôn trọng mốc thời gian của bên cấp mới.
 function insTxCommission(t){
   if(t.status!=='Đã cấp đơn') return 0;
+  if(t.directInvoice) return 0; // hoá đơn xuất thẳng về công ty — NCC không trả hoa hồng riêng cho trường hợp này
   const ins = insurerById(t.insurerId);
   if(!ins) return 0;
   const isRenewal = t.issueType==='Tái tục';
@@ -8345,6 +8376,12 @@ function renderInsTransactions(c){
             <option value="Tái tục" ${renewalPrefillContext?'selected':''}>Tái tục</option>
           </select></div>
           <div class="field"><label>Khách hàng</label><input id="itf_customer" placeholder="Tên khách hàng" value="${escAttr(renewalPrefillContext?renewalPrefillContext.customer:'')}"></div>
+          <div class="field" id="itf_directinvoice_wrap" style="grid-column:span 2">
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-weight:400">
+              <input type="checkbox" id="itf_directinvoice" style="width:auto;margin:0"> Hoá đơn xuất thẳng về công ty (hoa hồng = 0đ)
+            </label>
+            <input id="itf_directinvoice_note" placeholder="Ghi chú (VD: số hoá đơn, lý do cụ thể...)" style="margin-top:6px;display:none">
+          </div>
           <div class="field"><label>SĐT khách hàng</label><input id="itf_phone" type="tel" placeholder="09xxxxxxxx" value="${escAttr(renewalPrefillContext?renewalPrefillContext.phone:'')}"></div>
           <div class="field"><label>Xe (biển số / mẫu xe)</label><input id="itf_vehicle" placeholder="VD: 29A-123.45 · Honda SH" value="${escAttr(renewalPrefillContext?renewalPrefillContext.vehicle:'')}"></div>
           <div class="field"><label>Số đơn bảo hiểm</label><input id="itf_policyno" placeholder="Số hợp đồng / giấy CN bảo hiểm"></div>
@@ -8398,6 +8435,9 @@ function renderInsTransactions(c){
     const syncPassengerVisibility = ()=>{ itfPassengerWrap.style.display = itfProductSel.value==='BHDS' ? '' : 'none'; };
     syncPassengerVisibility();
     itfProductSel.addEventListener('change', syncPassengerVisibility);
+    const itfDirectInvoiceChk = document.getElementById('itf_directinvoice');
+    const itfDirectInvoiceNote = document.getElementById('itf_directinvoice_note');
+    itfDirectInvoiceChk.addEventListener('change', ()=>{ itfDirectInvoiceNote.style.display = itfDirectInvoiceChk.checked ? '' : 'none'; });
     wireInvoiceUploadField('itf', ()=> 'Doanh số BH · '+(document.getElementById('itf_ins').value||'').trim());
     const cancelPrefillBtn = document.getElementById('itfCancelPrefillBtn');
     if(cancelPrefillBtn) cancelPrefillBtn.addEventListener('click', ()=>{ renewalPrefillContext = null; renderAll(); });
@@ -8418,6 +8458,7 @@ function renderInsTransactions(c){
         if(lockR){ toast(`Ngày này thuộc kỳ đối soát "${lockR.period}" đã chốt với ${ins.name} — chỉ Admin được ghi nhận thêm`); return; }
       }
       const linkToInsTxId = renewalPrefillContext ? renewalPrefillContext.linkToInsTxId : '';
+      const directInvoice = document.getElementById('itf_directinvoice').checked;
       const candidate = {
         id: uid('it'), date: itxDate,
         unit, insurerId: ins.id, product,
@@ -8427,6 +8468,7 @@ function renderInsTransactions(c){
         vehicle: formatVehicleField(document.getElementById('itf_vehicle').value),
         policyNo: document.getElementById('itf_policyno').value.trim(),
         premiumAmount: amount, passengerAmount, status, note: document.getElementById('itf_note').value.trim(),
+        directInvoice, directInvoiceNote: directInvoice ? document.getElementById('itf_directinvoice_note').value.trim() : '',
         invoiceLink: document.getElementById('itf_invoice').value.trim(),
         createdBy: currentUserId, createdAt: new Date().toISOString(),
         ...(linkToInsTxId ? {renewalGroupLink: linkToInsTxId} : {}),
@@ -8436,6 +8478,7 @@ function renderInsTransactions(c){
         document.getElementById('itf_amount').value=''; document.getElementById('itf_passenger').value=''; document.getElementById('itf_customer').value='';
         document.getElementById('itf_phone').value=''; document.getElementById('itf_vehicle').value='';
         document.getElementById('itf_policyno').value=''; document.getElementById('itf_note').value='';
+        document.getElementById('itf_directinvoice').checked = false; document.getElementById('itf_directinvoice_note').value=''; document.getElementById('itf_directinvoice_note').style.display='none';
         resetInvoiceUploadField('itf');
         logActivity('create','Doanh số (Bảo hiểm)', `${unit} → ${ins.name}: ${fmt(amount)}đ${passengerAmount>0?` + ${fmt(passengerAmount)}đ (người ngồi trên xe)`:''} (${status})${linkToInsTxId?' — liên kết tái tục từ Lịch tái tục':''}`);
         toast('Đã ghi nhận hợp đồng bảo hiểm');
@@ -8467,6 +8510,7 @@ function renderInsTransactions(c){
         'Ngày': t.date, 'Đơn vị': t.unit, 'NCC bảo hiểm': ins?ins.name:'(đã xoá)', 'Sản phẩm': t.product||'', 'Loại hợp đồng': t.issueType==='Tái tục'?'Tái tục':'Cấp mới',
         'Số đơn': t.policyNo||'', 'Khách hàng': t.customer||'', 'SĐT': t.phone||'', 'Biển số/xe': t.vehicle||'',
         'Phí bảo hiểm thu': Number(t.premiumAmount)||0, 'Phí người ngồi trên xe': Number(t.passengerAmount)||0, 'Trạng thái': t.status||'',
+        'HĐ xuất thẳng về công ty': t.directInvoice?'Có':'Không', 'Ghi chú HĐ→CT': t.directInvoiceNote||'',
       };
     });
     exportToExcel('DoanhSo_BaoHiem_'+todayISO()+'.xlsx', [{name:'Doanh số Bảo hiểm', rows}]);
@@ -8511,6 +8555,8 @@ function renderInsTransactions(c){
           const lockR = lockingReconOf({insurerId:ins.id, date}, state.insReconciliations, 'insurerId');
           if(lockR){ errors.push(`${line}: ngày ${date} thuộc kỳ đối soát "${lockR.period}" đã chốt với ${ins.name} — chỉ Admin nhập được`); return; }
         }
+        const directInvoiceRaw = String(row['HĐ xuất thẳng về công ty']||'').trim().toLowerCase();
+        const directInvoice = directInvoiceRaw==='có'||directInvoiceRaw==='co'||directInvoiceRaw==='yes'||directInvoiceRaw==='true';
         const rec = {
           id: uid('it'), date, unit, insurerId: ins.id, product, issueType,
           customer: String(row['Khách hàng']||'').trim(),
@@ -8518,6 +8564,7 @@ function renderInsTransactions(c){
           vehicle: formatVehicleField(row['Biển số/xe']),
           policyNo: String(row['Số đơn']||'').trim(),
           premiumAmount: amount, passengerAmount, status, note: '',
+          directInvoice, directInvoiceNote: directInvoice ? String(row['Ghi chú HĐ→CT']||'').trim() : '',
           invoiceLink: '', createdBy: currentUserId, createdAt: new Date().toISOString(),
         };
         // Cảnh báo (không chặn) nếu trùng khách hàng (biển số/SĐT/tên) + ngày gần nhau — kiểm tra với CẢ dữ
@@ -8664,7 +8711,12 @@ function renderInsTxTable(editable){
       const comm = insTxCommission(t);
       const commCell = t.status!=='Đã cấp đơn'
         ? '<span class="comm-cell zero">—</span>'
-        : `<span class="comm-cell has-value">${fmt(comm)}</span>`;
+        : t.directInvoice
+          ? `<span class="stamp pending" title="${escAttr('Hoá đơn xuất thẳng về công ty — không tính hoa hồng riêng.'+(t.directInvoiceNote?' Ghi chú: '+t.directInvoiceNote:''))}">🧾 HĐ→CT</span>`
+          : `<span class="comm-cell has-value">${fmt(comm)}</span>`;
+      const directInvoiceToggleHTML = editable
+        ? `<div class="meta-line" style="margin-top:2px"><a href="#" data-toggle-directinvoice="${t.id}" style="color:var(--gold-text)">${t.directInvoice?'Bỏ đánh dấu HĐ→CT':'🧾 HĐ→CT?'}</a></div>`
+        : '';
       const lockR = lockingReconOf(t, state.insReconciliations, 'insurerId');
       const lockedForMe = !!lockR && currentRole()!=='Admin';
       const dis = (editable && !lockedForMe)?'':'disabled';
@@ -8693,6 +8745,7 @@ function renderInsTxTable(editable){
             <input class="cell-edit mini-field" data-field="customer" data-id="${t.id}" value="${escAttr(t.customer||'')}" ${dis} placeholder="Tên khách hàng" style="font-weight:600">
             <input class="cell-edit mini-field muted" data-field="phone" data-id="${t.id}" type="tel" value="${escAttr(t.phone||'')}" ${dis} placeholder="SĐT">
             <input class="cell-edit mini-field muted italic" data-field="vehicle" data-id="${t.id}" value="${escAttr(t.vehicle||'')}" ${dis} placeholder="Biển số / xe">
+            ${directInvoiceToggleHTML}
           </div>
         </td>
         <td class="num">
@@ -8741,6 +8794,36 @@ function renderInsTxTable(editable){
     wireInvoiceAttachColumn(tbl, state.insTransactions, 'Doanh số (Bảo hiểm)', t=>{ const ins=insurerById(t.insurerId); return 'Doanh số BH · '+(ins?ins.name:''); });
     tbl.querySelectorAll('[data-field="date"]').forEach(el=>{
       el.addEventListener('change', ()=>{ renderInsTxTable(editable); });
+    });
+    tbl.querySelectorAll('[data-toggle-directinvoice]').forEach(link=>{
+      link.addEventListener('click', e=>{
+        e.preventDefault();
+        const t = state.insTransactions.find(x=>x.id===link.dataset.toggleDirectinvoice);
+        if(!t) return;
+        if(t.directInvoice){
+          confirmModal('Bỏ đánh dấu "Hoá đơn xuất thẳng về công ty" — hợp đồng này sẽ tính lại hoa hồng bình thường theo đúng tỷ lệ NCC. Tiếp tục?', ()=>{
+            t.directInvoice = false; t.directInvoiceNote = '';
+            logActivity('update','Doanh số (Bảo hiểm)', `${t.unit} → ${t.customer||''}: bỏ đánh dấu "Hoá đơn xuất thẳng về công ty"`);
+            saveState();
+            renderInsTxTable(editable);
+          });
+        } else {
+          openModal('Hoá đơn xuất thẳng về công ty', 'Đánh dấu hợp đồng này KHÔNG tính hoa hồng riêng (NCC xuất hoá đơn thẳng về công ty thay vì trả hoa hồng theo tỷ lệ %).',
+            `<div class="field"><label>Ghi chú (VD: số hoá đơn, lý do cụ thể...)</label><input id="directInvoiceNoteInput" placeholder="Không bắt buộc"></div>
+             <button class="btn btn-primary" id="confirmDirectInvoiceBtn" style="margin-top:14px">Xác nhận đánh dấu</button>`,
+            (body)=>{
+              body.querySelector('#confirmDirectInvoiceBtn').addEventListener('click', ()=>{
+                const noteVal = body.querySelector('#directInvoiceNoteInput').value.trim();
+                closeModal();
+                t.directInvoice = true; t.directInvoiceNote = noteVal;
+                logActivity('update','Doanh số (Bảo hiểm)', `${t.unit} → ${t.customer||''}: đánh dấu "Hoá đơn xuất thẳng về công ty"${noteVal?' — '+noteVal:''}`);
+                saveState();
+                toast('Đã đánh dấu — hợp đồng này không còn tính hoa hồng riêng');
+                renderInsTxTable(editable);
+              });
+            });
+        }
+      });
     });
     tbl.querySelectorAll('[data-status-id]').forEach(sel=>{
       sel.addEventListener('change', e=>{
