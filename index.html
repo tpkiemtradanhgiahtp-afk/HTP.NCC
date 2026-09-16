@@ -4153,8 +4153,9 @@ function lastNMonthKeys(n){
 }
 function dashMonthlySums(list, dateField, valueFn, monthKeys){
   const map = {}; monthKeys.forEach(mk=>map[mk]=0);
+  const getDate = typeof dateField==='function' ? dateField : (item)=>item[dateField];
   list.forEach(item=>{
-    const mk = String(item[dateField]||'').slice(0,7);
+    const mk = String(getDate(item)||'').slice(0,7);
     if(mk in map) map[mk] += valueFn(item);
   });
   return monthKeys.map(mk=>Math.max(0, map[mk]));
@@ -4263,8 +4264,8 @@ function renderDashboard(c){
     let nhRevenue=0, nhComm=0, nhMissingPolicy=0;
     state.banks.forEach(b=>{ nhRevenue += bankLoanSum(b.id, pfFrom, pfTo); nhComm += bankCommissionSum(b.id, pfFrom, pfTo); });
     state.bankTransactions.forEach(t=>{
-      if(t.status!=='Đã giải ngân' || !periodFilterMatches(t.date)) return;
-      if(!activeBankPolicy(t.bankId, t.date, t.product)) nhMissingPolicy++;
+      if(t.status!=='Đã giải ngân' || !periodFilterMatches(bankTxEffectiveDate(t))) return;
+      if(!activeBankPolicy(t.bankId, bankTxEffectiveDate(t), t.product)) nhMissingPolicy++;
     });
     const nhReconList = state.bankReconciliations.filter(r=>periodFilterMatchesRange(r.fromDate, r.toDate));
     const nhReconTotals = nhReconList.reduce((acc,r)=>{
@@ -4276,7 +4277,7 @@ function renderDashboard(c){
       const owed = nhReconList.filter(r=>r.bankId===b.id).reduce((s,r)=>s+bankReconCalc(r).stillOwed, 0);
       return {b, owed};
     }).filter(x=>x.owed>0).sort((a,b)=>b.owed-a.owed).slice(0,10);
-    const nhTrend = dashMonthlySums(state.bankTransactions, 'date', t=> t.status==='Đã giải ngân' ? (Number(t.loanAmount)||0) : 0, dashMonthKeys);
+    const nhTrend = dashMonthlySums(state.bankTransactions, bankTxEffectiveDate, t=> t.status==='Đã giải ngân' ? (Number(t.loanAmount)||0) : 0, dashMonthKeys);
     blocks += `
       <div class="section-head-row">
         <div class="section-divider">Ngân hàng</div>
@@ -5605,7 +5606,8 @@ function isDateInRange(dateStr, fromStr, toStr){
 // Tìm kỳ đối soát ĐÃ CHỐT đang khoá 1 hồ sơ cụ thể (nếu có).
 function lockingReconOf(t, reconList, idField){
   if(!Array.isArray(reconList) || !t) return null;
-  return reconList.find(r=> r.locked && r[idField]===t[idField] && isDateInRange(t.date, r.fromDate, r.toDate)) || null;
+  const effDate = t.disbursedDate || t.date; // chỉ hồ sơ vay NH mới có disbursedDate — NCC/Bảo hiểm không ảnh hưởng gì, vẫn dùng t.date như cũ
+  return reconList.find(r=> r.locked && r[idField]===t[idField] && isDateInRange(effDate, r.fromDate, r.toDate)) || null;
 }
 // Hồ sơ có đang bị khoá sửa/xoá với vai trò hiện tại không (Admin luôn được sửa hồ sơ đã khoá).
 function isRecordLockedForMe(t, reconList, idField){
@@ -6026,9 +6028,15 @@ function activeBankPolicy(bankId, dateStr, product){
     .sort((a,b)=> bankPolicyEffectiveDate(b).localeCompare(bankPolicyEffectiveDate(a)));
   return rows[0] || null;
 }
+// Ngày dùng để tính hoa hồng/doanh số của 1 hồ sơ vay — ưu tiên ĐÚNG ngày chuyển trạng thái sang "Đã giải
+// ngân" (t.disbursedDate, tự ghi nhận khi đổi trạng thái — xem wiring [data-status-id] bên dưới), vì thực tế
+// có trường hợp duyệt tháng này nhưng sang tháng sau mới thực sự giải ngân — nếu cứ dùng "Ngày" (ngày ghi
+// nhận hồ sơ ban đầu) sẽ tính SAI chính sách/tháng hoa hồng. Hồ sơ cũ chưa có disbursedDate (tạo trước khi
+// có tính năng này) vẫn dùng tạm t.date như trước giờ, không cần migrate dữ liệu.
+function bankTxEffectiveDate(t){ return t.disbursedDate || t.date; }
 function bankTxCommission(t){
   if(t.status!=='Đã giải ngân') return 0;
-  const pol = activeBankPolicy(t.bankId, t.date, t.product);
+  const pol = activeBankPolicy(t.bankId, bankTxEffectiveDate(t), t.product);
   if(!pol) return 0;
   return (Number(t.loanAmount)||0) * (Number(pol.commissionRate)||0);
 }
@@ -6037,7 +6045,7 @@ function bankLoanSum(bankId, from, to, unit){
   for(const t of state.bankTransactions){
     if(t.bankId!==bankId || t.status!=='Đã giải ngân') continue;
     if(unit && t.unit!==unit) continue;
-    const d = toDate(t.date);
+    const d = toDate(bankTxEffectiveDate(t));
     if(from && d<from) continue;
     if(to && d>to) continue;
     total += Number(t.loanAmount)||0;
@@ -6052,7 +6060,7 @@ function bankTxMatchCount(bankId, from, to, unit){
   for(const t of state.bankTransactions){
     if(t.bankId!==bankId || t.status!=='Đã giải ngân') continue;
     if(unit && t.unit!==unit) continue;
-    const d = toDate(t.date);
+    const d = toDate(bankTxEffectiveDate(t));
     if(from && d<from) continue;
     if(to && d>to) continue;
     n++;
@@ -6064,7 +6072,7 @@ function bankCommissionSum(bankId, from, to, unit){
   for(const t of state.bankTransactions){
     if(t.bankId!==bankId || t.status!=='Đã giải ngân') continue;
     if(unit && t.unit!==unit) continue;
-    const d = toDate(t.date);
+    const d = toDate(bankTxEffectiveDate(t));
     if(from && d<from) continue;
     if(to && d>to) continue;
     total += bankTxCommission(t);
@@ -6576,7 +6584,7 @@ function renderBankTransactions(c){
     const rows = list.map(t=>{
       const b = bankById(t.bankId);
       return {
-        'Ngày': t.date, 'Đơn vị': t.unit, 'Ngân hàng': b?b.name:'(đã xoá)', 'Gói vay': t.product||DEFAULT_BANK_PRODUCT, 'Mã hồ sơ NH': t.refCode||'',
+        'Ngày': t.date, 'Ngày giải ngân thực tế': t.disbursedDate||'', 'Đơn vị': t.unit, 'Ngân hàng': b?b.name:'(đã xoá)', 'Gói vay': t.product||DEFAULT_BANK_PRODUCT, 'Mã hồ sơ NH': t.refCode||'',
         'Khách hàng': t.customer||'', 'SĐT': t.phone||'', 'Biển số/xe': t.vehicle||'',
         'Số tiền vay': Number(t.loanAmount)||0, 'Trạng thái': t.status||'',
       };
@@ -6761,7 +6769,7 @@ function renderBankTxTable(editable){
     <tbody>${rows.map(t=>{
       const b = bankById(t.bankId);
       const creator = state.accounts.find(a=>a.id===t.createdBy);
-      const pol = t.status==='Đã giải ngân' ? activeBankPolicy(t.bankId, t.date, t.product) : null;
+      const pol = t.status==='Đã giải ngân' ? activeBankPolicy(t.bankId, bankTxEffectiveDate(t), t.product) : null;
       const comm = bankTxCommission(t);
       const commCell = t.status!=='Đã giải ngân'
         ? '<span class="comm-cell zero">—</span>'
@@ -6777,6 +6785,7 @@ function renderBankTxTable(editable){
             ${editable
               ? `<input class="cell-edit mini-field" data-field="date" data-id="${t.id}" type="date" value="${t.date}" ${dis}>`
               : `<div class="mini-field">${new Date(t.date+'T00:00:00').toLocaleDateString('vi-VN')}</div>`}
+            ${t.disbursedDate && t.disbursedDate!==t.date ? `<div class="meta-line" title="Hoa hồng tính theo đúng ngày này (khác ngày ghi nhận hồ sơ ở trên), theo đúng chính sách CK áp dụng tại thời điểm giải ngân thực tế">📅 Giải ngân: ${new Date(t.disbursedDate+'T00:00:00').toLocaleDateString('vi-VN')}</div>` : ''}
             <div class="meta-line">${escHtml(t.unit)} → ${b?escHtml(b.name):'<em>(đã xoá)</em>'} ${lockIconHTML(lockR,'nh')}</div>
             <input class="cell-edit mini-field muted" data-field="product" data-id="${t.id}" value="${escAttr(t.product||DEFAULT_BANK_PRODUCT)}" ${dis} placeholder="Gói vay" list="btxRowProductList_${t.id}">
             <datalist id="btxRowProductList_${t.id}">${bankProductsFor(t.bankId).map(pr=>`<option value="${escAttr(pr)}">`).join('')}</datalist>
@@ -6841,11 +6850,33 @@ function renderBankTxTable(editable){
         const t = state.bankTransactions.find(x=>x.id===sel.dataset.statusId);
         if(!t) return;
         const before = t.status;
-        t.status = e.target.value;
-        const b = bankById(t.bankId);
-        logActivity('update','Doanh số (NH)', `${t.unit} → ${b?b.name:''}: đổi trạng thái "${before}" → "${t.status}"`);
-        saveState();
-        renderBankTxTable(editable);
+        const newStatus = e.target.value;
+        const applyChange = (disbursedDate)=>{
+          t.status = newStatus;
+          if(disbursedDate) t.disbursedDate = disbursedDate;
+          const b = bankById(t.bankId);
+          logActivity('update','Doanh số (NH)', `${t.unit} → ${b?b.name:''}: đổi trạng thái "${before}" → "${t.status}"${disbursedDate?`, ngày giải ngân thực tế ${disbursedDate}`:''}`);
+          saveState();
+          renderBankTxTable(editable);
+        };
+        if(newStatus==='Đã giải ngân' && before!=='Đã giải ngân'){
+          // Hỏi đúng NGÀY GIẢI NGÂN THỰC TẾ (mặc định hôm nay, sửa được nếu ghi nhận muộn vài ngày so với
+          // lúc NH thực sự giải ngân) — dùng đúng ngày này để chọn chính sách CK/tính hoa hồng, thay vì lấy
+          // nhầm "Ngày" ban đầu (có thể là ngày duyệt hồ sơ, khác tháng với lúc thực sự giải ngân).
+          sel.value = before; // trả dropdown về trạng thái cũ trong lúc chờ xác nhận — applyChange() sẽ tự vẽ lại đúng khi bấm Xác nhận
+          openModal('Ngày giải ngân thực tế', 'Dùng đúng ngày này để tính hoa hồng theo chính sách CK đang áp dụng tại đúng thời điểm đó — không phải ngày ghi nhận hồ sơ ban đầu.',
+            `<div class="field"><label>Ngày giải ngân</label><input type="date" id="disburseDateInput" value="${todayISO()}"></div>
+             <button class="btn btn-primary" id="confirmDisburseBtn" style="margin-top:14px">Xác nhận</button>`,
+            (body)=>{
+              body.querySelector('#confirmDisburseBtn').addEventListener('click', ()=>{
+                const d = body.querySelector('#disburseDateInput').value || todayISO();
+                closeModal();
+                applyChange(d);
+              });
+            });
+        } else {
+          applyChange(null);
+        }
       });
     });
   }
@@ -7991,7 +8022,7 @@ function addYearsToDate(dateStr, n){
 function renewalRowFor(t){
   if(t.status!=='Đã giải ngân') return null;
   if(t.renewalExempt) return null; // Admin đã bỏ theo dõi tái tục cho hồ sơ này (qua checkbox ở Lịch tái tục)
-  const policy = activeBankPolicy(t.bankId, t.date, t.product);
+  const policy = activeBankPolicy(t.bankId, bankTxEffectiveDate(t), t.product);
   if(!policy || !policy.annualRenewalRequired) return null;
   const {matches, method} = computeRenewalMatches(t);
   const sorted = matches.slice().sort((a,b)=> b.date.localeCompare(a.date));
@@ -8027,7 +8058,7 @@ function standaloneRenewalRows(){
   const bankTrackedKeys = new Set();
   state.bankTransactions.forEach(t=>{
     if(t.status!=='Đã giải ngân') return;
-    const policy = activeBankPolicy(t.bankId, t.date, t.product);
+    const policy = activeBankPolicy(t.bankId, bankTxEffectiveDate(t), t.product);
     if(policy && policy.annualRenewalRequired){
       const key = renewalGroupKeyFor(t);
       if(key) bankTrackedKeys.add(key);
