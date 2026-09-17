@@ -1302,74 +1302,73 @@ async function subscribeBranch(branch){
   }, err=>{ console.error('Lỗi lắng nghe meta nhánh "'+branch+'"', err); fb.status='error'; fb.error = err.message||String(err); });
   fb.unsubs[branch].push(()=>metaRef.off('value', metaListener));
 
-  await Promise.all((BRANCH_RECORD_FIELDS[branch]||[]).map(async field=>{
-    if(!Array.isArray(state[field])) state[field] = [];
+  await Promise.all((BRANCH_RECORD_FIELDS[branch]||[]).map(field=>{
+    // Trước đây tải 2 LẦN liên tiếp cho mỗi field: 1 lần bằng once('value') lấy toàn bộ, xong lại gắn thêm
+    // child_added — mà bản chất child_added TỰ ĐỘNG phát lại toàn bộ bản ghi hiện có ngay khi vừa gắn (đúng
+    // cách Firebase Realtime Database hoạt động), nên bước once('value') phía trước là THỪA, tốn gấp đôi
+    // dung lượng tải mỗi lần đăng nhập một cách không cần thiết. Bỏ hẳn once('value') — chỉ cần xoá sạch dữ
+    // liệu mẫu cũ (state[field]=[]) rồi để đúng child_added lo việc nạp lại đầy đủ từ Firebase.
+    state[field] = [];
     const fieldRef = fb.db.ref(branchPath+'/'+field);
     const fkey = recordFieldKey(branch, field);
     const known = lastSavedRecords[fkey] || (lastSavedRecords[fkey] = new Map());
+    known.clear(); // đảm bảo sạch — tránh lẫn cache từ lần subscribe nhánh trước đó (nếu có)
 
-    // Lấy 1 lần snapshot đầy đủ hiện có -> THAY THẾ HẲN dữ liệu mẫu mặc định (seedState()) đang có sẵn
-    // trong bộ nhớ bằng đúng dữ liệu thật trên Firebase. Bắt buộc phải làm bước này: nếu chỉ dựa vào
-    // child_added, những bản ghi MẪU không hề tồn tại thật trên Firebase (VD tên NCC trùng tên mẫu do
-    // người dùng tự nhập) sẽ không bao giờ được dọn đi, nằm mãi song song với dữ liệu thật, gây hiện trùng
-    // lặp. Việc này chỉ tốn thêm 1 lượt tải "đầy đủ" duy nhất mỗi lần đăng nhập/mở nhánh (đúng như đã nói
-    // trước — lần tải đầu vẫn cần tải đủ dữ liệu), không ảnh hưởng gì tới lợi ích tiết kiệm băng thông
-    // trong lúc đang dùng (các thay đổi SAU đó vẫn chỉ nhận đúng bản ghi thay đổi qua child_added/changed).
-    // Chạy song song cho mọi field (Promise.all) thay vì tuần tự, tránh làm chậm lần tải đầu.
-    try{
-      const snap = await fieldRef.once('value');
-      const obj = snap.exists() ? snap.val() : {};
-      const list = [];
-      Object.keys(obj).forEach(id=>{ known.set(id, JSON.stringify(obj[id])); list.push(obj[id]); });
-      state[field] = list;
-      badgeCacheDirty = true; // vừa tải thêm 1 nhánh dữ liệu mới giữa phiên làm việc -> cần tính lại badge
-    }catch(e){ console.error('Lỗi tải nhánh bản ghi "'+fkey+'"', e); }
+    // Không có tín hiệu "đã phát lại xong toàn bộ bản ghi cũ" trực tiếp từ child_added — dùng cách phổ biến:
+    // coi là XONG khi đã im lặng (không có thêm child_added nào) trong 1 khoảng ngắn. Trong lúc đang nạp đợt
+    // đầu (có thể hàng nghìn bản ghi), CHỈ gộp dữ liệu vào state, KHÔNG gọi renderAll() cho từng bản ghi một
+    // (tránh vẽ lại hàng nghìn lần liên tiếp gây chậm) — chỉ vẽ lại đúng 1 lần khi đã nạp xong hẳn.
+    return new Promise(resolveField=>{
+      let settled = false;
+      let settleTimer = null;
+      const scheduleSettle = ()=>{
+        clearTimeout(settleTimer);
+        settleTimer = setTimeout(()=>{ settled = true; badgeCacheDirty = true; renderAll(); resolveField(); }, 400);
+      };
+      scheduleSettle(); // trường hợp field này rỗng hoàn toàn (chưa có bản ghi nào) — vẫn cần "chốt xong" sau 400ms yên lặng
 
-    const onAdded = fieldRef.on('child_added', snap=>{
-      const id = snap.key;
-      if(recentlyDeletedIds.has(id)) return; // mình vừa chủ động xoá bản ghi này trong phiên này -> không hồi sinh nhầm
-      const data = snap.val();
-      const json = JSON.stringify(data);
-      if(known.get(id)===json) return; // đã biết đúng bản ghi này rồi (echo của chính mình, hoặc trùng)
-      known.set(id, json);
-      // GHI ĐÈ nếu id đã có sẵn (VD trùng với dữ liệu mẫu seedState() dùng id cố định như 'u_admin'), chứ
-      // KHÔNG bỏ qua — nếu chỉ kiểm tra "đã có chưa" rồi bỏ qua, dữ liệu THẬT từ Firebase sẽ không bao giờ
-      // thay được dữ liệu MẪU đang có sẵn (VD tài khoản Admin đổi tên đăng nhập thật sẽ không áp dụng được,
-      // hoặc NCC trùng tên với dữ liệu mẫu bị hiện lặp) — phải cùng logic "thay thế nếu có, thêm nếu chưa"
-      // giống hệt child_changed bên dưới.
-      const idx = state[field].findIndex(x=>recordKeyOf(x)===id);
-      if(idx!==-1) state[field][idx] = data; else state[field].push(data);
-      badgeCacheDirty = true; // dữ liệu vừa đổi do đồng bộ real-time từ nơi khác, không đi qua saveState() của chính máy này
-      renderAll();
-    }, err=>{ console.error('Lỗi lắng nghe (added) '+fkey, err); });
+      const onAdded = fieldRef.on('child_added', snap=>{
+        const id = snap.key;
+        if(recentlyDeletedIds.has(id)) return; // mình vừa chủ động xoá bản ghi này trong phiên này -> không hồi sinh nhầm
+        const data = snap.val();
+        const json = JSON.stringify(data);
+        if(known.get(id)===json) return; // đã biết đúng bản ghi này rồi (echo của chính mình, hoặc trùng)
+        known.set(id, json);
+        const idx = state[field].findIndex(x=>recordKeyOf(x)===id);
+        if(idx!==-1) state[field][idx] = data; else state[field].push(data);
+        badgeCacheDirty = true; // dữ liệu vừa đổi do đồng bộ real-time từ nơi khác, không đi qua saveState() của chính máy này
+        if(settled) renderAll(); else scheduleSettle(); // đang nạp đợt đầu -> gộp lại, chỉ vẽ 1 lần khi xong; sau đó mới vẽ ngay theo từng bản ghi mới như bình thường
+      }, err=>{ console.error('Lỗi lắng nghe (added) '+fkey, err); resolveField(); });
 
-    const onChanged = fieldRef.on('child_changed', snap=>{
-      const id = snap.key;
-      if(recentlyDeletedIds.has(id)) return;
-      const data = snap.val();
-      const json = JSON.stringify(data);
-      if(known.get(id)===json) return;
-      known.set(id, json);
-      const idx = state[field].findIndex(x=>recordKeyOf(x)===id);
-      if(idx!==-1) state[field][idx] = data; else state[field].push(data);
-      if(branch==='shared' && field==='accounts' && currentUserId && !(state.accounts||[]).some(a=>a.id===currentUserId)) currentUserId = null;
-      badgeCacheDirty = true; // như trên — đồng bộ real-time từ nơi khác
-      renderAll();
-    }, err=>{ console.error('Lỗi lắng nghe (changed) '+fkey, err); });
+      const onChanged = fieldRef.on('child_changed', snap=>{
+        const id = snap.key;
+        if(recentlyDeletedIds.has(id)) return;
+        const data = snap.val();
+        const json = JSON.stringify(data);
+        if(known.get(id)===json) return;
+        known.set(id, json);
+        const idx = state[field].findIndex(x=>recordKeyOf(x)===id);
+        if(idx!==-1) state[field][idx] = data; else state[field].push(data);
+        if(branch==='shared' && field==='accounts' && currentUserId && !(state.accounts||[]).some(a=>a.id===currentUserId)) currentUserId = null;
+        badgeCacheDirty = true; // như trên — đồng bộ real-time từ nơi khác
+        if(settled) renderAll();
+      }, err=>{ console.error('Lỗi lắng nghe (changed) '+fkey, err); });
 
-    const onRemoved = fieldRef.on('child_removed', snap=>{
-      const id = snap.key;
-      known.delete(id);
-      const idx = state[field].findIndex(x=>recordKeyOf(x)===id);
-      if(idx!==-1) state[field].splice(idx,1);
-      badgeCacheDirty = true; // như trên — đồng bộ real-time từ nơi khác
-      renderAll();
-    }, err=>{ console.error('Lỗi lắng nghe (removed) '+fkey, err); });
+      const onRemoved = fieldRef.on('child_removed', snap=>{
+        const id = snap.key;
+        known.delete(id);
+        const idx = state[field].findIndex(x=>recordKeyOf(x)===id);
+        if(idx!==-1) state[field].splice(idx,1);
+        badgeCacheDirty = true; // như trên — đồng bộ real-time từ nơi khác
+        if(settled) renderAll();
+      }, err=>{ console.error('Lỗi lắng nghe (removed) '+fkey, err); });
 
-    fb.unsubs[branch].push(()=>{
-      fieldRef.off('child_added', onAdded);
-      fieldRef.off('child_changed', onChanged);
-      fieldRef.off('child_removed', onRemoved);
+      fb.unsubs[branch].push(()=>{
+        clearTimeout(settleTimer);
+        fieldRef.off('child_added', onAdded);
+        fieldRef.off('child_changed', onChanged);
+        fieldRef.off('child_removed', onRemoved);
+      });
     });
   }));
   // Chỉ đúng lúc này — SAU khi meta + MỌI field bản ghi của nhánh đã tải xong dữ liệu thật (state[field]
