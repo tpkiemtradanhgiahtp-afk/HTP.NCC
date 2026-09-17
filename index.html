@@ -8689,7 +8689,7 @@ function renderInsTxTable(editable){
     return;
   }
   if(sorted.length===0){
-    tbl.innerHTML = `<thead><tr>${isAdmin?'<th style="width:32px"></th>':''}<th>Hợp đồng</th><th>Khách hàng</th>${thCompact('Xuất HĐ', 'thẳng về Cty', 'Hoá đơn xuất thẳng về công ty — không tính hoa hồng riêng cho hợp đồng này', false)}<th style="text-align:center">Phí bảo hiểm</th><th>Trạng thái</th><th class="num">Hoa hồng</th><th>Người nhập</th><th>Hoá đơn</th><th></th></tr></thead>`;
+    tbl.innerHTML = `<thead><tr>${isAdmin?'<th style="width:32px"></th>':''}<th>Hợp đồng</th><th>Khách hàng</th>${thCompact('Xuất HĐ', 'Thẳng về Cty', 'Hoá đơn xuất thẳng về công ty — không tính hoa hồng riêng cho hợp đồng này', false)}<th style="text-align:center">Phí bảo hiểm</th><th>Trạng thái</th><th class="num">Hoa hồng</th><th>Người nhập</th><th>Hoá đơn</th><th></th></tr></thead>`;
     if(tbl.nextElementSibling && tbl.nextElementSibling.classList.contains('empty')) tbl.nextElementSibling.remove();
     tbl.insertAdjacentHTML('afterend', `<div class="empty"><div class="big">Không có hợp đồng nào khớp bộ lọc hiện tại</div></div>`);
     const moreBox = document.getElementById('itxMoreBox'); if(moreBox) moreBox.style.display='none';
@@ -8704,7 +8704,7 @@ function renderInsTxTable(editable){
   tbl.innerHTML = `
     <thead><tr>
       ${isAdmin ? `<th style="width:32px"><input type="checkbox" id="itxSelectAll" title="Chọn tất cả (trong trang đang hiện)"></th>` : ''}
-      <th>Hợp đồng</th><th>Khách hàng</th>${thCompact('Xuất HĐ', 'thẳng về Cty', 'Hoá đơn xuất thẳng về công ty — không tính hoa hồng riêng cho hợp đồng này', false)}<th style="text-align:center">Phí bảo hiểm</th><th>Trạng thái</th><th class="num">Hoa hồng</th><th>Người nhập</th><th>Hoá đơn</th><th></th></tr></thead>
+      <th>Hợp đồng</th><th>Khách hàng</th>${thCompact('Xuất HĐ', 'Thẳng về Cty', 'Hoá đơn xuất thẳng về công ty — không tính hoa hồng riêng cho hợp đồng này', false)}<th style="text-align:center">Phí bảo hiểm</th><th>Trạng thái</th><th class="num">Hoa hồng</th><th>Người nhập</th><th>Hoá đơn</th><th></th></tr></thead>
     <tbody>${rows.map(t=>{
       const ins = insurerById(t.insurerId);
       const creator = state.accounts.find(a=>a.id===t.createdBy);
