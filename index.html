@@ -549,7 +549,7 @@
   select.status-select{
     border:1.5px solid transparent; border-radius:999px;
     padding:5px 10px; font-size:11.5px; font-weight:700; letter-spacing:0.02em;
-    cursor:pointer; font-family:inherit;
+    cursor:pointer; font-family:inherit; min-width:118px; white-space:nowrap;
   }
   select.status-select.st-pending{ background:var(--gold-soft); color:var(--amber); }
   select.status-select.st-approved{ background:#E4E9FA; color:#3A56C4; }
@@ -8689,7 +8689,7 @@ function renderInsTxTable(editable){
     return;
   }
   if(sorted.length===0){
-    tbl.innerHTML = `<thead><tr>${isAdmin?'<th style="width:32px"></th>':''}<th>Hợp đồng</th><th>Khách hàng</th><th class="num">Phí bảo hiểm</th><th>Trạng thái</th><th class="num">Hoa hồng</th><th>Người nhập</th><th>Hoá đơn</th><th></th></tr></thead>`;
+    tbl.innerHTML = `<thead><tr>${isAdmin?'<th style="width:32px"></th>':''}<th>Hợp đồng</th><th>Khách hàng</th>${thCompact('Xuất HĐ', 'thẳng về Cty', 'Hoá đơn xuất thẳng về công ty — không tính hoa hồng riêng cho hợp đồng này', false)}<th style="text-align:center">Phí bảo hiểm</th><th>Trạng thái</th><th class="num">Hoa hồng</th><th>Người nhập</th><th>Hoá đơn</th><th></th></tr></thead>`;
     if(tbl.nextElementSibling && tbl.nextElementSibling.classList.contains('empty')) tbl.nextElementSibling.remove();
     tbl.insertAdjacentHTML('afterend', `<div class="empty"><div class="big">Không có hợp đồng nào khớp bộ lọc hiện tại</div></div>`);
     const moreBox = document.getElementById('itxMoreBox'); if(moreBox) moreBox.style.display='none';
@@ -8704,7 +8704,7 @@ function renderInsTxTable(editable){
   tbl.innerHTML = `
     <thead><tr>
       ${isAdmin ? `<th style="width:32px"><input type="checkbox" id="itxSelectAll" title="Chọn tất cả (trong trang đang hiện)"></th>` : ''}
-      <th>Hợp đồng</th><th>Khách hàng</th><th class="num">Phí bảo hiểm</th><th>Trạng thái</th><th class="num">Hoa hồng</th><th>Người nhập</th><th>Hoá đơn</th><th></th></tr></thead>
+      <th>Hợp đồng</th><th>Khách hàng</th>${thCompact('Xuất HĐ', 'thẳng về Cty', 'Hoá đơn xuất thẳng về công ty — không tính hoa hồng riêng cho hợp đồng này', false)}<th style="text-align:center">Phí bảo hiểm</th><th>Trạng thái</th><th class="num">Hoa hồng</th><th>Người nhập</th><th>Hoá đơn</th><th></th></tr></thead>
     <tbody>${rows.map(t=>{
       const ins = insurerById(t.insurerId);
       const creator = state.accounts.find(a=>a.id===t.createdBy);
@@ -8712,11 +8712,8 @@ function renderInsTxTable(editable){
       const commCell = t.status!=='Đã cấp đơn'
         ? '<span class="comm-cell zero">—</span>'
         : t.directInvoice
-          ? `<span class="stamp pending" title="${escAttr('Hoá đơn xuất thẳng về công ty — không tính hoa hồng riêng.'+(t.directInvoiceNote?' Ghi chú: '+t.directInvoiceNote:''))}">🧾 HĐ→CT</span>`
+          ? `<span class="comm-cell zero" title="Hoá đơn xuất thẳng về công ty — không tính hoa hồng riêng">0</span>`
           : `<span class="comm-cell has-value">${fmt(comm)}</span>`;
-      const directInvoiceToggleHTML = editable
-        ? `<div class="meta-line" style="margin-top:2px"><a href="#" data-toggle-directinvoice="${t.id}" style="color:var(--gold-text)">${t.directInvoice?'Bỏ đánh dấu HĐ→CT':'🧾 HĐ→CT?'}</a></div>`
-        : '';
       const lockR = lockingReconOf(t, state.insReconciliations, 'insurerId');
       const lockedForMe = !!lockR && currentRole()!=='Admin';
       const dis = (editable && !lockedForMe)?'':'disabled';
@@ -8745,12 +8742,14 @@ function renderInsTxTable(editable){
             <input class="cell-edit mini-field" data-field="customer" data-id="${t.id}" value="${escAttr(t.customer||'')}" ${dis} placeholder="Tên khách hàng" style="font-weight:600">
             <input class="cell-edit mini-field muted" data-field="phone" data-id="${t.id}" type="tel" value="${escAttr(t.phone||'')}" ${dis} placeholder="SĐT">
             <input class="cell-edit mini-field muted italic" data-field="vehicle" data-id="${t.id}" value="${escAttr(t.vehicle||'')}" ${dis} placeholder="Biển số / xe">
-            ${directInvoiceToggleHTML}
           </div>
         </td>
-        <td class="num">
-          <input class="cell-edit num money mini-field" data-field="premiumAmount" data-id="${t.id}" type="text" inputmode="numeric" value="${formatMoneyValue(t.premiumAmount)}" ${dis} style="text-align:right;font-weight:600;min-width:120px">
-          ${t.product==='BHDS' ? `<input class="cell-edit num money mini-field muted" data-field="passengerAmount" data-id="${t.id}" type="text" inputmode="numeric" value="${formatMoneyValue(t.passengerAmount||0)}" ${dis} placeholder="Phí người ngồi trên xe" title="Phí người ngồi trên xe — không chia VAT khi tính hoa hồng" style="text-align:right;min-width:120px;margin-top:4px">` : ''}
+        <td style="text-align:center">${t.directInvoice
+          ? `<div><span class="stamp" style="background:#E4E9FA;color:#3A56C4;font-size:12px" title="${escAttr('Hoá đơn xuất thẳng về công ty — không tính hoa hồng riêng.'+(t.directInvoiceNote?' Ghi chú: '+t.directInvoiceNote:''))}">🧾&nbsp;Đã đánh dấu</span></div>${editable?`<div style="margin-top:4px"><a href="#" data-toggle-directinvoice="${t.id}" style="color:var(--slate);font-size:10.5px">Bỏ đánh dấu</a></div>`:''}`
+          : (editable?`<button type="button" class="btn btn-ghost" data-toggle-directinvoice="${t.id}" style="font-size:11px;padding:4px 10px;white-space:nowrap">🧾 + HĐ→CT</button>`:'')}</td>
+        <td class="num" style="text-align:center">
+          <input class="cell-edit money mini-field" data-field="premiumAmount" data-id="${t.id}" type="text" inputmode="numeric" value="${formatMoneyValue(t.premiumAmount)}" ${dis} style="display:block;width:88px;margin:0 auto;text-align:center;font-weight:600;font-size:12px">
+          ${t.product==='BHDS' ? `<input class="cell-edit money mini-field muted" data-field="passengerAmount" data-id="${t.id}" type="text" inputmode="numeric" value="${formatMoneyValue(t.passengerAmount||0)}" ${dis} placeholder="Phí người ngồi trên xe" title="Phí người ngồi trên xe — không chia VAT khi tính hoa hồng" style="display:block;width:88px;margin:4px auto 0;text-align:center;font-size:11px">` : ''}
         </td>
         <td>${(editable && !lockedForMe)
           ? `<select class="cell-edit status-select ${statusClass(t.status)}" data-status-id="${t.id}">${INS_TX_STATUSES.map(s=>`<option ${t.status===s?'selected':''}>${s}</option>`).join('')}</select>`
