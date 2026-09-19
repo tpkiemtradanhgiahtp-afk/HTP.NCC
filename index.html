@@ -4307,11 +4307,16 @@ function renderDashboard(c){
   /* ---------------- Khối Ngân hàng ---------------- */
   let nhRanking = [];
   if(showNh){
+    // 1 lượt quét DUY NHẤT qua toàn bộ hồ sơ vay — tính đủ cả 3 thứ (tổng giải ngân, tổng hoa hồng, số hồ
+    // sơ chưa có chính sách áp dụng) trong CÙNG 1 lần, thay vì lặp qua từng ngân hàng rồi mỗi ngân hàng lại
+    // tự quét lại toàn bộ danh sách hồ sơ từ đầu (trước đây: số ngân hàng × số hồ sơ, giờ chỉ: số hồ sơ).
     let nhRevenue=0, nhComm=0, nhMissingPolicy=0;
-    state.banks.forEach(b=>{ nhRevenue += bankLoanSum(b.id, pfFrom, pfTo); nhComm += bankCommissionSum(b.id, pfFrom, pfTo); });
     state.bankTransactions.forEach(t=>{
-      if(t.status!=='Đã giải ngân' || !periodFilterMatches(bankTxEffectiveDate(t))) return;
-      if(!activeBankPolicy(t.bankId, bankTxEffectiveDate(t), t.product)) nhMissingPolicy++;
+      if(t.status!=='Đã giải ngân') return;
+      const d = toDate(bankTxEffectiveDate(t));
+      const inRange = !(pfFrom && d<pfFrom) && !(pfTo && d>pfTo);
+      if(inRange){ nhRevenue += Number(t.loanAmount)||0; nhComm += bankTxCommission(t); }
+      if(periodFilterMatches(bankTxEffectiveDate(t)) && !activeBankPolicy(t.bankId, bankTxEffectiveDate(t), t.product)) nhMissingPolicy++;
     });
     const nhReconList = state.bankReconciliations.filter(r=>periodFilterMatchesRange(r.fromDate, r.toDate));
     const nhReconTotals = nhReconList.reduce((acc,r)=>{
@@ -4361,8 +4366,17 @@ function renderDashboard(c){
   /* ---------------- Khối Bảo hiểm ---------------- */
   let bhRanking = [];
   if(showBh){
+    // 1 lượt quét DUY NHẤT qua toàn bộ hợp đồng bảo hiểm — thay vì lặp qua từng NCC rồi mỗi NCC lại tự quét
+    // lại toàn bộ danh sách hợp đồng từ đầu (trước đây: số NCC × số hợp đồng, giờ chỉ: số hợp đồng).
     let bhRevenue=0, bhComm=0;
-    state.insurers.forEach(ins=>{ bhRevenue += insPremiumSum(ins.id, pfFrom, pfTo); bhComm += insCommissionSum(ins.id, pfFrom, pfTo); });
+    state.insTransactions.forEach(t=>{
+      if(t.status!=='Đã cấp đơn') return;
+      const d = toDate(t.date);
+      if(pfFrom && d<pfFrom) return;
+      if(pfTo && d>pfTo) return;
+      bhRevenue += insTxTotalPremium(t);
+      bhComm += insTxCommission(t);
+    });
     const bhReconList = state.insReconciliations.filter(r=>periodFilterMatchesRange(r.fromDate, r.toDate));
     const bhReconTotals = bhReconList.reduce((acc,r)=>{
       const rc = insReconCalc(r);
@@ -5573,8 +5587,19 @@ function renderAllocation(c){
     return withTargets.slice().sort((a,b)=>b.threshold-a.threshold)[0];
   }
   const {from: pfFrom, to: pfTo} = periodFilterDateObjects();
+  // Gộp nhóm doanh số theo đúng "NCC|Đơn vị" MỘT LẦN DUY NHẤT trước khi vào vòng lặp — thay vì để mỗi NCC
+  // tự quét lại TOÀN BỘ state.transactions cho từng đơn vị (trước đây: số NCC × số đơn vị × số hồ sơ, rất
+  // chậm dần khi dữ liệu lớn lên; giờ: chỉ quét 1 lượt duy nhất qua toàn bộ hồ sơ, sau đó tra bảng tức thì).
+  const revGroup = {};
+  state.transactions.forEach(t=>{
+    const d = toDate(t.date);
+    if(pfFrom && d<pfFrom) return;
+    if(pfTo && d>pfTo) return;
+    const key = t.supplierId+'|'+t.unit;
+    revGroup[key] = (revGroup[key]||0) + (Number(t.gross)||0) - (Number(t.returns)||0);
+  });
   const rows = supplierScope.map(s=>{
-    const perUnit = state.units.map(u=>sumRevenue(s.id, pfFrom, pfTo, u));
+    const perUnit = state.units.map(u=> revGroup[s.id+'|'+u] || 0);
     const total = perUnit.reduce((a,b)=>a+b,0);
     const max = Math.max(0,...perUnit);
     const share = total>0 ? max/total : 0;
@@ -6985,10 +7010,24 @@ function renderBankAllocation(c){
   const bankScope = pf ? state.banks.filter(b=>pf({bankId:b.id})) : state.banks;
   if(bankScope.length===0){ tbl.outerHTML = `<div class="empty"><div class="big">Chưa có ngân hàng</div></div>`; return; }
   const pfFrom = null, pfTo = null; // LUÔN cộng dồn toàn thời gian — cố ý KHÔNG dùng periodFilterDateObjects() ở đúng bảng này
+  // Gộp nhóm MỘT LẦN DUY NHẤT qua toàn bộ hồ sơ vay — thay vì để mỗi ngân hàng tự quét lại từ đầu cho từng
+  // đơn vị (bankLoanSum) VÀ quét thêm 1 lượt riêng để tính hoa hồng (bankCommissionSum) — trước đây là
+  // "số ngân hàng × số đơn vị × số hồ sơ" cho phần đơn vị, cộng thêm "số ngân hàng × số hồ sơ" cho phần
+  // hoa hồng; giờ chỉ 1 lượt quét duy nhất qua toàn bộ hồ sơ, sau đó tra bảng tức thì.
+  const loanGroup = {}, commByBank = {};
+  state.bankTransactions.forEach(t=>{
+    if(t.status!=='Đã giải ngân') return;
+    const d = toDate(bankTxEffectiveDate(t));
+    if(pfFrom && d<pfFrom) return;
+    if(pfTo && d>pfTo) return;
+    const key = t.bankId+'|'+t.unit;
+    loanGroup[key] = (loanGroup[key]||0) + (Number(t.loanAmount)||0);
+    commByBank[t.bankId] = (commByBank[t.bankId]||0) + bankTxCommission(t);
+  });
   const rows = bankScope.map(b=>{
-    const perUnit = state.units.map(u=>bankLoanSum(b.id, pfFrom, pfTo, u));
+    const perUnit = state.units.map(u=> loanGroup[b.id+'|'+u] || 0);
     const total = perUnit.reduce((a,x)=>a+x,0);
-    const commTotal = bankCommissionSum(b.id, pfFrom, pfTo);
+    const commTotal = commByBank[b.id] || 0;
     const max = Math.max(0,...perUnit);
     const share = total>0 ? max/total : 0;
     const topIdx = perUnit.indexOf(max);
@@ -7879,8 +7918,21 @@ function applyPrevMonthSuggestionToAllocation(month){
 // total giữ lại cho tương thích ngược (nơi khác có thể còn dùng để kiểm tra "có dữ liệu gì không"),
 // nhưng KHÔNG dùng total để hiển thị "Tổng DT hệ thống" — phải dùng đúng br.
 function insSystemTotalsForMonth(month){
-  let br=0, dv=0;
-  state.insurers.forEach(ins=>{ br += insBRForMonth(ins.id, month); dv += insDVForMonth(ins.id, month); });
+  const {from, to} = insMonthBounds(month);
+  // BR: 1 lượt quét DUY NHẤT qua toàn bộ hợp đồng bảo hiểm — thay vì lặp qua từng NCC rồi mỗi NCC lại tự
+  // quét lại toàn bộ danh sách hợp đồng từ đầu (trước đây: số NCC × số hợp đồng, giờ chỉ: số hợp đồng).
+  let br=0;
+  state.insTransactions.forEach(t=>{
+    if(t.status!=='Đã cấp đơn') return;
+    const d = toDate(t.date);
+    if(from && d<from) return;
+    if(to && d>to) return;
+    br += insTxTotalPremium(t);
+  });
+  // DV: đọc từ bảng nhập tay riêng (insMonthlyRevenue) — vốn đã nhẹ (số dòng = số NCC × số tháng đã nhập
+  // tay, không phải quét lại insTransactions), giữ nguyên cách tính cũ.
+  let dv=0;
+  state.insurers.forEach(ins=>{ dv += insDVForMonth(ins.id, month); });
   return {br, dv, total: br+dv};
 }
 function insAlertThreshold(){ return Number(state.insAllocAlertThreshold ?? 0.05) || 0.05; }
@@ -9010,12 +9062,29 @@ function renderInsAllocation(c){
   const insurerScope = pf ? state.insurers.filter(ins=>pf({insurerId:ins.id})) : state.insurers;
   if(insurerScope.length===0){ tbl.outerHTML = `<div class="empty"><div class="big">Chưa có NCC bảo hiểm</div></div>`; return; }
   const pfFrom = null, pfTo = null; // LUÔN cộng dồn toàn thời gian — cố ý KHÔNG dùng periodFilterDateObjects() ở đúng bảng này, vì đây là số liệu luỹ kế
-  const rows = Array.from(new Set(insurerScope.map(insAllocGroupKey))).map(key=>{
-    const members = insurerScope.filter(x=>insAllocGroupKey(x)===key);
+  // Gộp NCC theo đúng "Nhóm phân bổ" MỘT LẦN DUY NHẤT (thay vì insurerScope.filter(...) lặp lại cho từng
+  // nhóm — trước đây là số nhóm × số NCC trong insurerScope).
+  const groupsMap = new Map(); // groupKey -> [insurer,...]
+  insurerScope.forEach(ins=>{
+    const key = insAllocGroupKey(ins);
+    if(!groupsMap.has(key)) groupsMap.set(key, []);
+    groupsMap.get(key).push(ins);
+  });
+  // Gộp nhóm phí bảo hiểm theo "NCC|Đơn vị" và hoa hồng theo NCC MỘT LẦN DUY NHẤT qua toàn bộ hợp đồng —
+  // thay vì để mỗi nhóm × mỗi đơn vị × mỗi NCC-thành-viên tự quét lại từ đầu (insPremiumSum/insCommissionSum
+  // trước đây bị gọi lặp lại rất nhiều lần, đúng nguyên nhân gây chậm dần khi dữ liệu lớn lên).
+  const premiumGroup = {}, commByInsurer = {};
+  state.insTransactions.forEach(t=>{
+    if(t.status!=='Đã cấp đơn') return;
+    const key = t.insurerId+'|'+t.unit;
+    premiumGroup[key] = (premiumGroup[key]||0) + insTxTotalPremium(t);
+    commByInsurer[t.insurerId] = (commByInsurer[t.insurerId]||0) + insTxCommission(t);
+  });
+  const rows = Array.from(groupsMap.entries()).map(([key, members])=>{
     const primary = members[0];
-    const perUnit = state.units.map(u=> members.reduce((s,m)=> s+insPremiumSum(m.id, pfFrom, pfTo, u), 0));
+    const perUnit = state.units.map(u=> members.reduce((s,m)=> s+(premiumGroup[m.id+'|'+u]||0), 0));
     const total = perUnit.reduce((a,x)=>a+x,0);
-    const commTotal = members.reduce((s,m)=> s+insCommissionSum(m.id, pfFrom, pfTo), 0);
+    const commTotal = members.reduce((s,m)=> s+(commByInsurer[m.id]||0), 0);
     const max = Math.max(0,...perUnit);
     const topIdx = perUnit.indexOf(max);
     return {ins:primary, groupLabel:insAllocGroupLabel(primary), groupMembers:members, perUnit, total, commTotal, topUnit: total>0?state.units[topIdx]:'—'};
