@@ -1318,13 +1318,14 @@ async function subscribeBranch(branch){
     // Không có tín hiệu "đã phát lại xong toàn bộ bản ghi cũ" trực tiếp từ child_added — dùng cách phổ biến:
     // coi là XONG khi đã im lặng (không có thêm child_added nào) trong 1 khoảng ngắn. Trong lúc đang nạp đợt
     // đầu (có thể hàng nghìn bản ghi), CHỈ gộp dữ liệu vào state, KHÔNG gọi renderAll() cho từng bản ghi một
-    // (tránh vẽ lại hàng nghìn lần liên tiếp gây chậm) — chỉ vẽ lại đúng 1 lần khi đã nạp xong hẳn.
+    // hay cho từng FIELD một (xem chỗ gọi renderAll() dùng chung cho cả nhánh ở ngay sau Promise.all bên
+    // dưới) — tránh vẽ lại trang rải rác nhiều lần liên tiếp lúc đăng nhập gây cảm giác giật/lag.
     return new Promise(resolveField=>{
       let settled = false;
       let settleTimer = null;
       const scheduleSettle = ()=>{
         clearTimeout(settleTimer);
-        settleTimer = setTimeout(()=>{ settled = true; badgeCacheDirty = true; renderAll(); resolveField(); }, 400);
+        settleTimer = setTimeout(()=>{ settled = true; resolveField(); }, 400);
       };
       scheduleSettle(); // trường hợp field này rỗng hoàn toàn (chưa có bản ghi nào) — vẫn cần "chốt xong" sau 400ms yên lặng
 
@@ -1335,10 +1336,23 @@ async function subscribeBranch(branch){
         const json = JSON.stringify(data);
         if(known.get(id)===json) return; // đã biết đúng bản ghi này rồi (echo của chính mình, hoặc trùng)
         known.set(id, json);
-        const idx = state[field].findIndex(x=>recordKeyOf(x)===id);
-        if(idx!==-1) state[field][idx] = data; else state[field].push(data);
-        badgeCacheDirty = true; // dữ liệu vừa đổi do đồng bộ real-time từ nơi khác, không đi qua saveState() của chính máy này
-        if(settled) renderAll(); else scheduleSettle(); // đang nạp đợt đầu -> gộp lại, chỉ vẽ 1 lần khi xong; sau đó mới vẽ ngay theo từng bản ghi mới như bình thường
+        if(!settled){
+          // ĐANG NẠP ĐỢT ĐẦU: id này chắc chắn CHƯA TỪNG có trong state[field] (known vừa được clear() ở
+          // trên, và mỗi id trong 1 nhánh Firebase vốn dĩ duy nhất) — thêm THẲNG vào cuối mảng, KHÔNG dùng
+          // findIndex() để tìm trước rồi mới thêm. Nếu vẫn tìm bằng findIndex ở đây, với 1 danh sách vài
+          // nghìn bản ghi (VD 2000+ hợp đồng bảo hiểm), độ phức tạp sẽ tăng theo cấp SỐ NHÂN (mỗi bản ghi
+          // mới phải quét qua toàn bộ bản ghi ĐÃ có để tìm — quét đi quét lại hàng triệu lượt so sánh cho
+          // 1 nhánh), đây chính là nguyên nhân gây lag/giật sau bản sửa trước.
+          state[field].push(data);
+          scheduleSettle();
+        } else {
+          // Đã nạp xong đợt đầu từ trước — đây là 1 THAY ĐỔI THẬT SỰ mới xảy ra (real-time), lúc này mới
+          // cần tìm đúng vị trí để cập nhật (có thể là sửa bản ghi cũ, không chỉ thêm mới), và vẽ lại ngay.
+          const idx = state[field].findIndex(x=>recordKeyOf(x)===id);
+          if(idx!==-1) state[field][idx] = data; else state[field].push(data);
+          badgeCacheDirty = true; // dữ liệu vừa đổi do đồng bộ real-time từ nơi khác, không đi qua saveState() của chính máy này
+          renderAll();
+        }
       }, err=>{ console.error('Lỗi lắng nghe (added) '+fkey, err); resolveField(); });
 
       const onChanged = fieldRef.on('child_changed', snap=>{
@@ -1372,6 +1386,11 @@ async function subscribeBranch(branch){
       });
     });
   }));
+  // Vẽ lại trang ĐÚNG 1 LẦN duy nhất ở đây — sau khi TOÀN BỘ field của cả nhánh này đã nạp xong hẳn (không
+  // còn để từng field tự vẽ lại riêng lẻ lúc nó nạp xong như bản trước — 1 nhánh có tới 9 field thì có thể
+  // vẽ lại rời rạc 9 lần liên tiếp, đây chính là nguyên nhân gây cảm giác giật/lag sau bản sửa trước).
+  badgeCacheDirty = true;
+  renderAll();
   // Chỉ đúng lúc này — SAU khi meta + MỌI field bản ghi của nhánh đã tải xong dữ liệu thật (state[field]
   // đã thay từ seed sang dữ liệu Firebase, known map đã có đủ) — mới đánh dấu nhánh này an toàn để ghi.
   fb.loaded[branch] = true;
@@ -11371,6 +11390,14 @@ function accessBarChartSVG(days, counts){
 function renderAccessLog(c){
   const log = (state.accessLog||[]).slice().sort((a,b)=> (b.ts||'').localeCompare(a.ts||''));
   const todayKey = todayISO();
+  // Đối chiếu: tài khoản nào có THAO TÁC hôm nay (Nhật ký thao tác) nhưng KHÔNG có LƯỢT TRUY CẬP nào hôm
+  // nay — khả năng cao nhất là họ đang dùng phiên đăng nhập CŨ (từ trước khi có tính năng này, hoặc chưa
+  // từng bị tự động đăng xuất do không rời máy quá 10 phút) nên không có sự kiện đăng nhập mới để ghi nhận.
+  // Không phải lỗi — chỉ cần giải thích rõ để tránh hiểu nhầm dữ liệu bị thiếu/sai.
+  const todayActivityUserIds = new Map();
+  combinedActivityLog().forEach(l=>{ if(accessDayKey(l.ts)===todayKey && l.userId && !todayActivityUserIds.has(l.userId)) todayActivityUserIds.set(l.userId, l.userName); });
+  const todayAccessUserIds = new Set(log.filter(l=>accessDayKey(l.ts)===todayKey).map(l=>l.userId));
+  const missingUsers = [...todayActivityUserIds.entries()].filter(([id])=>!todayAccessUserIds.has(id)).map(([,name])=>name);
   const now = new Date();
   const weekAgoKey = new Date(now.getTime()-7*86400000).toISOString().slice(0,10);
   const monthAgoKey = new Date(now.getTime()-30*86400000).toISOString().slice(0,10);
@@ -11392,6 +11419,13 @@ function renderAccessLog(c){
   let keyword = '';
   let filterUser = 'Tất cả';
   c.innerHTML = `
+    ${missingUsers.length>0 ? `
+    <div class="panel" style="border-color:var(--gold-text);background:var(--gold-soft)">
+      <div class="panel-body" style="font-size:13px">
+        ⚠ <b>${missingUsers.length} tài khoản</b> có thao tác hôm nay (${escHtml(missingUsers.join(', '))}) nhưng KHÔNG thấy lượt đăng nhập nào hôm nay bên dưới.
+        <div class="meta-line" style="margin-top:4px">Không phải lỗi — khả năng cao họ đang dùng phiên đăng nhập CŨ từ trước (chưa từng bị tự động đăng xuất do không rời máy quá 10 phút, hoặc đăng nhập từ trước khi có tính năng này). Sẽ tự xuất hiện đúng khi họ đăng nhập lại.</div>
+      </div>
+    </div>` : ''}
     <div class="panel">
       <div class="panel-body">
         <div class="kpi-row" style="display:flex;gap:14px;flex-wrap:wrap">
