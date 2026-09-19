@@ -827,6 +827,7 @@
           <h1 id="pageTitle">Dashboard</h1>
           <div class="meta" id="pageMeta">—</div>
         </div>
+        <button type="button" id="dashAccessPill" class="btn btn-ghost" style="display:none;margin-left:14px;white-space:nowrap;flex:0 0 auto" title="Xem chi tiết lượt truy cập app">📈 <span id="dashAccessPillText">0</span> lượt hôm nay</button>
       </div>
       <div class="topbar-right" style="flex:0 0 auto">
         <button type="button" id="globalSearchBtn" class="btn btn-ghost" title="Tìm kiếm toàn hệ thống (khách hàng, NCC, mã chứng từ...)">🔍 Tìm kiếm</button>
@@ -1057,7 +1058,7 @@ const BRANCH_RECORD_FIELDS = {
   ncc:    ['suppliers','policies','transactions','reconciliations','contracts','requests','activityLogNcc','trashNcc','yearlyTargets'],
   nh:     ['banks','bankPolicies','bankTransactions','bankReconciliations','bankContracts','bankRequests','activityLogNh','trashNh','bankYearlyTargets'],
   bh:     ['insurers','insRates','insTransactions','insReconciliations','insMonthlyRevenue','insContracts','insRequests','activityLogBh','trashBh','insYearlyTargets','insCommissionRates'],
-  shared: ['accounts','activityLogShared','trashShared'],
+  shared: ['accounts','activityLogShared','trashShared','accessLog'],
 };
 // Field còn lại: nhỏ, ít đổi, không phình to theo lượng chứng từ/thời gian — vẫn đọc/ghi gộp chung 1 khối
 // "meta" đơn giản, không cần tối ưu theo bản ghi.
@@ -2951,6 +2952,7 @@ function seedState(){
     // qua Console trình duyệt dù giao diện đã ẩn đúng tab).
     activityLogNcc: [], activityLogNh: [], activityLogBh: [], activityLogShared: [],
     trashNcc: [], trashNh: [], trashBh: [], trashShared: [],
+    accessLog: [], // Lượt truy cập — ghi mỗi lần đăng nhập thành công, dùng để theo dõi tần suất dùng app
     banks, bankPolicies, bankTransactions: [], bankReconciliations: [],
     bankContracts: [], bankRequests: [], // tương đương contracts/requests ở trên, dành cho Ngân hàng
     bankYearlyTargets: [], // tương đương yearlyTargets ở trên, dành cho Ngân hàng
@@ -3251,6 +3253,21 @@ function logActivity(action, entity, detail){
     detail,
   });
   if(state[key].length>500) state[key].length = 500;
+}
+// Ghi lại 1 LƯỢT ĐĂNG NHẬP thành công — dùng để theo dõi tần suất dùng app theo ngày/theo tài khoản (đối
+// chiếu với dung lượng Download trên Firebase Console khi cần). Mỗi dòng rất nhẹ (chỉ vài trường ngắn), giữ
+// tối đa 2000 dòng gần nhất — đủ dùng nhiều tháng với quy mô team hiện tại mà không phình to vô hạn.
+function logAccess(acc){
+  if(!Array.isArray(state.accessLog)) state.accessLog = [];
+  state.accessLog.unshift({
+    id: uid('acc'),
+    ts: new Date().toISOString(),
+    userId: acc.id,
+    userName: acc.name,
+    role: acc.role,
+    unit: accountUnits(acc).join(' + ') || '',
+  });
+  if(state.accessLog.length>2000) state.accessLog.length = 2000;
 }
 // Gộp Nhật ký hoạt động từ cả 4 nhánh để hiển thị (chỉ Admin xem tab này, và Admin luôn có đủ cả 4 nhánh
 // nên luôn thấy đầy đủ như trước khi tách) — sắp xếp mới nhất trước.
@@ -4015,6 +4032,16 @@ function renderAll(){
   bindSubTabs(subBar);
   const c = document.getElementById('content');
   c.innerHTML = '';
+  const dashPill = document.getElementById('dashAccessPill');
+  if(dashPill){
+    if(activeTab==='dashboard' && currentRole()==='Admin'){
+      const todayCount = (state.accessLog||[]).filter(l=>accessDayKey(l.ts)===todayISO()).length;
+      document.getElementById('dashAccessPillText').textContent = todayCount;
+      dashPill.style.display = '';
+    } else {
+      dashPill.style.display = 'none';
+    }
+  }
   if(activeTab==='dashboard') renderDashboard(c);
   else if(activeTab==='yearly_targets') renderYearlyTargets(c);
   else if(activeTab==='monitor') renderMonitor(c);
@@ -4122,6 +4149,7 @@ function renderLoginScreen(){
     const ok = await verifyAccountPassword(acc, pwInput.value);
     if(!ok){ showErr('Sai mật khẩu.'); pwInput.value=''; pwInput.focus(); return; }
     currentUserId = acc.id;
+    logAccess(acc);
     saveSession();
     resetInactivityTimer(); // bắt đầu đếm 10 phút không thao tác kể từ lúc đăng nhập
     await syncBranchesForCurrentUser(); // tải thêm đúng nhánh module của tài khoản vừa đăng nhập (nếu đang dùng Firebase)
@@ -11305,6 +11333,138 @@ function renderAccounts(c){
 }
 
 /* ---------------------------- Nhật ký hoạt động ---------------------------- */
+/* ---------------------------- Lượt truy cập ----------------------------
+   Ghi lại mỗi lần đăng nhập thành công (xem logAccess() ở phần đầu file) — dùng để theo dõi tần suất dùng
+   app theo ngày/theo tài khoản, đối chiếu được với biểu đồ Download trên Firebase Console khi cần (VD sau
+   khi tối ưu lại cách đồng bộ dữ liệu, xem lượt truy cập có tăng bất thường ngày nào không trước khi kết
+   luận nguyên nhân tăng Download là do lỗi kỹ thuật hay do dùng nhiều hơn thật). */
+function accessDayKey(iso){ return String(iso||'').slice(0,10); }
+function accessBarChartSVG(days, counts){
+  const w = 760, h = 160, padL = 34, padB = 22, padT = 10;
+  const innerW = w - padL - 10, innerH = h - padT - padB;
+  const max = Math.max(1, ...counts);
+  const n = days.length || 1;
+  const gap = 4;
+  const barW = Math.max(2, (innerW - (n-1)*gap) / n);
+  const gridLines = [0, 0.25, 0.5, 0.75, 1].map(f=>{
+    const y = padT + innerH*(1-f);
+    const label = Math.round(max*f);
+    return `<line x1="${padL}" y1="${y}" x2="${w-10}" y2="${y}" stroke="var(--line)" stroke-width="1"/>
+            <text x="${padL-6}" y="${y+3}" font-size="9" fill="var(--slate)" text-anchor="end">${label}</text>`;
+  }).join('');
+  const bars = counts.map((v,i)=>{
+    const bh = v>0 ? Math.max(2, (v/max)*innerH) : 0;
+    const x = padL + i*(barW+gap);
+    const y = padT+innerH-bh;
+    return `<rect x="${round2(x)}" y="${round2(y)}" width="${round2(barW)}" height="${round2(bh)}" rx="1.5" fill="var(--gold-text)"><title>${days[i]}: ${v} lượt</title></rect>`;
+  }).join('');
+  // Chỉ hiện nhãn ngày mỗi ~5 cột 1 lần, tránh chữ chồng lên nhau khi có nhiều ngày
+  const step = Math.max(1, Math.ceil(n/8));
+  const labels = days.map((d,i)=>{
+    if(i%step!==0 && i!==n-1) return '';
+    const x = padL + i*(barW+gap) + barW/2;
+    const short = d.slice(5).replace('-','/');
+    return `<text x="${round2(x)}" y="${h-6}" font-size="9" fill="var(--slate)" text-anchor="middle">${short}</text>`;
+  }).join('');
+  return `<svg width="100%" height="${h}" viewBox="0 0 ${w} ${h}" style="max-width:${w}px">${gridLines}${bars}${labels}</svg>`;
+}
+function renderAccessLog(c){
+  const log = (state.accessLog||[]).slice().sort((a,b)=> (b.ts||'').localeCompare(a.ts||''));
+  const todayKey = todayISO();
+  const now = new Date();
+  const weekAgoKey = new Date(now.getTime()-7*86400000).toISOString().slice(0,10);
+  const monthAgoKey = new Date(now.getTime()-30*86400000).toISOString().slice(0,10);
+  const countSince = (key)=> log.filter(l=>accessDayKey(l.ts)>=key).length;
+  const todayCount = countSince(todayKey);
+  const weekCount = countSince(weekAgoKey);
+  const monthCount = countSince(monthAgoKey);
+
+  // Biểu đồ 30 ngày gần nhất (kể cả ngày 0 lượt) — cố tình lấy đúng 30 ngày để dễ so sánh trực quan với
+  // biểu đồ "Usage accrued on the day" của Firebase Console (cùng kiểu trục ngày).
+  const days = [];
+  for(let i=29;i>=0;i--) days.push(new Date(now.getTime()-i*86400000).toISOString().slice(0,10));
+  const countByDay = {};
+  log.forEach(l=>{ const k=accessDayKey(l.ts); countByDay[k]=(countByDay[k]||0)+1; });
+  const counts = days.map(d=>countByDay[d]||0);
+
+  const users = ['Tất cả', ...new Set(log.map(l=>l.userName))];
+  let visibleCount = 300;
+  let keyword = '';
+  let filterUser = 'Tất cả';
+  c.innerHTML = `
+    <div class="panel">
+      <div class="panel-body">
+        <div class="kpi-row" style="display:flex;gap:14px;flex-wrap:wrap">
+          <div class="kpi-card"><div class="kpi-label">Hôm nay</div><div class="kpi-value">${todayCount}</div></div>
+          <div class="kpi-card"><div class="kpi-label">7 ngày qua</div><div class="kpi-value">${weekCount}</div></div>
+          <div class="kpi-card"><div class="kpi-label">30 ngày qua</div><div class="kpi-value">${monthCount}</div></div>
+          <div class="kpi-card"><div class="kpi-label">Tổng cộng (2000 gần nhất)</div><div class="kpi-value">${log.length}</div></div>
+        </div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><div><h2>Lượt truy cập theo ngày</h2><div class="desc">30 ngày gần nhất — mỗi cột là số lượt đăng nhập trong ngày đó (1 người đăng nhập nhiều lần trong ngày tính nhiều lượt)</div></div></div>
+      <div class="panel-body" style="overflow-x:auto">${accessBarChartSVG(days, counts)}</div>
+    </div>
+    <div class="panel">
+      <div class="panel-head">
+        <div><h2>Chi tiết từng lượt</h2><div class="desc">Mới nhất trước</div></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <input id="accLogKeyword" placeholder="Tìm theo tên tài khoản..." style="min-width:200px">
+          <select id="accLogUserFilter">${users.map(u=>`<option>${escHtml(u)}</option>`).join('')}</select>
+        </div>
+      </div>
+      <div class="panel-body flush"><div class="tbl-wrap"><table class="data" id="accLogTable"></table></div></div>
+      <div class="panel-body" id="accLogMoreBox" style="display:none;text-align:center">
+        <button class="btn btn-ghost" id="accLogMoreBtn">Xem thêm</button>
+      </div>
+    </div>
+  `;
+  function filteredLog(){
+    const kw = keyword.trim().toLowerCase();
+    return log.filter(l=>{
+      if(filterUser!=='Tất cả' && l.userName!==filterUser) return false;
+      if(kw && !String(l.userName||'').toLowerCase().includes(kw)) return false;
+      return true;
+    });
+  }
+  function draw(){
+    const all = filteredLog();
+    const rows = all.slice(0, visibleCount);
+    const tbl = document.getElementById('accLogTable');
+    const moreBox = document.getElementById('accLogMoreBox');
+    if(rows.length===0){
+      tbl.innerHTML = '';
+      tbl.style.display = 'none';
+      moreBox.style.display = 'none';
+      tbl.insertAdjacentHTML('afterend', `<div class="empty" id="accLogEmptyMsg"><div class="big">Không có lượt truy cập nào khớp bộ lọc</div></div>`);
+      return;
+    }
+    const oldEmpty = document.getElementById('accLogEmptyMsg'); if(oldEmpty) oldEmpty.remove();
+    tbl.style.display = '';
+    tbl.innerHTML = `
+      <thead><tr><th>Thời gian</th><th>Tài khoản</th><th>Đơn vị</th></tr></thead>
+      <tbody>${rows.map(l=>{
+        const t = new Date(l.ts);
+        return `<tr>
+          <td>${t.toLocaleString('vi-VN')}</td>
+          <td class="who">${escHtml(l.userName)} <span class="role-badge ${roleBadgeClass(l.role)}">${escHtml(l.role)}</span></td>
+          <td class="meta-line">${escHtml(l.unit||'—')}</td>
+        </tr>`;
+      }).join('')}</tbody>`;
+    if(all.length > rows.length){
+      moreBox.style.display = '';
+      document.getElementById('accLogMoreBtn').textContent = `Xem thêm 300 dòng (còn ${all.length-rows.length} dòng khớp bộ lọc)`;
+    } else {
+      moreBox.style.display = 'none';
+    }
+  }
+  draw();
+  document.getElementById('accLogUserFilter').addEventListener('change', e=>{ filterUser=e.target.value; visibleCount=300; draw(); });
+  document.getElementById('accLogKeyword').addEventListener('input', e=>{ keyword=e.target.value; visibleCount=300; draw(); });
+  document.getElementById('accLogMoreBtn').addEventListener('click', ()=>{ visibleCount+=300; draw(); });
+}
+
 function renderActivityLog(c){
   const log = combinedActivityLog();
   setTitle('Nhật ký hoạt động', log.length+' thao tác gần nhất trên toàn hệ thống');
@@ -11524,6 +11684,11 @@ function migrateContractsRequestsToRecordsV1(){
     menu.classList.toggle('open', willOpen);
   });
   document.getElementById('themeToggleBtn').addEventListener('click', toggleTheme);
+  document.getElementById('dashAccessPill').addEventListener('click', ()=>{
+    openModal('Lượt truy cập', 'Theo dõi tần suất dùng app — đối chiếu được với dung lượng Download trên Firebase Console khi cần.', '<div id="accessLogModalBody"></div>', (body)=>{
+      renderAccessLog(body.querySelector('#accessLogModalBody'));
+    });
+  });
   applyTheme(currentTheme()); // đồng bộ icon nút bấm (🌙/☀️) đúng theo trạng thái đã áp dụng sẵn từ script sớm trong <head>
   // Luôn có sẵn 1 bộ khung dữ liệu đầy đủ (mẫu) TRƯỚC khi tải dữ liệu thật — để subscribeBranch() có chỗ
   // gộp từng nhánh vào ngay khi tải xong (đặc biệt cần thiết cho luồng Firebase — xem loadShared()).
