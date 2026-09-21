@@ -1323,10 +1323,27 @@ async function subscribeBranch(branch){
     return new Promise(resolveField=>{
       let settled = false;
       let settleTimer = null;
+      let maxWaitTimer = null;
+      const forceSettle = ()=>{
+        if(settled) return;
+        settled = true;
+        clearTimeout(settleTimer);
+        clearTimeout(maxWaitTimer);
+        resolveField();
+      };
       const scheduleSettle = ()=>{
         clearTimeout(settleTimer);
-        settleTimer = setTimeout(()=>{ settled = true; resolveField(); }, 400);
+        settleTimer = setTimeout(forceSettle, 400);
       };
+      // TRẦN THỜI GIAN TỐI ĐA phải chờ nạp đợt đầu — dù dữ liệu vẫn đang tiếp tục đổ về (mạng chậm, hoặc dữ
+      // liệu rất lớn khiến khoảng cách giữa các bản ghi > 400ms liên tục), sau ĐÚNG 8 GIÂY vẫn BẮT BUỘC coi
+      // là xong và cho vào dùng app. Nếu không có trần này, bộ đếm 400ms có thể bị RESET LIÊN TỤC mãi mãi mỗi
+      // khi có thêm 1 bản ghi mới đổ về, khiến "settled" không bao giờ đạt được — đây chính là nguyên nhân
+      // khiến màn hình đăng nhập bị treo vô thời hạn ở điều kiện mạng chậm/không ổn định (dữ liệu vẫn đang về
+      // đều đều nhưng chưa từng có khoảng lặng đủ 400ms). Có trần này, app LUÔN vào được sau tối đa 8 giây,
+      // dù dữ liệu khi đó có thể chưa nạp xong 100% (phần còn thiếu sẽ tiếp tục về sau đó qua đúng cơ chế
+      // real-time bình thường, tự cập nhật dần mà không cần bắt người dùng phải chờ thêm).
+      maxWaitTimer = setTimeout(forceSettle, 8000);
       scheduleSettle(); // trường hợp field này rỗng hoàn toàn (chưa có bản ghi nào) — vẫn cần "chốt xong" sau 400ms yên lặng
 
       const onAdded = fieldRef.on('child_added', snap=>{
@@ -1353,7 +1370,7 @@ async function subscribeBranch(branch){
           badgeCacheDirty = true; // dữ liệu vừa đổi do đồng bộ real-time từ nơi khác, không đi qua saveState() của chính máy này
           renderAll();
         }
-      }, err=>{ console.error('Lỗi lắng nghe (added) '+fkey, err); resolveField(); });
+      }, err=>{ console.error('Lỗi lắng nghe (added) '+fkey, err); forceSettle(); });
 
       const onChanged = fieldRef.on('child_changed', snap=>{
         const id = snap.key;
@@ -1380,6 +1397,7 @@ async function subscribeBranch(branch){
 
       fb.unsubs[branch].push(()=>{
         clearTimeout(settleTimer);
+        clearTimeout(maxWaitTimer);
         fieldRef.off('child_added', onAdded);
         fieldRef.off('child_changed', onChanged);
         fieldRef.off('child_removed', onRemoved);
