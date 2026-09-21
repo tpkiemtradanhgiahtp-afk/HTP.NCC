@@ -1425,7 +1425,12 @@ async function syncBranchesForCurrentUser(){
   const needed = branchesForCurrentUser();
   await Promise.all(needed.map(b=>subscribeBranch(b)));
   Object.keys(fb.refs).forEach(b=>{ if(!needed.includes(b)) unsubscribeBranch(b); });
-  if(currentRole()==='Admin') maybeCreateDailyBackup(); // fire-and-forget, không chặn luồng chính
+  // Trì hoãn vài giây trước khi chạy backup tự động (thay vì chạy ngay lập tức) — để Dashboard kịp hiển thị
+  // xong hẳn cho người dùng xem trước, không tranh giành băng thông/CPU đúng lúc vừa đăng nhập (đây là 1
+  // phần nguyên nhân gây cảm giác đơ/lag ngay sau khi đăng nhập, dù backup vẫn "fire-and-forget" không thực
+  // sự chặn code, nhưng việc chuẩn bị + tải lên gói dữ liệu nặng vẫn chiếm tài nguyên máy đúng thời điểm
+  // nhạy cảm nhất).
+  if(currentRole()==='Admin') setTimeout(()=>{ if(currentRole()==='Admin') maybeCreateDailyBackup(); }, 5000);
 }
 // Tạo 1 bản backup đầy đủ (cả 4 nhánh) cho ĐÚNG ngày hôm nay nếu chưa có — mỗi ngày chỉ tạo 1 lần, tự
 // động ngay khi Admin mở app trong ngày đó (không cần thao tác gì). Giữ tối đa 30 ngày gần nhất, tự xoá
@@ -1434,36 +1439,50 @@ async function maybeCreateDailyBackup(){
   if(!fb.db) return;
   const dateStr = todayISO();
   try{
-    const backupRef = fb.db.ref(FB_ROOT+'/backups/'+dateStr);
-    const snap = await backupRef.once('value');
-    if(snap.exists()) return; // hôm nay đã có backup rồi
+    // Trước đây kiểm tra "hôm nay đã backup chưa" bằng cách tải NGUYÊN VẸN nội dung backup hôm nay (nếu
+    // có) — và lúc dọn bớt backup cũ (>30 ngày) còn tải lại TOÀN BỘ nội dung của MỌI bản backup cũ (không
+    // chỉ tên ngày) — đây chính là nguyên nhân gây đơ/lag ngay lúc Admin vừa đăng nhập lần đầu trong ngày,
+    // vì vừa phải tải lên 1 gói backup rất nặng (toàn bộ dữ liệu 4 nhánh), vừa phải tải về hàng chục bản
+    // backup cũ khác cùng lúc app đang cố hiển thị Dashboard. Giờ dùng thêm 1 "chỉ mục" backupIndex/<ngày>
+    // chỉ chứa đúng 1 giá trị nhỏ xíu (true) cho mỗi ngày — mọi việc kiểm tra tồn tại/liệt kê ngày để dọn
+    // bớt đều tra CHỈ MỤC NHẸ này, không bao giờ phải đụng tới nội dung backup nặng nữa (trừ đúng lúc thực
+    // sự cần TẠO MỚI hoặc XOÁ hẳn 1 bản backup).
+    const idxRef = fb.db.ref(FB_ROOT+'/backupIndex/'+dateStr);
+    const idxSnap = await idxRef.once('value');
+    if(idxSnap.exists()) return; // hôm nay đã có backup rồi
+
     const data = {};
     Object.keys(BRANCHES).forEach(branch=>{
       const obj = {};
       BRANCHES[branch].forEach(k=>{ obj[k]=state[k]; });
       data[branch] = obj;
     });
-    await backupRef.set({ createdAt: new Date().toISOString(), createdBy: currentUserId, data });
-    const allSnap = await fb.db.ref(FB_ROOT+'/backups').once('value');
-    if(allSnap.exists()){
-      const dates = Object.keys(allSnap.val()).sort();
+    const createdAt = new Date().toISOString();
+    await fb.db.ref(FB_ROOT+'/backups/'+dateStr).set({ createdAt, createdBy: currentUserId, data });
+    await idxRef.set({ createdAt }); // chỉ mục nhẹ — lưu kèm createdAt để tab Cài đặt liệt kê được luôn, không cần đụng tới nội dung backup nặng
+
+    const allIdxSnap = await fb.db.ref(FB_ROOT+'/backupIndex').once('value'); // NHẸ — chỉ toàn giá trị true/tên ngày, không phải nội dung backup
+    if(allIdxSnap.exists()){
+      const dates = Object.keys(allIdxSnap.val()).sort();
       const toDelete = dates.slice(0, Math.max(0, dates.length-30));
       if(toDelete.length){
         const delUpdates = {};
-        toDelete.forEach(d=>{ delUpdates[FB_ROOT+'/backups/'+d] = null; });
+        toDelete.forEach(d=>{ delUpdates[FB_ROOT+'/backups/'+d] = null; delUpdates[FB_ROOT+'/backupIndex/'+d] = null; });
         await fb.db.ref().update(delUpdates);
       }
     }
   }catch(e){ console.error('Tạo backup hàng ngày thất bại', e); }
 }
-// Lấy danh sách các ngày đã có backup (mới nhất trước), dùng cho tab Cài đặt.
+// Lấy danh sách các ngày đã có backup (mới nhất trước), dùng cho tab Cài đặt. Đọc đúng CHỈ MỤC NHẸ
+// (backupIndex — mỗi ngày chỉ có createdAt, không phải toàn bộ dữ liệu 4 nhánh) thay vì tải cả nội dung
+// nặng của mọi bản backup cũ chỉ để lấy tên ngày như trước — tránh đơ khi Admin mở tab Cài đặt.
 async function listBackups(){
   if(!fb.db) return [];
   try{
-    const snap = await fb.db.ref(FB_ROOT+'/backups').once('value');
+    const snap = await fb.db.ref(FB_ROOT+'/backupIndex').once('value');
     if(!snap.exists()) return [];
     const obj = snap.val();
-    return Object.keys(obj).sort().reverse().map(date=>({date, createdAt: obj[date].createdAt}));
+    return Object.keys(obj).sort().reverse().map(date=>({date, createdAt: obj[date] && obj[date].createdAt}));
   }catch(e){ console.error('Không tải được danh sách backup', e); return []; }
 }
 async function fetchBackup(dateStr){
