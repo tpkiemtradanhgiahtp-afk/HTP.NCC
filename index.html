@@ -275,6 +275,24 @@
   .storage-pill.offline{ background:var(--rust-soft); color:var(--rust); border-color:rgba(181,72,52,.25); }
   .storage-pill .blip{ width:6px;height:6px;border-radius:50%; background:currentColor; }
 
+  /* Banner "Đang đồng bộ dữ liệu" — cố định, nổi bật giữa phía trên màn hình, LUÔN hiện đúng suốt thời gian
+     thực sự đang đồng bộ (không phải hẹn giờ tự tắt sau vài giây, vì thời gian đồng bộ thật không cố định —
+     có lúc dưới 1 giây, có lúc vài giây tuỳ mạng) — tự ẩn NGAY khi đồng bộ xong. pointer-events:none để chắc
+     chắn không bao giờ chặn được thao tác của người dùng với bất kỳ phần tử nào bên dưới/xung quanh nó, dù
+     nó nổi bật về mặt thị giác.
+  */
+  .syncing-banner{
+    position:fixed; top:78px; left:50%; transform:translateX(-50%); z-index:500;
+    display:flex; align-items:center; gap:9px;
+    background:var(--gold-soft); color:var(--gold-text); border:1.5px solid var(--gold-text);
+    border-radius:999px; padding:10px 20px; font-size:13px; font-weight:600;
+    box-shadow:0 6px 20px rgba(18,23,43,0.16);
+    pointer-events:none; max-width:calc(100vw - 40px); text-align:center;
+  }
+  .syncing-banner .blip{ width:8px;height:8px;border-radius:50%; background:currentColor; flex:0 0 auto; animation:syncingBlipPulse 1.3s ease-in-out infinite; }
+  @keyframes syncingBlipPulse{ 0%,100%{ opacity:1; transform:scale(1); } 50%{ opacity:.4; transform:scale(1.4); } }
+  @media (max-width:640px){ .syncing-banner{ top:auto; bottom:16px; font-size:12px; padding:9px 16px; } }
+
   .content{ padding:28px 32px 60px; max-width:1400px; }
 
   /* ---------- Cards / KPI (thu gọn — chỉ Dashboard dùng .kpi-*, an toàn khi chỉnh riêng ở đây) ---------- */
@@ -848,6 +866,11 @@
   </div>
 </div>
 
+<div id="syncingBanner" class="syncing-banner" style="display:none">
+  <span class="blip"></span>
+  <span>Đang đồng bộ dữ liệu... một số số liệu có thể chưa đầy đủ, sẽ tự cập nhật trong giây lát</span>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -1042,7 +1065,11 @@ function recordFieldKey(branch, field){ return branch+'/'+field; }
 // mục trong Thùng rác dùng .trashId (không có field .id ở cấp ngoài cùng).
 function recordKeyOf(item){ return item && (item.id!==undefined ? item.id : item.trashId); }
 
-let fb = { status:'disconnected', db:null, refs:{}, unsubs:{}, loaded:{}, error:null, config:null }; // 'disconnected'|'connecting'|'connected'|'error'
+let fb = { status:'disconnected', db:null, refs:{}, unsubs:{}, loaded:{}, settlePromises:{}, error:null, config:null }; // 'disconnected'|'connecting'|'connected'|'error'
+// Các nhánh (ncc/nh/bh/shared) ĐANG trong quá trình nạp dữ liệu ban đầu (chưa "settled") — dùng để hiện chỉ
+// báo nhỏ "Đang đồng bộ dữ liệu..." cho người dùng biết, thay vì bắt họ chờ đứng yên không rõ lý do. Xem
+// applyTheme... không liên quan — xem wiring nút topbar + renderNav() để hiện/ẩn chỉ báo này.
+let branchesStillSyncing = new Set();
 // fb.refs[branch] = true NGAY khi bắt đầu subscribe (chặn gọi trùng) — nhưng dữ liệu THẬT của nhánh đó
 // (state[field] thay từ seed sang dữ liệu Firebase thật, cùng bộ nhớ "đã lưu lần trước" lastSavedRecords)
 // chỉ xong SAU một loạt await bên trong subscribeBranch(). fb.loaded[branch] chỉ được bật lên true ở CUỐI
@@ -1082,6 +1109,11 @@ function loadScript(src){
     const existing = document.querySelector(`script[src="${src}"]`);
     if(existing){ resolve(); return; }
     const s = document.createElement('script');
+    // crossorigin="anonymous" — để nếu có lỗi xảy ra TỪ BÊN TRONG các thư viện tải từ CDN ngoài này (Firebase
+    // SDK, XLSX...), window.onerror nhận được đúng nội dung lỗi/tên file/số dòng thật, thay vì chỉ hiện
+    // "Script error." mơ hồ (trình duyệt cố tình giấu chi tiết lỗi từ script khác nguồn gốc nếu thiếu thuộc
+    // tính này) — giúp debug được nếu có sự cố tương tự xảy ra trong tương lai.
+    s.crossOrigin = 'anonymous';
     s.src = src; s.onload = ()=>resolve(); s.onerror = ()=>reject(new Error('Không tải được: '+src));
     document.head.appendChild(s);
   });
@@ -1277,9 +1309,25 @@ async function migrateToPerRecordV1(db){
 // child_added tự bắn ra cho MỌI bản ghi đã có ngay khi vừa gắn listener, nên cũng đồng thời đóng vai trò
 // "tải lần đầu", không cần gọi once('value') riêng cho các field này nữa.
 async function subscribeBranch(branch){
-  if(!fb.db || fb.refs[branch]) return;
-  fb.refs[branch] = true; // đánh dấu ĐANG subscribe nhánh này (chặn gọi trùng) — ref thật nằm trong closure bên dưới
+  if(!fb.db) return;
+  // Đã có ai gọi subscribe nhánh này TRƯỚC RỒI (VD connectFirebase() vừa kết nối xong đã tự gọi cho
+  // 'shared' — xem bên dưới) — dùng lại ĐÚNG promise thật đó, để bên gọi SAU (VD syncBranchesForCurrentUser()
+  // lúc đăng nhập) vẫn chờ được tới đúng lúc nhánh đó THỰC SỰ nạp xong nếu họ cần .then()/.await, thay vì bị
+  // coi nhầm là "đã xong ngay lập tức" chỉ vì đã có người gọi trước — tránh kiểm tra dữ liệu (VD accounts)
+  // quá sớm trong khi vẫn còn là dữ liệu mẫu (seedState), gây nhận diện sai phiên đăng nhập cũ.
+  if(fb.refs[branch]) return fb.settlePromises[branch];
+  fb.refs[branch] = true; // đánh dấu ĐANG subscribe nhánh này (chặn gọi trùng)
+  const p = subscribeBranchImpl(branch);
+  fb.settlePromises[branch] = p;
+  return p;
+}
+// Tải (nếu chưa có) + lắng nghe real-time đúng 1 nhánh. Phần "meta" (field nhỏ) vẫn tải/lắng nghe gộp 1
+// khối như trước; phần "tập hợp bản ghi" lắng nghe theo TỪNG BẢN GHI (child_added/changed/removed) —
+// child_added tự bắn ra cho MỌI bản ghi đã có ngay khi vừa gắn listener, nên cũng đồng thời đóng vai trò
+// "tải lần đầu", không cần gọi once('value') riêng cho các field này nữa.
+async function subscribeBranchImpl(branch){
   fb.unsubs[branch] = [];
+  branchesStillSyncing.add(branch); // hiện chỉ báo "Đang đồng bộ..." cho tới khi nhánh này nạp xong đợt đầu
   const branchPath = FB_ROOT+'/'+branch;
 
   const metaRef = fb.db.ref(branchPath+'/meta');
@@ -1346,25 +1394,58 @@ async function subscribeBranch(branch){
       maxWaitTimer = setTimeout(forceSettle, 8000);
       scheduleSettle(); // trường hợp field này rỗng hoàn toàn (chưa có bản ghi nào) — vẫn cần "chốt xong" sau 400ms yên lặng
 
+      // Đợt nạp ban đầu (có thể hàng nghìn bản ghi) — dồn vào 1 HÀNG ĐỢI nhẹ, xử lý theo từng ĐỢT NHỎ
+      // (300 bản ghi/đợt), giữa mỗi đợt NHƯỜNG LẠI cho trình duyệt xử lý việc khác (bấm chuột, cuộn trang,
+      // vẽ lại giao diện...) rồi mới tiếp tục đợt sau. Nếu xử lý DỒN MỘT LẦN toàn bộ hàng nghìn bản ghi liên
+      // tục không ngừng nghỉ (dù mỗi bản ghi rất nhẹ), trình duyệt vẫn bị "chiếm dụng" hoàn toàn trong suốt
+      // quãng đó — không kịp xử lý bất kỳ thao tác nào của người dùng, trông như bị "treo" dù về mặt kỹ
+      // thuật vẫn đang chạy đúng, không lỗi gì (đây chính là nguyên nhân khiến bấm chuột không phản hồi
+      // trong lúc app báo "Đang đồng bộ dữ liệu...").
+      const pendingQueue = [];
+      let draining = false;
+      const BATCH_SIZE = 300;
+      function drainQueue(){
+        let count = 0;
+        while(pendingQueue.length && count<BATCH_SIZE){
+          const {id, data, json} = pendingQueue.shift();
+          known.set(id, json);
+          state[field].push(data);
+          count++;
+        }
+        if(pendingQueue.length){
+          setTimeout(drainQueue, 0); // còn hàng đợi -> nhường trình duyệt 1 nhịp rồi mới xử lý tiếp đợt sau
+        } else {
+          draining = false;
+          // Trường hợp hiếm: trần 8 giây (forceSettle) rơi đúng lúc hàng đợi còn tồn đọng quá nhiều nên
+          // renderAll() dùng chung của cả nhánh đã chạy TRƯỚC KHI hàng đợi này nạp xong hẳn — vẽ lại thêm 1
+          // lần nữa ở đây để phản ánh đủ nốt phần vừa nạp xong, tránh thiếu sót số liệu trên màn hình.
+          if(settled) renderAll();
+        }
+      }
+      function scheduleQueueDrain(){
+        if(draining) return;
+        draining = true;
+        setTimeout(drainQueue, 0);
+      }
+
       const onAdded = fieldRef.on('child_added', snap=>{
         const id = snap.key;
         if(recentlyDeletedIds.has(id)) return; // mình vừa chủ động xoá bản ghi này trong phiên này -> không hồi sinh nhầm
         const data = snap.val();
         const json = JSON.stringify(data);
         if(known.get(id)===json) return; // đã biết đúng bản ghi này rồi (echo của chính mình, hoặc trùng)
-        known.set(id, json);
         if(!settled){
-          // ĐANG NẠP ĐỢT ĐẦU: id này chắc chắn CHƯA TỪNG có trong state[field] (known vừa được clear() ở
-          // trên, và mỗi id trong 1 nhánh Firebase vốn dĩ duy nhất) — thêm THẲNG vào cuối mảng, KHÔNG dùng
-          // findIndex() để tìm trước rồi mới thêm. Nếu vẫn tìm bằng findIndex ở đây, với 1 danh sách vài
-          // nghìn bản ghi (VD 2000+ hợp đồng bảo hiểm), độ phức tạp sẽ tăng theo cấp SỐ NHÂN (mỗi bản ghi
-          // mới phải quét qua toàn bộ bản ghi ĐÃ có để tìm — quét đi quét lại hàng triệu lượt so sánh cho
-          // 1 nhánh), đây chính là nguyên nhân gây lag/giật sau bản sửa trước.
-          state[field].push(data);
+          // ĐANG NẠP ĐỢT ĐẦU: id này chắc chắn CHƯA TỪNG có trong state[field] — đẩy vào hàng đợi, xử lý
+          // theo đợt nhỏ ở trên (KHÔNG dùng findIndex() để tìm trước rồi mới thêm — với vài nghìn bản ghi,
+          // độ phức tạp sẽ tăng theo cấp SỐ NHÂN, gây lag/giật y hệt lỗi đã sửa trước đó).
+          pendingQueue.push({id, data, json});
+          scheduleQueueDrain();
           scheduleSettle();
         } else {
-          // Đã nạp xong đợt đầu từ trước — đây là 1 THAY ĐỔI THẬT SỰ mới xảy ra (real-time), lúc này mới
-          // cần tìm đúng vị trí để cập nhật (có thể là sửa bản ghi cũ, không chỉ thêm mới), và vẽ lại ngay.
+          // Đã nạp xong đợt đầu từ trước — đây là 1 THAY ĐỔI THẬT SỰ mới xảy ra (real-time, xảy ra lẻ tẻ
+          // từng cái một, không phải 1 đợt dồn dập), lúc này mới cần tìm đúng vị trí để cập nhật và vẽ lại
+          // ngay — không cần qua hàng đợi vì không có nguy cơ chiếm dụng trình duyệt như lúc nạp đợt đầu.
+          known.set(id, json);
           const idx = state[field].findIndex(x=>recordKeyOf(x)===id);
           if(idx!==-1) state[field][idx] = data; else state[field].push(data);
           badgeCacheDirty = true; // dữ liệu vừa đổi do đồng bộ real-time từ nơi khác, không đi qua saveState() của chính máy này
@@ -1408,6 +1489,7 @@ async function subscribeBranch(branch){
   // còn để từng field tự vẽ lại riêng lẻ lúc nó nạp xong như bản trước — 1 nhánh có tới 9 field thì có thể
   // vẽ lại rời rạc 9 lần liên tiếp, đây chính là nguyên nhân gây cảm giác giật/lag sau bản sửa trước).
   badgeCacheDirty = true;
+  branchesStillSyncing.delete(branch); // nhánh này đã nạp xong hẳn -> tự ẩn chỉ báo "Đang đồng bộ" nếu không còn nhánh nào khác đang tải
   renderAll();
   // Chỉ đúng lúc này — SAU khi meta + MỌI field bản ghi của nhánh đã tải xong dữ liệu thật (state[field]
   // đã thay từ seed sang dữ liệu Firebase, known map đã có đủ) — mới đánh dấu nhánh này an toàn để ghi.
@@ -1417,6 +1499,7 @@ function unsubscribeBranch(branch){
   if(fb.unsubs[branch]){ fb.unsubs[branch].forEach(fn=>fn()); delete fb.unsubs[branch]; }
   delete fb.refs[branch];
   delete fb.loaded[branch];
+  delete fb.settlePromises[branch];
   // Xoá luôn dữ liệu nhánh đó khỏi bộ nhớ (không chỉ ngừng lắng nghe) — quan trọng khi dùng chung 1 máy/
   // trình duyệt: nếu Admin đăng xuất rồi 1 tài khoản bị giới hạn module hơn đăng nhập vào (không tải lại
   // trang), mà không xoá thì dữ liệu module cũ (Admin từng tải) vẫn nằm sẵn trong bộ nhớ của người sau.
@@ -1520,7 +1603,14 @@ async function connectFirebase(config){
     fb.db = window.firebase.database();
     fb.status = 'connected';
     await migrateToPerRecordV1(fb.db); // chuyển dữ liệu cũ sang cấu trúc theo bản ghi nếu cần, chỉ chạy 1 lần cho cả dự án
-    await subscribeBranch('shared'); // luôn cần — đồng thời việc tải này xác nhận kết nối/rules đang hoạt động
+    // KHÔNG await subscribeBranch('shared') ở đây nữa — trước đây chờ nạp XONG HẲN nhánh 'shared' (có thể
+    // tới 8 giây nếu mạng chậm/tài khoản nhiều) rồi mới coi là "đã kết nối", khiến MÀN HÌNH ĐĂNG NHẬP cũng
+    // bị che khuất theo (vì init() đang chờ đúng hàm này xong mới vẽ bất kỳ thứ gì) — đây chính là nguyên
+    // nhân gây "đơ 8-10 giây ngay khi vừa mở trang" ở máy có kết nối Firebase chậm hơn. Giờ chỉ cần kết nối
+    // SDK thành công (bước phía trên) là coi như "connected" — việc nạp dữ liệu 'shared' (accounts...) chạy
+    // NGẦM phía sau, tự vẽ lại đúng lúc nạp xong qua cơ chế renderAll() đã có sẵn trong subscribeBranch().
+    // Lỗi kết nối/rules thật sự (nếu có) vẫn được ghi nhận qua đúng listener lỗi bên trong subscribeBranch().
+    subscribeBranch('shared');
     setStoragePill('firebase');
     return {ok:true};
   }catch(e){
@@ -1530,7 +1620,7 @@ async function connectFirebase(config){
 }
 function disconnectFirebase(){
   Object.keys(fb.unsubs).forEach(unsubscribeBranch);
-  fb = {status:'disconnected', db:null, refs:{}, unsubs:{}, loaded:{}, error:null, config:null};
+  fb = {status:'disconnected', db:null, refs:{}, unsubs:{}, loaded:{}, settlePromises:{}, error:null, config:null};
 }
 
 /* Cấu hình Firebase mặc định đi kèm sẵn với app (dự án "htp-ncc" do bạn cung cấp).
@@ -4098,6 +4188,8 @@ function renderAll(){
       dashPill.style.display = 'none';
     }
   }
+  const syncingBanner = document.getElementById('syncingBanner');
+  if(syncingBanner) syncingBanner.style.display = branchesStillSyncing.size>0 ? '' : 'none';
   if(activeTab==='dashboard') renderDashboard(c);
   else if(activeTab==='yearly_targets') renderYearlyTargets(c);
   else if(activeTab==='monitor') renderMonitor(c);
@@ -4201,25 +4293,36 @@ function renderLoginScreen(){
     // dữ liệu tài khoản thật từ Firebase; nếu bắt 1 lần từ sớm, mật khẩu/tài khoản vừa đổi trên máy khác
     // sẽ không bao giờ được nhận ra ở màn đăng nhập này (báo sai "Sai mật khẩu"/"Không tìm thấy tài khoản").
     const acc = state.accounts.find(a=> (a.username ? a.username.trim().toLowerCase() : a.name.trim().toLowerCase()) === typed);
-    if(!acc){ showErr('Không tìm thấy tài khoản này. Kiểm tra lại tên hoặc liên hệ Admin.'); return; }
+    if(!acc){
+      if(branchesStillSyncing.has('shared')){ showErr('Đang tải danh sách tài khoản, đợi vài giây rồi bấm Đăng nhập lại giúp mình nhé.'); return; }
+      showErr('Không tìm thấy tài khoản này. Kiểm tra lại tên hoặc liên hệ Admin.'); return;
+    }
     const ok = await verifyAccountPassword(acc, pwInput.value);
     if(!ok){ showErr('Sai mật khẩu.'); pwInput.value=''; pwInput.focus(); return; }
     currentUserId = acc.id;
     logAccess(acc);
     saveSession();
     resetInactivityTimer(); // bắt đầu đếm 10 phút không thao tác kể từ lúc đăng nhập
-    await syncBranchesForCurrentUser(); // tải thêm đúng nhánh module của tài khoản vừa đăng nhập (nếu đang dùng Firebase)
     // Nhân viên vào thẳng đúng trang Doanh số của module đầu tiên họ có quyền nhập (theo thứ tự NCC → NH →
     // BH), thay vì rơi vào Dashboard rồi phải tự tìm trong sidebar — đúng trọng tâm công việc hằng ngày của
-    // họ là NHẬP Doanh số, không cần thấy Dashboard/báo cáo tổng quan trước.
+    // họ là NHẬP Doanh số, không cần thấy Dashboard/báo cáo tổng quan trước. An toàn để tính ngay ở đây (dù
+    // dữ liệu NCC/NH/BH có thể chưa đồng bộ xong) vì canEdit()/hasModuleAccess() chỉ phụ thuộc role/modules
+    // của CHÍNH tài khoản (đã có sẵn từ trước) + editPerms (phần cấu hình nhỏ, tải nhanh riêng) — không phụ
+    // thuộc nội dung Doanh số/hồ sơ thật của từng module.
     if(acc.role==='Nhân viên' && !isPartnerAccount(acc)){
       const moduleTabMap = {ncc:'transactions', nh:'nh_transactions', bh:'bh_transactions'};
       for(const m of MODULES){
         if(hasModuleAccess(m.id, acc) && canEdit(moduleTabMap[m.id])){ activeTab = moduleTabMap[m.id]; break; }
       }
     }
+    // VÀO APP NGAY LẬP TỨC — không bắt người dùng đứng chờ tải xong hết dữ liệu (có thể mất vài giây tới cả
+    // chục giây nếu mạng chậm/dữ liệu lớn) mới được thao tác. syncBranchesForCurrentUser() chạy NGẦM phía
+    // sau (không await) — mỗi khi 1 module nạp xong dữ liệu thật, trang sẽ TỰ vẽ lại đúng đúng phần đó (xem
+    // cơ chế renderAll() trong subscribeBranch()), người dùng thấy số liệu tự lấp đầy dần chứ không phải
+    // đứng yên "đơ" như trước. Chỉ báo nhỏ "Đang đồng bộ dữ liệu..." trên đầu trang sẽ tự hiện/ẩn đúng lúc.
     screen.remove();
     renderAll();
+    syncBranchesForCurrentUser();
   };
   screen.querySelector('#li_submit').addEventListener('click', submit);
   [userInput, pwInput].forEach(inp=> inp.addEventListener('keydown', e=>{ if(e.key==='Enter') submit(); }));
@@ -7821,8 +7924,15 @@ function insCommissionRatePeriods(insurerId, product, issueType){
     let endLabel = 'Hiện tại';
     if(next){
       const d = toDate(next.startDate);
-      d.setDate(d.getDate()-1);
-      endLabel = d.toISOString().slice(0,10);
+      // isNaN(d.getTime()) bắt cả trường hợp Date "Invalid Date" (object vẫn truthy nên !d là chưa đủ) —
+      // 1 bản ghi Chính sách hoa hồng có "Áp dụng từ ngày" bị sai/rỗng (VD lỗi nhập Excel) sẽ khiến d.toISOString()
+      // ném lỗi RangeError, sập cả trang và LẶP LẠI liên tục mỗi lần vẽ lại (đúng lỗi từng gặp ở Lịch tái tục).
+      if(d && !isNaN(d.getTime())){
+        d.setDate(d.getDate()-1);
+        endLabel = d.toISOString().slice(0,10);
+      } else {
+        endLabel = '(ngày bắt đầu kỳ sau bị lỗi)';
+      }
     }
     return {...r, endLabel};
   }).reverse(); // mới nhất lên đầu cho dễ xem
@@ -10418,6 +10528,50 @@ function wireArchivePanel(){
   });
 }
 
+// Panel quản lý Nhật ký hoạt động trong Cài đặt — hiện thống kê theo từng module (đang giữ bao nhiêu/500) và
+// cho phép dọn tay: chỉ dọn dòng "Lỗi hệ thống" (đúng nhu cầu thường gặp nhất — 1 lỗi kỹ thuật lặp lại chiếm
+// hết chỗ), hoặc xoá sạch toàn bộ nếu muốn làm lại từ đầu. Chỉ Admin thấy (Nhật ký hoạt động vốn chỉ Admin
+// xem được), thao tác này CHÍNH NÓ cũng được ghi vào Nhật ký hoạt động như mọi hành động khác.
+function renderActivityLogMgmt(){
+  const box = document.getElementById('activityLogMgmtBox');
+  if(!box) return;
+  const branches = [['ncc','activityLogNcc','NCC'], ['nh','activityLogNh','Ngân hàng'], ['bh','activityLogBh','Bảo hiểm'], ['shared','activityLogShared','Chung (Tài khoản...)']];
+  const errorCount = combinedActivityLog().filter(l=>l.entity==='Lỗi hệ thống').length;
+  box.innerHTML = `
+    <div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:14px">
+      ${branches.map(([,key,label])=>{
+        const n = (state[key]||[]).length;
+        return `<div class="kpi-card"><div class="kpi-label">${escHtml(label)}</div><div class="kpi-value">${n}<span style="font-size:11px;color:var(--slate);font-weight:400"> / 500</span></div></div>`;
+      }).join('')}
+    </div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+      <button class="btn btn-ghost" id="clearErrorLogsBtn" ${errorCount===0?'disabled':''}>🧹 Dọn dòng "Lỗi hệ thống" (${errorCount})</button>
+      <button class="btn btn-ghost" id="clearAllActivityLogBtn" style="border-color:var(--rust);color:var(--rust)">🗑 Xoá sạch toàn bộ Nhật ký hoạt động</button>
+    </div>
+  `;
+  document.getElementById('clearErrorLogsBtn').addEventListener('click', ()=>{
+    if(errorCount===0) return;
+    confirmModal(`Xoá ${errorCount} dòng "Lỗi hệ thống" khỏi Nhật ký hoạt động (giữ nguyên mọi hoạt động khác)?`, ()=>{
+      branches.forEach(([,key])=>{
+        state[key] = (state[key]||[]).filter(l=>l.entity!=='Lỗi hệ thống');
+      });
+      logActivity('delete','Cài đặt', `Dọn ${errorCount} dòng "Lỗi hệ thống" khỏi Nhật ký hoạt động`);
+      saveState();
+      toast('Đã dọn xong');
+      renderAll(); // vẽ lại cả trang — để bảng "Lịch sử thao tác" bên dưới cũng cập nhật ngay, không chỉ riêng phần thống kê
+    });
+  });
+  document.getElementById('clearAllActivityLogBtn').addEventListener('click', ()=>{
+    const total = branches.reduce((s,[,key])=>s+(state[key]||[]).length, 0);
+    confirmModal(`Xoá SẠCH toàn bộ ${total} dòng trong Nhật ký hoạt động (mọi module) — không khôi phục lại được. Chắc chắn chứ?`, ()=>{
+      branches.forEach(([,key])=>{ state[key] = []; });
+      logActivity('delete','Cài đặt', `Xoá sạch toàn bộ Nhật ký hoạt động (${total} dòng)`);
+      saveState();
+      toast('Đã xoá sạch Nhật ký hoạt động');
+      renderAll(); // vẽ lại cả trang — để bảng "Lịch sử thao tác" bên dưới cũng cập nhật ngay, không chỉ riêng phần thống kê
+    });
+  });
+}
 function renderSettings(c){
   setTitle('Cài đặt', 'Danh sách đơn vị, ngày báo cáo, và quản lý dữ liệu');
   const canUnits = canEdit('settings');
@@ -11614,6 +11768,11 @@ function renderActivityLog(c){
   let filterUser = 'Tất cả';
   c.innerHTML = `
     <div class="panel">
+      <div class="panel-head"><div><h2>Quản lý Nhật ký</h2>
+      <div class="desc">Mỗi module tự giữ tối đa 500 dòng gần nhất (dòng cũ tự bị loại khi đầy) — không phình to vô hạn. Dọn tay ở đây nếu muốn giải phóng chỗ ngay, không cần đợi tự đầy rồi mới bị đẩy ra.</div></div></div>
+      <div class="panel-body" id="activityLogMgmtBox"></div>
+    </div>
+    <div class="panel">
       <div class="panel-head">
         <div><h2>Lịch sử thao tác</h2><div class="desc">Ghi lại mọi thêm/sửa/xoá trên toàn hệ thống, mới nhất trước</div></div>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
@@ -11627,6 +11786,7 @@ function renderActivityLog(c){
       </div>
     </div>
   `;
+  renderActivityLogMgmt();
   function filteredLog(){
     const kw = keyword.trim().toLowerCase();
     return log.filter(l=>{
@@ -11786,8 +11946,24 @@ function migrateContractsRequestsToRecordsV1(){
   });
   // Ghi lại lỗi runtime (nếu có) vào Nhật ký hoạt động để Admin biết mà kiểm tra, thay vì chỉ nằm im
   // trong Console trình duyệt của đúng người gặp lỗi đó (không ai khác biết để xử lý).
+  // CHỐNG TRÀN NGẬP: nếu 1 lỗi nào đó (VD do dữ liệu sai gây ra) LẶP LẠI liên tục mỗi lần vẽ lại trang —
+  // từng gặp trường hợp 1 lỗi lặp tới hàng trăm lần trong vài giây, làm ngợp cả Nhật ký hoạt động lẫn tốn
+  // băng thông Firebase ghi toàn dòng log giống hệt nhau — nên CHỈ ghi log lại đúng 1 lần cho mỗi THÔNG ĐIỆP
+  // LỖI giống hệt nhau trong vòng 60 giây gần nhất, dù lỗi đó có xảy ra thêm bao nhiêu lần nữa trong lúc đó.
+  const recentLoggedErrors = new Map(); // message -> thời điểm (ms) đã ghi log lần gần nhất
+  function logRuntimeErrorThrottled(message){
+    const now = Date.now();
+    const last = recentLoggedErrors.get(message);
+    if(last && now-last<60000) return; // đã ghi đúng lỗi này trong 60 giây gần nhất -> bỏ qua, tránh tràn ngập
+    recentLoggedErrors.set(message, now);
+    if(recentLoggedErrors.size>200){ // dọn bớt nếu có quá nhiều THÔNG ĐIỆP LỖI khác nhau tích tụ (hiếm khi xảy ra)
+      const oldestKey = recentLoggedErrors.keys().next().value;
+      recentLoggedErrors.delete(oldestKey);
+    }
+    try{ logActivity('update','Lỗi hệ thống', message); saveState(); }catch(err){} // try/catch để chính bước ghi log không vô tình gây thêm lỗi mới, tránh vòng lặp tự nuôi chính nó
+  }
   window.addEventListener('error', (e)=>{
-    try{ logActivity('update','Lỗi hệ thống', `${e.message||'Lỗi không rõ'} (${(e.filename||'').split('/').pop()}:${e.lineno||'?'})`); saveState(); }catch(err){}
+    logRuntimeErrorThrottled(`${e.message||'Lỗi không rõ'} (${(e.filename||'').split('/').pop()}:${e.lineno||'?'})`);
   });
   // Theo dõi hoạt động để tự đăng xuất sau 10 phút không thao tác (xem resetInactivityTimer/autoLogoutIdle) —
   // {passive:true} vì chỉ đọc sự kiện, không cần gọi preventDefault, giúp cuộn trang mượt hơn.
@@ -11795,7 +11971,7 @@ function migrateContractsRequestsToRecordsV1(){
     document.addEventListener(evt, resetInactivityTimer, {passive:true});
   });
   window.addEventListener('unhandledrejection', (e)=>{
-    try{ logActivity('update','Lỗi hệ thống', 'Promise bị từ chối: '+(e.reason && e.reason.message ? e.reason.message : String(e.reason))); saveState(); }catch(err){}
+    logRuntimeErrorThrottled('Promise bị từ chối: '+(e.reason && e.reason.message ? e.reason.message : String(e.reason)));
   });
   document.getElementById('globalSearchBtn').addEventListener('click', ()=>{
     if(!currentUser()){ return; } // chưa đăng nhập thì chưa có gì để tìm
@@ -11841,30 +12017,51 @@ function migrateContractsRequestsToRecordsV1(){
   if(!state.accounts || state.accounts.length===0) state.accounts = seedState().accounts; // không bao giờ để trống hẳn -> khoá đăng nhập của mọi người
   currentUserId = (session && session.currentUserId && state.accounts.some(a=>a.id===session.currentUserId))
     ? session.currentUserId : null;
-  // Biết đang đăng nhập là ai rồi -> tải thêm đúng nhánh module được cấp (nếu đang dùng Firebase); Admin
-  // luôn tải đủ cả 3, tài khoản khác chỉ tải đúng module mình dùng — đây chính là phần "tách đồng bộ theo
-  // module" giúp giảm băng thông cho tài khoản chỉ dùng 1-2 module.
-  await syncBranchesForCurrentUser();
-  // Tự động đưa "Ngày báo cáo" (state.reportDate, nhánh NCC) về đúng hôm nay mỗi khi mở app, NẾU đang bị
-  // "kẹt" ở 1 ngày cũ hơn hôm nay — đây chính là nguyên nhân từng khiến các mốc CK có Ngày bắt đầu mới
-  // (VD 01/09/2026) bị lọc mất khỏi mọi phép tính dù doanh số đã lên đủ (baseTierPolicies() so sánh theo
-  // đúng field này). Chỉ bump lên khi CHẮC CHẮN đã có dữ liệu NCC thật trong tay (đã tải xong nhánh 'ncc'
-  // qua Firebase, hoặc đang ở tầng dự phòng không Firebase nên state đã đầy đủ ngay từ đầu) — tránh lỡ ghi
-  // đè bằng dữ liệu mẫu (seed) đang tạm nằm trong state lúc chưa tải xong. Vẫn cho sửa tay bình thường sau
-  // đó ở ô "Ngày báo cáo" (tab Theo dõi mốc CK) — chỉ áp lại đúng 1 lần mỗi lần mở app, không tự nhảy tiếp
-  // trong lúc đang dùng (để không phá ngày người dùng đang cố tình chọn xem lùi về quá khứ).
-  if(state.reportDate && state.reportDate < todayISO() && (fb.status!=='connected' || fb.loaded.ncc)){
-    const oldReportDate = state.reportDate;
-    state.reportDate = todayISO();
-    logActivity('update','Theo dõi mốc CK', `Tự động cập nhật Ngày báo cáo → ${state.reportDate} (trước đó ${oldReportDate}, do mở app ở ngày mới)`);
-    saveState();
-  }
-  if(await migratePasswordsV1()) saveState();
-  if(currentRole()==='Admin' && migrateActivityLogTrashSplitV1()) saveState(); // cần đủ cả 4 nhánh nên chỉ Admin chạy được đúng
-  if(migrateContractsRequestsToRecordsV1()) saveState();
+  applyTheme(currentTheme()); // đồng bộ icon nút bấm (🌙/☀️) đúng theo trạng thái đã áp dụng sẵn từ script sớm trong <head>
   setStoragePill(storageMode);
   resetInactivityTimer(); // nếu phiên đăng nhập cũ còn hiệu lực (đã có currentUserId), bắt đầu đếm luôn từ lúc mở trang
+  // HIỆN MÀN HÌNH NGAY LẬP TỨC ở đây — trước đây "await syncBranchesForCurrentUser()" chặn đứng cả bước vẽ
+  // màn hình đầu tiên (kể cả chính màn hình ĐĂNG NHẬP!), khiến người dùng thấy trang trống/không thao tác
+  // được gì trong lúc chờ tải dữ liệu — đúng nguyên nhân gây "đơ 8-10 giây ngay khi vừa mở trang" ở 1 số máy
+  // có kết nối tới Firebase chậm hơn (dù cùng 1 file, máy khác mạng tốt hơn thì không thấy hiện tượng này).
+  // Giờ vẽ màn hình TRƯỚC, để người dùng luôn thấy được đúng giao diện (màn đăng nhập, hoặc app nếu phiên cũ
+  // còn hiệu lực) ngay từ đầu — dữ liệu tài khoản/module tự lấp đầy dần phía sau qua đúng cơ chế renderAll()
+  // đã có sẵn trong subscribeBranch(), không khác gì cách đã sửa cho nút Đăng nhập.
   renderAll();
+  // Biết đang đăng nhập là ai rồi -> tải thêm đúng nhánh module được cấp (nếu đang dùng Firebase); Admin
+  // luôn tải đủ cả 3, tài khoản khác chỉ tải đúng module mình dùng — đây chính là phần "tách đồng bộ theo
+  // module" giúp giảm băng thông cho tài khoản chỉ dùng 1-2 module. KHÔNG await ở đây (xem lý do phía trên).
+  syncBranchesForCurrentUser().then(async ()=>{
+    // KHÔI PHỤC lại đúng phiên đăng nhập cũ nếu cần — vì giờ không còn CHỜ nhánh 'shared' (chứa accounts)
+    // nạp dữ liệu THẬT xong mới kiểm tra currentUserId (để không chặn màn hình đăng nhập hiện lên ngay), có
+    // thể lúc kiểm tra ban đầu state.accounts vẫn còn là dữ liệu MẪU (seedState) nên chưa nhận ra tài khoản
+    // trong phiên cũ tồn tại, dẫn tới hiện nhầm màn đăng nhập dù phiên vẫn còn hiệu lực. Giờ dữ liệu 'shared'
+    // thật đã về (đến được đây tức branchesForCurrentUser() ít nhất đã xử lý xong 'shared') — kiểm tra lại 1
+    // lần nữa, nếu đúng là còn phiên hợp lệ mà trước đó bị bỏ lỡ thì tự đăng nhập lại, không bắt gõ tay nữa.
+    if(!currentUserId && session && session.currentUserId && state.accounts.some(a=>a.id===session.currentUserId)){
+      currentUserId = session.currentUserId;
+      resetInactivityTimer();
+      renderAll();
+      syncBranchesForCurrentUser(); // vừa xác định lại được tài khoản -> tải thêm đúng module của họ (Admin/module cụ thể)
+    }
+    // Tự động đưa "Ngày báo cáo" (state.reportDate, nhánh NCC) về đúng hôm nay mỗi khi mở app, NẾU đang bị
+    // "kẹt" ở 1 ngày cũ hơn hôm nay — đây chính là nguyên nhân từng khiến các mốc CK có Ngày bắt đầu mới
+    // (VD 01/09/2026) bị lọc mất khỏi mọi phép tính dù doanh số đã lên đủ (baseTierPolicies() so sánh theo
+    // đúng field này). Chỉ bump lên khi CHẮC CHẮN đã có dữ liệu NCC thật trong tay (đã tải xong nhánh 'ncc'
+    // qua Firebase, hoặc đang ở tầng dự phòng không Firebase nên state đã đầy đủ ngay từ đầu) — tránh lỡ ghi
+    // đè bằng dữ liệu mẫu (seed) đang tạm nằm trong state lúc chưa tải xong. Vẫn cho sửa tay bình thường sau
+    // đó ở ô "Ngày báo cáo" (tab Theo dõi mốc CK) — chỉ áp lại đúng 1 lần mỗi lần mở app, không tự nhảy tiếp
+    // trong lúc đang dùng (để không phá ngày người dùng đang cố tình chọn xem lùi về quá khứ).
+    if(state.reportDate && state.reportDate < todayISO() && (fb.status!=='connected' || fb.loaded.ncc)){
+      const oldReportDate = state.reportDate;
+      state.reportDate = todayISO();
+      logActivity('update','Theo dõi mốc CK', `Tự động cập nhật Ngày báo cáo → ${state.reportDate} (trước đó ${oldReportDate}, do mở app ở ngày mới)`);
+      saveState();
+    }
+    if(await migratePasswordsV1()) saveState();
+    if(currentRole()==='Admin' && migrateActivityLogTrashSplitV1()) saveState(); // cần đủ cả 4 nhánh nên chỉ Admin chạy được đúng
+    if(migrateContractsRequestsToRecordsV1()) saveState();
+  });
 })();
 </script>
 </body>
