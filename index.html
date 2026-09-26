@@ -1724,7 +1724,10 @@ async function loadSession(){
     }
   }catch(e){}
   try{
-    const raw = localStorage.getItem(SESSION_KEY);
+    // sessionStorage (KHÔNG phải localStorage) — cố ý chọn để phiên đăng nhập TỰ MẤT ngay khi đóng hẳn tab/
+    // trình duyệt, bắt buộc đăng nhập lại ở lần mở sau. Vẫn giữ được khi chỉ F5 tải lại trang trong CÙNG 1
+    // tab (đúng ý muốn — refresh không nên bắt đăng nhập lại, chỉ đóng tab mới bắt).
+    const raw = sessionStorage.getItem(SESSION_KEY);
     return raw ? JSON.parse(raw) : null;
   }catch(e){}
   return null;
@@ -1854,7 +1857,7 @@ async function saveSession(){
       await window.storage.set(SESSION_KEY, json, false); return;
     }
   }catch(e){}
-  try{ localStorage.setItem(SESSION_KEY, json); }catch(e){}
+  try{ sessionStorage.setItem(SESSION_KEY, json); }catch(e){}
 }
 
 /* ---------------------------- Tự đăng xuất khi không thao tác ----------------------------
