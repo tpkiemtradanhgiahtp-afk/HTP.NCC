@@ -1765,6 +1765,7 @@ function recomputeBadgeCacheIfNeeded(){
 }
 
 function saveState(){
+  bankTierCache = null; // dữ liệu vừa đổi -> chỉ mục khối lượng hoa hồng theo mốc phải dựng lại
   badgeCacheDirty = true; // có ghi dữ liệu -> lần vẽ trang kế tiếp phải tính lại badge, không dùng cache cũ
   pendingSave = true;
   clearTimeout(saveTimer);
@@ -4160,6 +4161,7 @@ function openChangePasswordModal(accId){
 }
 
 function renderAll(){
+  bankTierCache = null; // mỗi lần vẽ lại luôn tính theo dữ liệu mới nhất (xem bankTierIndex)
   // chưa chọn danh tính → hiện màn hình đăng nhập, chặn toàn bộ nội dung
   if(!currentUser()){ renderLoginScreen(); return; }
   // đã có danh tính → dọn màn hình đăng nhập cũ nếu còn sót lại trong DOM
@@ -6248,11 +6250,81 @@ function activeBankPolicy(bankId, dateStr, product){
 // nhận hồ sơ ban đầu) sẽ tính SAI chính sách/tháng hoa hồng. Hồ sơ cũ chưa có disbursedDate (tạo trước khi
 // có tính năng này) vẫn dùng tạm t.date như trước giờ, không cần migrate dữ liệu.
 function bankTxEffectiveDate(t){ return t.disbursedDate || t.date; }
+/* ---- Hoa hồng NGÂN HÀNG theo MỐC (số lượng hồ sơ hoặc doanh số giải ngân) ----
+   Mỗi chính sách có thể chọn: tierMode 'flat' (mặc định, 1 tỷ lệ cố định như trước) | 'count' (mốc theo SỐ
+   LƯỢNG hồ sơ giải ngân) | 'amount' (mốc theo DOANH SỐ = tổng tiền giải ngân). Kèm:
+     tierPeriod 'month'|'quarter'|'year' — kỳ cộng dồn để so với mốc
+     tierScope  'product'|'bank'        — cộng dồn riêng từng gói vay, hay gộp cả ngân hàng
+     tiers [{from, rate}]               — đạt (>=) mốc "from" thì hoa hồng = rate; dưới mốc đầu tiên dùng
+                                          commissionRate (tỷ lệ cơ bản)
+   Cách áp dụng: ĐẠT MỐC LÀ TÍNH LẠI TOÀN BỘ hồ sơ giải ngân trong kỳ theo tỷ lệ mới (không phải chỉ phần vượt). */
+function bankTierEnabled(pol){
+  return !!pol && (pol.tierMode==='count' || pol.tierMode==='amount') && Array.isArray(pol.tiers) && pol.tiers.length>0;
+}
+function bankTierPeriodKey(dateStr, period){
+  const y = String(dateStr).slice(0,4), m = Number(String(dateStr).slice(5,7))||1;
+  if(period==='year') return y;
+  if(period==='quarter') return y+'-Q'+Math.ceil(m/3);
+  return y+'-'+String(m).padStart(2,'0');
+}
+// Chỉ mục khối lượng giải ngân theo (ngân hàng | gói hoặc * | kỳ) — dựng 1 lần cho cả danh sách hồ sơ (O(n))
+// rồi tra tức thì, thay vì mỗi hồ sơ tự quét lại toàn bộ danh sách (O(n²) khi có hàng nghìn hồ sơ). Tự xoá
+// (bankTierCache=null) mỗi lần saveState()/renderAll() để luôn phản ánh đúng dữ liệu mới nhất.
+let bankTierCache = null;
+function bankTierIndex(period, units){
+  if(!bankTierCache) bankTierCache = {};
+  const unitSet = (Array.isArray(units) && units.length) ? new Set(units) : null; // null = mọi đơn vị
+  const cacheKey = period+'|'+(unitSet ? Array.from(unitSet).sort().join('~') : '*');
+  if(bankTierCache[cacheKey]) return bankTierCache[cacheKey];
+  const idx = new Map();
+  const add = (key, amt)=>{ const e = idx.get(key) || {count:0, amount:0}; e.count++; e.amount += amt; idx.set(key, e); };
+  for(const t of state.bankTransactions){
+    if(t.status!=='Đã giải ngân') continue;
+    if(unitSet && !unitSet.has(t.unit)) continue; // đơn vị KHÔNG áp dụng mốc -> không cộng vào khối lượng, ghi nhận riêng
+    const pk = bankTierPeriodKey(bankTxEffectiveDate(t), period);
+    const amt = Number(t.loanAmount)||0;
+    add(t.bankId+'|'+(t.product||DEFAULT_BANK_PRODUCT)+'|'+pk, amt);
+    add(t.bankId+'|*|'+pk, amt);
+  }
+  bankTierCache[cacheKey] = idx;
+  return idx;
+}
+// Thông tin tỷ lệ hoa hồng THỰC TẾ áp cho 1 hồ sơ vay (kèm lý do nếu đạt mốc) — dùng cả để tính tiền lẫn để hiển thị.
+function bankTxRateInfo(t){
+  const pol = activeBankPolicy(t.bankId, bankTxEffectiveDate(t), t.product);
+  if(!pol) return null;
+  const base = Number(pol.commissionRate)||0;
+  if(!bankTierEnabled(pol)) return {pol, rate:base, tiered:false};
+  // Chỉ định danh sách đơn vị ĐƯỢC áp dụng mốc (tierUnits) — đơn vị khác: hoa hồng cơ bản, và hồ sơ của họ
+  // KHÔNG cộng vào khối lượng tính mốc (xem bankTierIndex). Để trống = mọi đơn vị đều áp dụng.
+  if(Array.isArray(pol.tierUnits) && pol.tierUnits.length && !pol.tierUnits.includes(t.unit)){
+    return {pol, rate:base, tiered:true, unitExcluded:true};
+  }
+  const period = pol.tierPeriod || 'month';
+  const pk = bankTierPeriodKey(bankTxEffectiveDate(t), period);
+  const prodKey = pol.tierScope==='bank' ? '*' : (t.product||DEFAULT_BANK_PRODUCT);
+  const vol = bankTierIndex(period, pol.tierUnits).get(t.bankId+'|'+prodKey+'|'+pk) || {count:0, amount:0};
+  const v = pol.tierMode==='count' ? vol.count : vol.amount;
+  let rate = base, hit = null;
+  pol.tiers.slice().sort((a,b)=>(a.from||0)-(b.from||0)).forEach(tier=>{
+    if(v >= (Number(tier.from)||0)){ rate = Number(tier.rate)||0; hit = tier; }
+  });
+  return {pol, rate, tiered:true, volume:v, hitTier:hit, periodKey:pk, period};
+}
+const BANK_TIER_PERIOD_LABEL = {month:'tháng', quarter:'quý', year:'năm'};
+function bankTierSummary(p){
+  if(!bankTierEnabled(p)) return 'Hoa hồng cố định';
+  const per = BANK_TIER_PERIOD_LABEL[p.tierPeriod||'month'];
+  const unit = p.tierMode==='count' ? 'hồ sơ' : 'đ';
+  const scope = (p.tierScope==='bank' ? 'cả ngân hàng' : 'riêng gói này') + ((p.tierUnits&&p.tierUnits.length) ? '; chỉ đơn vị: '+p.tierUnits.join(', ')+' (đơn vị khác nhận hoa hồng cơ bản, không cộng vào mốc)' : '; mọi đơn vị');
+  const list = p.tiers.slice().sort((a,b)=>(a.from||0)-(b.from||0)).map(t=>`≥ ${fmt(t.from)} ${unit} → ${fmtPct(t.rate)}`).join('; ');
+  return `Theo mốc ${p.tierMode==='count'?'SỐ LƯỢNG hồ sơ':'DOANH SỐ giải ngân'}/${per} (${scope}). Dưới mốc đầu: ${fmtPct(p.commissionRate||0)}. ${list}. Đạt mốc → tính lại TOÀN BỘ hồ sơ trong ${per}.`;
+}
 function bankTxCommission(t){
   if(t.status!=='Đã giải ngân') return 0;
-  const pol = activeBankPolicy(t.bankId, bankTxEffectiveDate(t), t.product);
-  if(!pol) return 0;
-  return (Number(t.loanAmount)||0) * (Number(pol.commissionRate)||0);
+  const info = bankTxRateInfo(t);
+  if(!info) return 0;
+  return (Number(t.loanAmount)||0) * info.rate;
 }
 function bankLoanSum(bankId, from, to, unit){
   let total=0;
@@ -6399,6 +6471,140 @@ function renderBankSuppliers(c){
 
 /* ---------------------------- Ngân hàng · Chính sách CK (điều kiện vay theo tháng) ---------------------------- */
 let bankPolicyRenewalFilter = ''; // '' | 'yes' | 'no' — lọc theo cờ "Yêu cầu tái tục hằng năm", giữ nguyên qua lại giữa các lần vẽ trang
+/* ---- Bộ soạn "Các mốc hoa hồng" dùng chung cho form Thêm chính sách và hộp thoại sửa mốc ---- */
+// draft: mảng {from, rate(0-1)} được sửa trực tiếp; getMode(): 'count'|'amount' để đổi đơn vị hiển thị.
+function mountBankTierEditor(box, draft, getMode){
+  function draw(){
+    const mode = getMode();
+    const unit = mode==='count' ? 'hồ sơ' : 'đồng';
+    const step = mode==='count' ? 1 : 1000000;
+    box.innerHTML = `
+      <div class="helper" style="margin-bottom:8px">Đạt (từ) mốc nào thì <b>toàn bộ hồ sơ giải ngân trong kỳ</b> được tính hoa hồng theo tỷ lệ của mốc đó. Dưới mốc đầu tiên dùng "Hoa hồng cơ bản".</div>
+      ${draft.map((t,i)=>`
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px">
+          <span style="font-size:12px;color:var(--slate);min-width:62px">Từ mốc ≥</span>
+          <input type="number" min="0" step="${step}" data-ti="${i}" data-k="from" value="${t.from===null||t.from===undefined?'':t.from}" style="width:170px" placeholder="${mode==='count'?'VD: 10':'VD: 500000000'}">
+          <span style="font-size:12px">${unit}</span>
+          <span class="meta-line" data-tfmt="${i}" style="min-width:90px">${mode==='amount' && t.from ? fmt(t.from)+'đ' : ''}</span>
+          <span style="font-size:12px;color:var(--slate)">→ hoa hồng</span>
+          <input type="number" step="0.01" min="0" data-ti="${i}" data-k="rate" value="${t.rate===null||t.rate===undefined?'':round2(t.rate*100)}" style="width:90px" placeholder="VD: 1.5">
+          <span style="font-size:12px">%</span>
+          <button type="button" class="row-del" data-tdel="${i}" title="Xoá mốc này">✕</button>
+        </div>`).join('')}
+      <button type="button" class="btn btn-ghost" data-tadd style="font-size:12px">+ Thêm mốc</button>`;
+    box.querySelectorAll('input[data-ti]').forEach(inp=>{
+      inp.addEventListener('input', ()=>{
+        const i = Number(inp.dataset.ti);
+        const raw = inp.value;
+        if(inp.dataset.k==='from'){
+          draft[i].from = raw==='' ? null : Number(raw);
+          const f = box.querySelector(`[data-tfmt="${i}"]`);
+          if(f) f.textContent = (getMode()==='amount' && draft[i].from) ? fmt(draft[i].from)+'đ' : '';
+        } else {
+          draft[i].rate = raw==='' ? null : +(Number(raw)/100).toFixed(6);
+        }
+      });
+    });
+    box.querySelectorAll('[data-tdel]').forEach(b=> b.addEventListener('click', ()=>{ draft.splice(Number(b.dataset.tdel),1); draw(); }));
+    box.querySelector('[data-tadd]').addEventListener('click', ()=>{ draft.push({from:null, rate:null}); draw(); });
+  }
+  draw();
+  return {redraw: draw};
+}
+// Lọc các mốc hợp lệ (đủ số, >=0), sắp tăng dần theo mốc, bỏ mốc trùng nhau (giữ cái nhập sau cùng).
+function cleanBankTiers(draft){
+  const byFrom = new Map();
+  (draft||[]).forEach(t=>{
+    const f = Number(t.from), r = Number(t.rate);
+    if(t.from===null || t.from===undefined || t.rate===null || t.rate===undefined) return;
+    if(!isFinite(f) || f<0 || !isFinite(r) || r<0) return;
+    byFrom.set(f, {from:f, rate:r});
+  });
+  return Array.from(byFrom.values()).sort((a,b)=>a.from-b.from);
+}
+const BANK_TIER_FIELDS_HTML = (idp)=>`
+  <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:10px">
+    <div class="field" style="margin-bottom:0"><label>Kỳ tính mốc</label>
+      <select id="${idp}period"><option value="month">Theo tháng</option><option value="quarter">Theo quý</option><option value="year">Theo năm</option></select></div>
+    <div class="field" style="margin-bottom:0"><label>Cộng dồn khối lượng</label>
+      <select id="${idp}scope"><option value="product">Riêng từng gói vay</option><option value="bank">Gộp cả ngân hàng (mọi gói)</option></select></div>
+    <div class="field" style="margin-bottom:0"><label>Đơn vị áp dụng mốc</label>
+      <select id="${idp}unitmode"><option value="all">Tất cả đơn vị</option><option value="pick">Chỉ các đơn vị được chọn</option></select></div>
+  </div>
+  <div id="${idp}unitbox" style="display:none;margin-bottom:10px"></div>
+  <div id="${idp}editor"></div>`;
+// Ô chọn "Đơn vị áp dụng mốc": chế độ Tất cả / Chỉ đơn vị được chọn (tick từng đơn vị). Đơn vị không được chọn
+// = không áp dụng mốc (nhận hoa hồng cơ bản, hồ sơ KHÔNG cộng vào khối lượng tính mốc).
+function mountBankTierUnits(idp, root, selected){
+  const modeSel = root.querySelector('#'+idp+'unitmode'), box = root.querySelector('#'+idp+'unitbox');
+  const units = Array.from(new Set([...(state.units||[]), ...(selected||[])]));
+  box.innerHTML = units.length
+    ? `<div class="helper" style="margin-bottom:6px">Chỉ hồ sơ của các đơn vị được tick mới áp dụng mốc và cộng vào khối lượng. Đơn vị còn lại: hoa hồng cơ bản.</div>
+       <div style="display:flex;gap:8px 18px;flex-wrap:wrap">${units.map(u=>`<label style="display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer"><input type="checkbox" data-tunit="${escAttr(u)}" ${(selected||[]).includes(u)?'checked':''} style="width:auto;margin:0"> ${escHtml(u)}</label>`).join('')}</div>`
+    : '<div class="helper">Chưa có đơn vị nào trong hệ thống (thêm ở Cài đặt hoặc khi ghi nhận hồ sơ).</div>';
+  modeSel.value = (selected && selected.length) ? 'pick' : 'all';
+  const sync = ()=>{ box.style.display = modeSel.value==='pick' ? '' : 'none'; };
+  modeSel.addEventListener('change', sync); sync();
+}
+function readBankTierUnits(idp, root){
+  if(root.querySelector('#'+idp+'unitmode').value!=='pick') return [];
+  return Array.from(root.querySelectorAll('#'+idp+'unitbox [data-tunit]')).filter(i=>i.checked).map(i=>i.dataset.tunit);
+}
+function openBankTierModal(p){
+  const b = bankById(p.bankId);
+  const draft = bankTierEnabled(p) ? p.tiers.map(t=>({from:t.from, rate:t.rate})) : [{from:null, rate:null}];
+  openModal('Hoa hồng theo mốc — '+(b?b.name:'')+' · '+(p.product||DEFAULT_BANK_PRODUCT),
+    'Chọn cách tính hoa hồng cho đúng chính sách này (áp dụng từ '+bankPolicyEffectiveDate(p)+'). Hoa hồng cơ bản (dưới mốc đầu) lấy từ cột "Hoa hồng" ngoài bảng.',
+    `<div class="field"><label>Cách tính hoa hồng</label>
+       <select id="btm_mode">
+         <option value="flat">Cố định — 1 tỷ lệ cho mọi hồ sơ</option>
+         <option value="count">Theo mốc SỐ LƯỢNG hồ sơ giải ngân</option>
+         <option value="amount">Theo mốc DOANH SỐ (tổng tiền giải ngân)</option>
+       </select></div>
+     <div id="btm_tierwrap">${BANK_TIER_FIELDS_HTML('btm_')}</div>
+     <button class="btn btn-primary" id="btm_save" style="margin-top:14px">Lưu</button>`,
+    (body)=>{
+      const modeSel = body.querySelector('#btm_mode');
+      modeSel.value = bankTierEnabled(p) ? p.tierMode : 'flat';
+      body.querySelector('#btm_period').value = p.tierPeriod || 'month';
+      body.querySelector('#btm_scope').value = p.tierScope || 'product';
+      mountBankTierUnits('btm_', body, p.tierUnits||[]);
+      const wrap = body.querySelector('#btm_tierwrap');
+      const editor = mountBankTierEditor(body.querySelector('#btm_editor'), draft, ()=> modeSel.value==='count' ? 'count' : 'amount');
+      const sync = ()=>{ wrap.style.display = modeSel.value==='flat' ? 'none' : ''; editor.redraw(); };
+      modeSel.addEventListener('change', sync); sync();
+      body.querySelector('#btm_save').addEventListener('click', ()=>{
+        const mode = modeSel.value;
+        if(mode==='flat'){
+          delete p.tierMode; delete p.tierPeriod; delete p.tierScope; delete p.tiers; delete p.tierUnits;
+        } else {
+          const tu = readBankTierUnits('btm_', body);
+          if(body.querySelector('#btm_unitmode').value==='pick' && tu.length===0){ toast('Chọn "Chỉ các đơn vị được chọn" thì cần tick ít nhất 1 đơn vị (hoặc đổi về "Tất cả đơn vị")'); return; }
+          if(tu.length) p.tierUnits = tu; else delete p.tierUnits;
+          const tiers = cleanBankTiers(draft);
+          if(tiers.length===0){ toast('Cần ít nhất 1 mốc hợp lệ (đủ "Từ mốc" và "Hoa hồng %")'); return; }
+          p.tierMode = mode; p.tiers = tiers;
+          p.tierPeriod = body.querySelector('#btm_period').value;
+          p.tierScope = body.querySelector('#btm_scope').value;
+        }
+        logActivity('update','Chính sách CK (NH)', `${b?b.name:''} — ${p.product||DEFAULT_BANK_PRODUCT} — ${bankPolicyEffectiveDate(p)}: ${bankTierSummary(p)}`);
+        saveState();
+        closeModal();
+        toast('Đã lưu cách tính hoa hồng');
+        renderAll();
+      });
+    });
+}
+function bankTierCellHTML(p, editable){
+  const tiered = bankTierEnabled(p);
+  if(tiered){
+    const label = (p.tierMode==='count' ? 'Mốc SL' : 'Mốc DS')+' · '+p.tiers.length;
+    return editable
+      ? `<div><button type="button" class="btn btn-ghost" data-tier-edit="${p.id}" title="${escAttr(bankTierSummary(p))}" style="font-size:10.5px;padding:3px 7px;margin-top:4px;white-space:nowrap">📊 ${label}</button></div>`
+      : `<div class="meta-line" title="${escAttr(bankTierSummary(p))}" style="white-space:nowrap">📊 ${label}</div>`;
+  }
+  return editable ? `<div><a href="#" data-tier-edit="${p.id}" style="font-size:10.5px;color:var(--gold-text);white-space:nowrap">+ Theo mốc</a></div>` : '';
+}
 function renderBankPolicies(c){
   const pf = partnerScopeFilter('bankId');
   const policyCount = pf ? state.bankPolicies.filter(pf).length : state.bankPolicies.length;
@@ -6422,7 +6628,14 @@ function renderBankPolicies(c){
           <div class="field"><label>Lãi suất ưu đãi năm đầu (%)</label><input id="bpf_promo" type="number" step="0.01" placeholder="9.5"></div>
           <div class="field"><label>Biên độ sau ưu đãi (%)</label><input id="bpf_margin" type="number" step="0.01" placeholder="3.5"></div>
           <div class="field"><label>Phí trả nợ trước hạn (%)</label><input id="bpf_prepay" type="number" step="0.01" placeholder="3"></div>
-          <div class="field"><label>Hoa hồng (trước thuế) (%)</label><input id="bpf_comm" type="number" step="0.01" placeholder="1"></div>
+          <div class="field"><label id="bpf_comm_label">Hoa hồng (trước thuế) (%)</label><input id="bpf_comm" type="number" step="0.01" placeholder="1"></div>
+          <div class="field"><label>Cách tính hoa hồng</label>
+            <select id="bpf_tiermode">
+              <option value="flat">Cố định (1 tỷ lệ)</option>
+              <option value="count">Theo mốc SỐ LƯỢNG hồ sơ</option>
+              <option value="amount">Theo mốc DOANH SỐ giải ngân</option>
+            </select></div>
+          <div class="field" id="bpf_tier_wrap" style="grid-column:1/-1;display:none">${BANK_TIER_FIELDS_HTML('bpf_')}</div>
           <div class="field" style="display:flex;align-items:flex-end;gap:6px;padding-bottom:8px">
             <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-weight:normal">
               <input id="bpf_renew" type="checkbox" style="width:auto"> Yêu cầu mua lại bảo hiểm hằng năm
@@ -6467,6 +6680,11 @@ function renderBankPolicies(c){
         'LS ưu đãi năm đầu (%)': round2((p.promoRateY1||0)*100), 'Biên độ sau ưu đãi (%)': round2((p.marginAfterPromo||0)*100),
         'Phí trả trước hạn (%)': round2((p.prepaymentFee||0)*100), 'Hoa hồng trước thuế (%)': round2((p.commissionRate||0)*100),
         'Tái tục hằng năm': p.annualRenewalRequired?'Có':'Không',
+        'Cách tính hoa hồng': bankTierEnabled(p) ? (p.tierMode==='count'?'Theo số lượng':'Theo doanh số') : 'Cố định',
+        'Kỳ tính mốc': bankTierEnabled(p) ? ({month:'Tháng', quarter:'Quý', year:'Năm'}[p.tierPeriod||'month']) : '',
+        'Phạm vi mốc': bankTierEnabled(p) ? (p.tierScope==='bank'?'Cả ngân hàng':'Gói vay') : '',
+        'Đơn vị áp dụng mốc': bankTierEnabled(p) ? ((p.tierUnits&&p.tierUnits.length) ? p.tierUnits.join('; ') : '') : '',
+        'Các mốc (từ:hoa hồng %)': bankTierEnabled(p) ? p.tiers.slice().sort((a,b)=>a.from-b.from).map(t=>`${t.from}:${round2(t.rate*100)}`).join('; ') : '',
         'Điều kiện phê duyệt': p.approvalCondition||'', 'Thời gian giải ngân': p.disbursementTime||'', 'Giấy tờ giải ngân': p.disbursementDocs||'', 'Đánh giá': p.review||'',
       };
     });
@@ -6488,8 +6706,36 @@ function renderBankPolicies(c){
         if(!startDate){ errors.push(`${line}: "Ngày áp dụng" không đọc được (${dateRaw})`); return; }
         const product = String(row['Tên gói vay']||'').trim() || DEFAULT_BANK_PRODUCT;
         const renewRaw = String(row['Tái tục hằng năm']||'').trim().toLowerCase();
+        // Hoa hồng theo mốc (tuỳ chọn) — bỏ trống cột "Cách tính hoa hồng" hoặc ghi "Cố định" = như cũ
+        const modeRaw = String(row['Cách tính hoa hồng']||'').trim().toLowerCase();
+        let tierMode = 'flat';
+        if(modeRaw.includes('số lượng') || modeRaw.includes('so luong')) tierMode = 'count';
+        else if(modeRaw.includes('doanh số') || modeRaw.includes('doanh so')) tierMode = 'amount';
+        let tierExtra = {};
+        if(tierMode!=='flat'){
+          const tiers = [];
+          String(row['Các mốc (từ:hoa hồng %)']||'').split(';').map(s=>s.trim()).filter(Boolean).forEach(seg=>{
+            const [fromS, rateS] = seg.split(':');
+            const from = Number(String(fromS||'').replace(/[.\s]/g,'').replace(',','.'));
+            const rate = +(Number(String(rateS||'').replace(',','.'))/100).toFixed(6);
+            if(isFinite(from) && from>=0 && isFinite(rate) && rate>=0 && rateS!==undefined) tiers.push({from, rate});
+          });
+          if(tiers.length===0){ errors.push(`${line}: chọn tính theo mốc nhưng cột "Các mốc" trống/sai định dạng (VD: 10:1.2; 20:1.5)`); return; }
+          const perRaw = String(row['Kỳ tính mốc']||'').trim().toLowerCase();
+          const scopeRaw = String(row['Phạm vi mốc']||'').trim().toLowerCase();
+          tierExtra = {
+            tierMode, tiers: cleanBankTiers(tiers),
+            tierPeriod: perRaw.startsWith('q') ? 'quarter' : (perRaw.startsWith('n') ? 'year' : 'month'),
+            tierScope: (scopeRaw.includes('ngân hàng') || scopeRaw.includes('ngan hang')) ? 'bank' : 'product',
+          };
+          // Cột "Đơn vị áp dụng mốc": các đơn vị cách nhau dấu ; — bỏ trống = mọi đơn vị. Khớp tên không phân biệt hoa/thường với đơn vị đã có.
+          const unitsRaw = String(row['Đơn vị áp dụng mốc']||'').split(';').map(s=>s.trim()).filter(Boolean);
+          if(unitsRaw.length){
+            tierExtra.tierUnits = Array.from(new Set(unitsRaw.map(u=> (state.units||[]).find(x=>x.toLowerCase()===u.toLowerCase()) || u)));
+          }
+        }
         const rec = {
-          id: uid('bp'), bankId: bank.id, month: monthKey(startDate), startDate, product,
+          id: uid('bp'), bankId: bank.id, month: monthKey(startDate), startDate, product, ...tierExtra,
           maxLoanRatio: (Number(row['Tỷ lệ vay tối đa (%)'])||0)/100,
           maxLoanTerm: Number(row['TG vay tối đa (năm)'])||0,
           promoRateY1: (Number(row['LS ưu đãi năm đầu (%)'])||0)/100,
@@ -6503,7 +6749,7 @@ function renderBankPolicies(c){
           review: String(row['Đánh giá']||'').trim(),
         };
         toInsert.push(rec);
-        previewRows.push({'Ngân hàng':bank.name,'Gói vay':product,'Ngày áp dụng':startDate,'Vay tối đa':fmtPct(rec.maxLoanRatio),'Hoa hồng':fmtPct(rec.commissionRate),'Tái tục':rec.annualRenewalRequired?'Có':'Không'});
+        previewRows.push({'Ngân hàng':bank.name,'Gói vay':product,'Ngày áp dụng':startDate,'Vay tối đa':fmtPct(rec.maxLoanRatio),'Hoa hồng':fmtPct(rec.commissionRate)+(rec.tierMode?(' · theo mốc '+(rec.tierMode==='count'?'SL':'DS')+' ('+rec.tiers.length+')'):''),'Tái tục':rec.annualRenewalRequired?'Có':'Không'});
       });
       e.target.value = '';
       if(toInsert.length===0 && errors.length===0){ toast('File không có dòng dữ liệu nào'); return; }
@@ -6517,6 +6763,17 @@ function renderBankPolicies(c){
     });
   }
   if(editable){
+    // Bộ soạn mốc trong form Thêm chính sách — chỉ hiện khi chọn "Theo mốc ..."
+    const bpfDraft = [{from:null, rate:null}];
+    mountBankTierUnits('bpf_', document.getElementById('bpf_tier_wrap'), []);
+    const bpfModeSel = document.getElementById('bpf_tiermode');
+    const bpfEditor = mountBankTierEditor(document.getElementById('bpf_editor'), bpfDraft, ()=> bpfModeSel.value==='count' ? 'count' : 'amount');
+    bpfModeSel.addEventListener('change', ()=>{
+      const tiered = bpfModeSel.value!=='flat';
+      document.getElementById('bpf_tier_wrap').style.display = tiered ? '' : 'none';
+      document.getElementById('bpf_comm_label').textContent = tiered ? 'Hoa hồng cơ bản — dưới mốc đầu (%)' : 'Hoa hồng (trước thuế) (%)';
+      bpfEditor.redraw();
+    });
     document.getElementById('addBankPolicyBtn').addEventListener('click', ()=>{
       const bankId = document.getElementById('bpf_bank').value;
       if(!bankId){ toast('Cần có ngân hàng trước khi thêm chính sách'); return; }
@@ -6537,6 +6794,17 @@ function renderBankPolicies(c){
         disbursementDocs: document.getElementById('bpf_docs').value.trim(),
         review: document.getElementById('bpf_review').value.trim(),
       };
+      const tierMode = bpfModeSel.value;
+      if(tierMode!=='flat'){
+        const tiers = cleanBankTiers(bpfDraft);
+        if(tiers.length===0){ toast('Chọn tính theo mốc thì cần ít nhất 1 mốc hợp lệ (đủ "Từ mốc" và "Hoa hồng %")'); return; }
+        p.tierMode = tierMode; p.tiers = tiers;
+        p.tierPeriod = document.getElementById('bpf_period').value;
+        p.tierScope = document.getElementById('bpf_scope').value;
+        const tu = readBankTierUnits('bpf_', document.getElementById('bpf_tier_wrap'));
+        if(document.getElementById('bpf_unitmode').value==='pick' && tu.length===0){ toast('Chọn "Chỉ các đơn vị được chọn" thì cần tick ít nhất 1 đơn vị (hoặc đổi về "Tất cả đơn vị")'); return; }
+        if(tu.length) p.tierUnits = tu;
+      }
       state.bankPolicies.push(p);
       const b = bankById(bankId);
       logActivity('create','Chính sách CK (NH)', `Thêm chính sách "${p.product}" cho ${b?b.name:''}, áp dụng từ ${startDate}`);
@@ -6590,7 +6858,7 @@ function renderBankPolicies(c){
         <td class="num"><input class="cell-edit num pct" data-field="promoRateY1" data-id="${p.id}" type="number" step="0.01" value="${round2(p.promoRateY1*100)}" ${dis} style="width:60px"></td>
         <td class="num"><input class="cell-edit num pct" data-field="marginAfterPromo" data-id="${p.id}" type="number" step="0.01" value="${round2(p.marginAfterPromo*100)}" ${dis} style="width:60px"></td>
         <td class="num"><input class="cell-edit num pct" data-field="prepaymentFee" data-id="${p.id}" type="number" step="0.01" value="${round2(p.prepaymentFee*100)}" ${dis} style="width:60px"></td>
-        <td class="num" style="font-weight:700"><input class="cell-edit num pct" data-field="commissionRate" data-id="${p.id}" type="number" step="0.01" value="${round2(p.commissionRate*100)}" ${dis} style="width:60px"></td>
+        <td class="num" style="font-weight:700"><input class="cell-edit num pct" data-field="commissionRate" data-id="${p.id}" type="number" step="0.01" value="${round2(p.commissionRate*100)}" ${dis} style="width:60px" ${bankTierEnabled(p)?'title="Hoa hồng cơ bản — áp khi chưa đạt mốc đầu tiên"':''}>${bankTierCellHTML(p, editable)}</td>
         <td style="text-align:center"><input class="renew-toggle" data-id="${p.id}" type="checkbox" ${p.annualRenewalRequired?'checked':''} ${dis} title="Xe vay theo gói này phải mua lại bảo hiểm mỗi năm — dùng để tính Lịch tái tục ở module Bảo hiểm"></td>
         <td class="wrap"><input class="cell-edit" data-field="approvalCondition" data-id="${p.id}" value="${escAttr(p.approvalCondition||'')}" ${dis}></td>
         <td><input class="cell-edit" data-field="disbursementTime" data-id="${p.id}" value="${escAttr(p.disbursementTime||'')}" ${dis}></td>
@@ -6610,6 +6878,13 @@ function renderBankPolicies(c){
         p.month = monthKey(inp.value);
         saveState();
         renderAll();
+      });
+    });
+    tbl.querySelectorAll('[data-tier-edit]').forEach(el=>{
+      el.addEventListener('click', e=>{
+        e.preventDefault();
+        const p = state.bankPolicies.find(x=>x.id===el.dataset.tierEdit);
+        if(p) openBankTierModal(p);
       });
     });
     tbl.querySelectorAll('.renew-toggle').forEach(cb=>{
@@ -6985,9 +7260,15 @@ function renderBankTxTable(editable){
       const creator = state.accounts.find(a=>a.id===t.createdBy);
       const pol = t.status==='Đã giải ngân' ? activeBankPolicy(t.bankId, bankTxEffectiveDate(t), t.product) : null;
       const comm = bankTxCommission(t);
+      const rateInfo = t.status==='Đã giải ngân' ? bankTxRateInfo(t) : null;
+      const rateNote = (rateInfo && rateInfo.tiered && rateInfo.unitExcluded)
+        ? `<div class="meta-line" style="white-space:nowrap" title="Đơn vị này không nằm trong danh sách áp dụng mốc của chính sách — nhận hoa hồng cơ bản, hồ sơ không cộng vào khối lượng mốc">${fmtPct(rateInfo.rate)} · không áp dụng mốc</div>`
+        : (rateInfo && rateInfo.tiered)
+        ? `<div class="meta-line" style="white-space:nowrap" title="${escAttr('Kỳ '+rateInfo.periodKey+': đã giải ngân '+(rateInfo.pol.tierMode==='count'?fmt(rateInfo.volume)+' hồ sơ':fmt(rateInfo.volume)+'đ')+(rateInfo.hitTier?' → đạt mốc ≥ '+fmt(rateInfo.hitTier.from):' → chưa đạt mốc đầu, dùng tỷ lệ cơ bản'))}">${fmtPct(rateInfo.rate)} · ${rateInfo.hitTier?'đạt mốc':'cơ bản'}</div>`
+        : '';
       const commCell = t.status!=='Đã giải ngân'
         ? '<span class="comm-cell zero">—</span>'
-        : (pol ? `<span class="comm-cell has-value">${fmt(comm)}</span>` : `<span class="comm-cell warn-empty" title="Chưa có chính sách gói ${escAttr(t.product||DEFAULT_BANK_PRODUCT)} cho ${monthLabel(monthKey(t.date))}">0đ · chưa có CS</span>`);
+        : (pol ? `<span class="comm-cell has-value">${fmt(comm)}</span>${rateNote}` : `<span class="comm-cell warn-empty" title="Chưa có chính sách gói ${escAttr(t.product||DEFAULT_BANK_PRODUCT)} cho ${monthLabel(monthKey(t.date))}">0đ · chưa có CS</span>`);
       const lockR = lockingReconOf(t, state.bankReconciliations, 'bankId');
       const lockedForMe = !!lockR && currentRole()!=='Admin';
       const dis = (editable && !lockedForMe)?'':'disabled';
