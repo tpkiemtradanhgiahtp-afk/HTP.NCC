@@ -1762,11 +1762,11 @@ let badgeCache = {};
    soát, và 3 tháng gần nhất — tránh báo ồn với đối tác vốn không đối soát). Chỉ Admin/Quản lý/Kế toán thấy. */
 const RECON_ALERT_MODS = [
   {key:'ncc', label:'NCC Dịch vụ Ô tô - Xe máy', idField:'supplierId', tab:'reconcile', who:'NCC',
-   list:()=>state.reconciliations||[], entities:()=>state.suppliers||[], calc:r=>reconCalc(r), activity:(id,f,t)=>sumRevenue(id,f,t)},
+   list:()=>state.reconciliations||[], entities:()=>state.suppliers||[], calc:r=>reconCalc(r), activity:(id,f,t)=>{ if(!(sumRevenue(id,f,t)>0)) return 0; return Number(reconCalc({supplierId:id, fromDate:reconIsoLocal(f), toDate:reconIsoLocal(t)}).discount)||0; }},
   {key:'nh', label:'Ngân hàng', idField:'bankId', tab:'nh_reconcile', who:'Ngân hàng',
-   list:()=>state.bankReconciliations||[], entities:()=>state.banks||[], calc:r=>bankReconCalc(r), activity:(id,f,t)=>bankLoanSum(id,f,t)},
+   list:()=>state.bankReconciliations||[], entities:()=>state.banks||[], calc:r=>bankReconCalc(r), activity:(id,f,t)=>{ if(!(bankLoanSum(id,f,t)>0)) return 0; return Number(bankReconCalc({bankId:id, fromDate:reconIsoLocal(f), toDate:reconIsoLocal(t)}).totalDue)||0; }},
   {key:'bh', label:'Bảo hiểm', idField:'insurerId', tab:'bh_reconcile', who:'NCC bảo hiểm',
-   list:()=>state.insReconciliations||[], entities:()=>state.insurers||[], calc:r=>insReconCalc(r), activity:(id,f,t)=>insPremiumSum(id,f,t)},
+   list:()=>state.insReconciliations||[], entities:()=>state.insurers||[], calc:r=>insReconCalc(r), activity:(id,f,t)=>{ if(!(insPremiumSum(id,f,t)>0)) return 0; return Number(insReconCalc({insurerId:id, fromDate:reconIsoLocal(f), toDate:reconIsoLocal(t)}).totalDue)||0; }},
 ];
 function reconPayDueDay(e){ const d = Number(e && e.payDueDay); return (d>=1 && d<=31) ? Math.floor(d) : null; }
 function reconDueDate(toDateStr, day){
@@ -1880,7 +1880,7 @@ function reconAlertLinesHTML(m, res, max){
     + block(`Sắp đến hạn (${res.soon.length} kỳ)`, 'var(--amber)', res.soon,
       x=>rowOf(`• <b>${escHtml(x.e.name)}</b> — kỳ ${escHtml(x.r.fromDate)} → ${escHtml(x.r.toDate)}: còn <b>${fmt(x.owed)}đ</b>, hạn ${fmtD(x.due)}${x.days===0?' (hôm nay)':' (còn '+(-x.days)+' ngày)'}`))
     + block(`Cần xem — chưa lập kỳ đối soát (${res.missing.length} đối tác)`, 'var(--amber)', res.missing,
-      x=>rowOf(`• <b>${escHtml(x.e.name)}</b> — thiếu kỳ đối soát tháng <b>${x.labels.slice().reverse().join(', ')}</b> (phát sinh ${fmt(x.act)}đ)`));
+      x=>rowOf(`• <b>${escHtml(x.e.name)}</b> — thiếu kỳ đối soát tháng <b>${x.labels.slice().reverse().join(', ')}</b> (CK/hoa hồng phải hưởng ${fmt(x.act)}đ)`));
 }
 // Dải cảnh báo đặt ở đầu trang Đối soát CK của từng module
 function reconAlertBannerHTML(modKey){
@@ -1893,7 +1893,7 @@ function reconAlertBannerHTML(modKey){
     <div class="panel-body">
       <div style="font-weight:700;font-size:14px">${severe?'⚠':'🔔'} Cảnh báo thanh toán đối soát — ${escHtml(m.label)}</div>
       ${reconAlertLinesHTML(m, res, 3)}
-      <div class="meta-line" style="margin-top:6px">Hạn thanh toán đặt riêng cho từng đối tác ở Danh mục (cột "Hạn thanh toán"). Đối tác chưa đặt hạn thì không bị báo quá hạn (vẫn bị báo thiếu kỳ). Đối tác không đối soát hàng tháng: chọn "Không đối soát hàng tháng" ở Danh mục để tắt báo thiếu kỳ.</div>
+      <div class="meta-line" style="margin-top:6px">Hạn thanh toán đặt riêng cho từng đối tác ở Danh mục (cột "Hạn thanh toán"). Đối tác chưa đặt hạn thì không bị báo quá hạn (vẫn bị báo thiếu kỳ nếu tháng đó có chiết khấu/hoa hồng > 0). Đối tác không đối soát hàng tháng: chọn "Không đối soát hàng tháng" ở Danh mục để tắt báo thiếu kỳ.</div>
     </div></div>`;
 }
 // Hộp nhắc khi đăng nhập (Admin/Quản lý/Kế toán) — chờ tới khi dữ liệu các module đã đồng bộ xong mới hiện, tránh
