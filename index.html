@@ -1093,7 +1093,7 @@ const BRANCH_META_FIELDS = {
   ncc:    ['nextSupplierNo','monitoring','reportDate'],
   nh:     ['nextBankNo'],
   bh:     ['insAllocAlertThreshold','nextInsNo','insRenewalAlertDays','insRenewalAutoSnoozeDays','insAllocMonthLocks','renewalDismissedSuggestions'],
-  shared: ['units','driveUploadUrl','driveUploadSecret','emailNotifyEnabled','editPerms'],
+  shared: ['units','driveUploadUrl','driveUploadSecret','emailNotifyEnabled','editPerms','editPermsRecAcc'],
 };
 // Toàn bộ field của 1 nhánh (gộp cả 2 loại trên) — dùng ở những chỗ chỉ cần biết "nhánh này có field gì"
 // mà không cần phân biệt loại (VD: reset dữ liệu khi unsubscribe, kiểm tra tên module hợp lệ, sao lưu).
@@ -3332,7 +3332,7 @@ const DEFAULT_EDIT_PERMS = {
   suppliers:    ['Admin','Quản lý'],
   policies:     ['Admin','Quản lý'],
   transactions: ['Admin','Quản lý','Nhân viên'],
-  reconcile:    ['Admin','Quản lý'],
+  reconcile:    ['Admin','Quản lý','Kế toán'], // Kế toán theo dõi CK/hoa hồng nên được tạo/sửa kỳ đối soát
   reconcile_pay:   ['Admin','Quản lý','Kế toán'], // Ghi nhận thanh toán ở Sổ nhận tiền — TÁCH RIÊNG khỏi quyền thêm/sửa kỳ đối soát (reconcile), để Kế toán ghi nhận tiền về được mà không có quyền sửa kỳ/phương pháp tính CK
   monitor:      ['Admin','Quản lý'],   // chọn chu kỳ theo dõi / ngày báo cáo
   settings:     ['Admin'],   // danh sách đơn vị — cả tab Cài đặt giờ chỉ Admin xem/sửa được (mục "Hệ thống") — CỐ ĐỊNH, không cho cấu hình lại
@@ -3340,13 +3340,13 @@ const DEFAULT_EDIT_PERMS = {
   nh_suppliers:    ['Admin','Quản lý'],
   nh_policies:     ['Admin','Quản lý'],
   nh_transactions: ['Admin','Quản lý','Nhân viên'],
-  nh_reconcile:    ['Admin','Quản lý'],
+  nh_reconcile:    ['Admin','Quản lý','Kế toán'], // Kế toán theo dõi CK/hoa hồng nên được tạo/sửa kỳ đối soát
   nh_reconcile_pay:['Admin','Quản lý','Kế toán'],
   bh_suppliers:    ['Admin','Quản lý'],
   bh_policies:     ['Admin','Quản lý'],
   bh_comm_history: ['Admin','Quản lý'], // Lịch sử tỷ lệ hoa hồng theo mốc thời gian
   bh_transactions: ['Admin','Quản lý','Nhân viên'],
-  bh_reconcile:    ['Admin','Quản lý'],
+  bh_reconcile:    ['Admin','Quản lý','Kế toán'], // Kế toán theo dõi CK/hoa hồng nên được tạo/sửa kỳ đối soát
   bh_reconcile_pay:['Admin','Quản lý','Kế toán'],
   bh_allocation:   ['Admin','Quản lý'],  // nhập DT dịch vụ/sửa chữa theo hãng theo tháng
   yearly_targets:  ['Admin','Quản lý'],  // Mục tiêu năm — dùng chung cho cả 3 module
@@ -3553,8 +3553,16 @@ function canEdit(area){
   // "Admin" luôn được sửa mọi khu vực, kể cả khi dữ liệu cấu hình lỡ bị thiếu/hỏng — không phụ thuộc
   // state.editPerms để tránh trường hợp Admin tự khoá nhầm chính mình khỏi mọi thứ.
   if(role==='Admin') return true;
-  const allowed = (state.editPerms && state.editPerms[area]) || DEFAULT_EDIT_PERMS[area] || [];
-  return allowed.includes(role);
+  return permAllowedRoles(area).includes(role);
+}
+// Quyền "tạo/sửa kỳ đối soát" mới được cấp thêm cho Kế toán: cấu hình phân quyền ĐÃ LƯU từ trước (state.editPerms)
+// chưa có Kế toán -> cho Kế toán qua mặc định cho tới khi Admin tự chỉnh bảng phân quyền lần đầu (khi đó cờ
+// editPermsRecAcc bật, mọi thứ theo đúng bảng Admin đã chọn, kể cả việc bỏ quyền Kế toán).
+const RECON_EDIT_KEYS = ['reconcile','nh_reconcile','bh_reconcile'];
+function permAllowedRoles(area){
+  const base = (state.editPerms && state.editPerms[area]) || DEFAULT_EDIT_PERMS[area] || [];
+  if(!state.editPermsRecAcc && RECON_EDIT_KEYS.includes(area) && !base.includes('Kế toán')) return base.concat('Kế toán');
+  return base;
 }
 // (Đã xoá hàm roleClass() cũ — không được gọi ở đâu trong app, mọi nơi đều dùng roleBadgeClass() bên dưới.)
 // (roleClass chỉ cần khớp với CSS .role-badge.Admin/.Quan-ly/.Nhan-vien — map thủ công cho chắc)
@@ -6124,8 +6132,8 @@ function renderReconcile(c){
         <div class="helper">"NCC xác nhận" là số CK mà NCC đồng ý/xác nhận bằng văn bản (nếu có) — độc lập với số tiền thực đã nhận, ghi ở Sổ nhận tiền bên trong từng dòng.</div>
       </div>
     </div>` : lockedNote(canPay
-      ? 'Bạn có quyền ghi nhận thanh toán ở "Sổ nhận tiền" bên trong mỗi dòng bên dưới, nhưng không thêm/sửa được kỳ đối soát mới — chỉ Admin/Quản lý làm được việc đó.'
-      : 'Bạn đang xem ở chế độ chỉ đọc — chỉ Admin/Quản lý mới thêm/sửa kỳ đối soát.')}
+      ? 'Bạn có quyền ghi nhận thanh toán ở "Sổ nhận tiền" bên trong mỗi dòng bên dưới, nhưng không thêm/sửa được kỳ đối soát mới — chỉ Admin/Quản lý/Kế toán làm được việc đó.'
+      : 'Bạn đang xem ở chế độ chỉ đọc — chỉ Admin/Quản lý/Kế toán mới thêm/sửa kỳ đối soát.')}
     <div class="panel">
       ${panelToggleHeadHTML('reconFilterPanel', 'Bộ lọc', 'Lọc Lịch sử đối soát bên dưới theo NCC', '', false, 'lọc')}
       <div class="panel-body" ${panelBodyOpenAttr('reconFilterPanel', false)}>
@@ -6246,7 +6254,7 @@ function renderReconTable(editable, canPay){
       // miễn kỳ đó chưa bị khoá (đã chốt) — khoá thì chỉ Admin sửa được như bình thường.
       const confirmedDis = ((editable && !lockedForMe) || (isPartnerSelf && !r.locked)) ? '' : 'disabled';
       const rowDis = (editable && !lockedForMe) ? '' : 'disabled';
-      const canDelRow = editable && (!r.locked || currentRole()==='Admin');
+      const canDelRow = editable && currentRole()!=='Kế toán' && (!r.locked || currentRole()==='Admin'); // Kế toán không được xoá kỳ đối soát (chống mất dữ liệu)
       const dueInfo = reconDueInfo('ncc', r, rc.stillOwed);
       const mainRow = `<tr class="${reconRowClass(dueInfo)}">
         <td>${escHtml(r.period)}</td>
@@ -6354,6 +6362,7 @@ function renderReconTable(editable, canPay){
     tbl.querySelectorAll('[data-del]').forEach(btn=>{
       btn.addEventListener('click', ()=>{
         const r = state.reconciliations.find(x=>x.id===btn.dataset.del);
+        if(currentRole()==='Kế toán'){ toast('Kế toán không có quyền xoá kỳ đối soát'); return; }
         if(r && r.locked && currentRole()!=='Admin'){ toast('Kỳ đã chốt — chỉ Admin được xoá'); return; }
         const s = r ? supplierById(r.supplierId) : null;
         confirmModal(`Xoá kỳ "${r?r.period:''}"${r&&r.locked?' (đã chốt)':''}?`, ()=>{
@@ -7693,8 +7702,8 @@ function renderBankReconcile(c){
         </div>
       </div>
     </div>` : lockedNote(canPay
-      ? 'Bạn có quyền ghi nhận thanh toán ở "Sổ nhận tiền" bên trong mỗi dòng bên dưới, nhưng không thêm/sửa được kỳ đối soát mới — chỉ Admin/Quản lý làm được việc đó.'
-      : 'Bạn đang xem ở chế độ chỉ đọc — chỉ Admin/Quản lý mới thêm/sửa kỳ đối soát.')}
+      ? 'Bạn có quyền ghi nhận thanh toán ở "Sổ nhận tiền" bên trong mỗi dòng bên dưới, nhưng không thêm/sửa được kỳ đối soát mới — chỉ Admin/Quản lý/Kế toán làm được việc đó.'
+      : 'Bạn đang xem ở chế độ chỉ đọc — chỉ Admin/Quản lý/Kế toán mới thêm/sửa kỳ đối soát.')}
     <div class="panel">
       ${panelToggleHeadHTML('bankReconFilterPanel', 'Bộ lọc', 'Lọc Lịch sử đối soát bên dưới theo Ngân hàng', '', false, 'lọc')}
       <div class="panel-body" ${panelBodyOpenAttr('bankReconFilterPanel', false)}>
@@ -7802,7 +7811,7 @@ function renderBankReconTable(editable, canPay){
       const lockedForMe = r.locked && currentRole()!=='Admin';
       const confirmedDis = ((editable && !lockedForMe) || (isPartnerSelf && !r.locked)) ? '' : 'disabled';
       const rowDis = (editable && !lockedForMe) ? '' : 'disabled';
-      const canDelRow = editable && (!r.locked || currentRole()==='Admin');
+      const canDelRow = editable && currentRole()!=='Kế toán' && (!r.locked || currentRole()==='Admin'); // Kế toán không được xoá kỳ đối soát (chống mất dữ liệu)
       const dueInfo = reconDueInfo('nh', r, rc.stillOwed);
       const mainRow = `<tr class="${reconRowClass(dueInfo)}">
         <td>${escHtml(r.period)}</td>
@@ -7908,6 +7917,7 @@ function renderBankReconTable(editable, canPay){
     tbl.querySelectorAll('[data-del]').forEach(btn=>{
       btn.addEventListener('click', ()=>{
         const r = state.bankReconciliations.find(x=>x.id===btn.dataset.del);
+        if(currentRole()==='Kế toán'){ toast('Kế toán không có quyền xoá kỳ đối soát'); return; }
         if(r && r.locked && currentRole()!=='Admin'){ toast('Kỳ đã chốt — chỉ Admin được xoá'); return; }
         const b = r ? bankById(r.bankId) : null;
         confirmModal(`Xoá kỳ "${r?r.period:''}"${r&&r.locked?' (đã chốt)':''}?`, ()=>{
@@ -9882,8 +9892,8 @@ function renderInsReconcile(c){
         </div>
       </div>
     </div>` : lockedNote(canPay
-      ? 'Bạn có quyền ghi nhận thanh toán ở "Sổ nhận tiền" bên trong mỗi dòng bên dưới, nhưng không thêm/sửa được kỳ đối soát mới — chỉ Admin/Quản lý làm được việc đó.'
-      : 'Bạn đang xem ở chế độ chỉ đọc — chỉ Admin/Quản lý mới thêm/sửa kỳ đối soát.')}
+      ? 'Bạn có quyền ghi nhận thanh toán ở "Sổ nhận tiền" bên trong mỗi dòng bên dưới, nhưng không thêm/sửa được kỳ đối soát mới — chỉ Admin/Quản lý/Kế toán làm được việc đó.'
+      : 'Bạn đang xem ở chế độ chỉ đọc — chỉ Admin/Quản lý/Kế toán mới thêm/sửa kỳ đối soát.')}
     <div class="panel">
       ${panelToggleHeadHTML('insReconFilterPanel', 'Bộ lọc', 'Lọc Lịch sử đối soát bên dưới theo NCC bảo hiểm', '', false, 'lọc')}
       <div class="panel-body" ${panelBodyOpenAttr('insReconFilterPanel', false)}>
@@ -9988,7 +9998,7 @@ function renderInsReconTable(editable, canPay){
       const lockedForMe = r.locked && currentRole()!=='Admin';
       const confirmedDis = ((editable && !lockedForMe) || (isPartnerSelf && !r.locked)) ? '' : 'disabled';
       const rowDis = (editable && !lockedForMe) ? '' : 'disabled';
-      const canDelRow = editable && (!r.locked || currentRole()==='Admin');
+      const canDelRow = editable && currentRole()!=='Kế toán' && (!r.locked || currentRole()==='Admin'); // Kế toán không được xoá kỳ đối soát (chống mất dữ liệu)
       const dueInfo = reconDueInfo('bh', r, rc.stillOwed);
       const mainRow = `<tr class="${reconRowClass(dueInfo)}">
         <td>${escHtml(r.period)}</td>
@@ -10094,6 +10104,7 @@ function renderInsReconTable(editable, canPay){
     tbl.querySelectorAll('[data-del]').forEach(btn=>{
       btn.addEventListener('click', ()=>{
         const r = state.insReconciliations.find(x=>x.id===btn.dataset.del);
+        if(currentRole()==='Kế toán'){ toast('Kế toán không có quyền xoá kỳ đối soát'); return; }
         if(r && r.locked && currentRole()!=='Admin'){ toast('Kỳ đã chốt — chỉ Admin được xoá'); return; }
         const ins = r ? insurerById(r.insurerId) : null;
         confirmModal(`Xoá kỳ "${r?r.period:''}"${r&&r.locked?' (đã chốt)':''}?`, ()=>{
@@ -11557,6 +11568,10 @@ let acctSearchFilter = ''; // lọc Danh sách tài khoản theo Tên hiển th�
 // (áp dụng ngay, không cần nút Lưu riêng — nhất quán với cách các cài đặt khác trong app hoạt động).
 function togglePermForRole(keys, role, grant){
   if(!state.editPerms) state.editPerms = JSON.parse(JSON.stringify(DEFAULT_EDIT_PERMS));
+  if(!state.editPermsRecAcc){ // chốt lại quyền Kế toán (mặc định mới) vào cấu hình đã lưu trước khi Admin chỉnh
+    RECON_EDIT_KEYS.forEach(k=>{ state.editPerms[k] = permAllowedRoles(k).slice(); });
+    state.editPermsRecAcc = true;
+  }
   keys.forEach(k=>{
     if(!Array.isArray(state.editPerms[k])) state.editPerms[k] = (DEFAULT_EDIT_PERMS[k]||[]).slice();
     const set = new Set(state.editPerms[k]);
@@ -11698,7 +11713,7 @@ function renderAccounts(c){
                   if(r==='Đối tác') return `<td style="text-align:center">—</td>`; // Đối tác không thuộc diện cấu hình ở bảng này, quyền của Đối tác xử lý riêng theo từng chỗ cụ thể
                   const allowed = locked
                     ? keys.every(k=> (DEFAULT_EDIT_PERMS[k]||[]).includes(r)) // dòng cố định: luôn hiện đúng theo default, không đọc state.editPerms có thể còn giá trị cũ từ trước khi khoá lại
-                    : keys.every(k=> ((state.editPerms&&state.editPerms[k])||DEFAULT_EDIT_PERMS[k]||[]).includes(r));
+                    : keys.every(k=> permAllowedRoles(k).includes(r));
                   const clickable = isAdmin && !locked;
                   return `<td style="text-align:center;${clickable?'cursor:pointer':''}" ${clickable?`data-perm-toggle="${escAttr(r)}"`:''} title="${clickable?'Bấm để '+(allowed?'thu hồi':'cấp')+' quyền':(locked?'Cố định, không cấu hình được ở đây':'')}">${allowed?'✅':'—'}</td>`;
                 }).join('')}
