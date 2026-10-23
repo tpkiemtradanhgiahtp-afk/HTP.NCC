@@ -1490,6 +1490,7 @@ async function subscribeBranchImpl(branch){
   // vẽ lại rời rạc 9 lần liên tiếp, đây chính là nguyên nhân gây cảm giác giật/lag sau bản sửa trước).
   badgeCacheDirty = true;
   branchesStillSyncing.delete(branch); // nhánh này đã nạp xong hẳn -> tự ẩn chỉ báo "Đang đồng bộ" nếu không còn nhánh nào khác đang tải
+  fb.loaded[branch] = true; // đặt TRƯỚC renderAll() để các logic chờ "dữ liệu đã sẵn sàng" (VD hộp nhắc đối soát lúc đăng nhập) thấy đúng trạng thái
   renderAll();
   // Chỉ đúng lúc này — SAU khi meta + MỌI field bản ghi của nhánh đã tải xong dữ liệu thật (state[field]
   // đã thay từ seed sang dữ liệu Firebase, known map đã có đủ) — mới đánh dấu nhánh này an toàn để ghi.
@@ -1752,9 +1753,191 @@ let pendingSave = false; // true = có thay đổi đang chờ ghi (chưa chắc
    không kèm ghi dữ liệu (đổi tab, gõ tìm kiếm...) sẽ dùng lại đúng kết quả đã tính từ lần trước. */
 let badgeCacheDirty = true; // true ban đầu để lần vẽ đầu tiên luôn tính đủ
 let badgeCache = {};
+/* ---------------------------- Cảnh báo ĐỐI SOÁT CK chưa thanh toán ----------------------------
+   Mỗi đối tác (NCC / ngân hàng / NCC bảo hiểm) có "Hạn thanh toán" = NGÀY trong tháng (payDueDay, 1-31, đặt
+   ở Danh mục). Hạn của 1 kỳ đối soát = ngày đó của tháng LIỀN SAU tháng kết thúc kỳ (VD kỳ 01-30/09 + hạn
+   ngày 15 → hạn 15/10; hạn lớn hơn số ngày của tháng thì lấy ngày cuối tháng). Kỳ còn phải thu (stillOwed>0)
+   mà quá hạn → "Quá hạn"; còn ≤3 ngày tới hạn → "Sắp đến hạn". Ngoài ra cảnh báo THÁNG ĐÃ KẾT THÚC mà đối
+   tác có phát sinh nhưng CHƯA lập kỳ đối soát nào bao phủ (chỉ xét đối tác đã đặt hạn hoặc từng có kỳ đối
+   soát, và 3 tháng gần nhất — tránh báo ồn với đối tác vốn không đối soát). Chỉ Admin/Quản lý/Kế toán thấy. */
+const RECON_ALERT_MODS = [
+  {key:'ncc', label:'NCC Dịch vụ Ô tô - Xe máy', idField:'supplierId', tab:'reconcile', who:'NCC',
+   list:()=>state.reconciliations||[], entities:()=>state.suppliers||[], calc:r=>reconCalc(r), activity:(id,f,t)=>sumRevenue(id,f,t)},
+  {key:'nh', label:'Ngân hàng', idField:'bankId', tab:'nh_reconcile', who:'Ngân hàng',
+   list:()=>state.bankReconciliations||[], entities:()=>state.banks||[], calc:r=>bankReconCalc(r), activity:(id,f,t)=>bankLoanSum(id,f,t)},
+  {key:'bh', label:'Bảo hiểm', idField:'insurerId', tab:'bh_reconcile', who:'NCC bảo hiểm',
+   list:()=>state.insReconciliations||[], entities:()=>state.insurers||[], calc:r=>insReconCalc(r), activity:(id,f,t)=>insPremiumSum(id,f,t)},
+];
+function reconPayDueDay(e){ const d = Number(e && e.payDueDay); return (d>=1 && d<=31) ? Math.floor(d) : null; }
+function reconDueDate(toDateStr, day){
+  const to = toDate(toDateStr); if(!to || isNaN(to.getTime())) return null;
+  const y = to.getFullYear(), m = to.getMonth()+1; // tháng LIỀN SAU tháng kết thúc kỳ
+  const last = new Date(y, m+1, 0).getDate();
+  return new Date(y, m, Math.min(day, last));
+}
+function reconIsoLocal(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+function reconAlertAudience(){
+  const u = currentUser();
+  return !!u && !isPartnerAccount(u) && ['Admin','Quản lý','Kế toán'].includes(u.role);
+}
+function reconStartOfToday(){ const t = new Date(); t.setHours(0,0,0,0); return t; }
+// Thông tin hạn của 1 kỳ đối soát (dùng để vẽ nhãn từng dòng trong bảng Đối soát CK)
+function reconDueInfo(modKey, r, owed){
+  const m = RECON_ALERT_MODS.find(x=>x.key===modKey); if(!m) return null;
+  const e = m.entities().find(x=>x.id===r[m.idField]);
+  const day = reconPayDueDay(e); if(!day) return null;
+  const due = reconDueDate(r.toDate, day); if(!due) return null;
+  const days = Math.round((reconStartOfToday()-due)/86400000);
+  const unpaid = (Number(owed)||0) > 0.5;
+  return {due, days, status: !unpaid ? 'paid' : (days>0 ? 'overdue' : (days>=-3 ? 'soon' : 'ok'))};
+}
+function reconRowClass(info){ return (info && info.status==='overdue') ? 'alloc-pulse-over' : ''; }
+function reconDueBadgeHTML(info){
+  if(!info) return '';
+  const d = info.due.toLocaleDateString('vi-VN');
+  if(info.status==='overdue') return `<div><span class="stamp warn" title="Hạn thanh toán ${d}">Quá hạn ${info.days} ngày</span></div>`;
+  if(info.status==='soon') return `<div><span class="stamp pending" title="Hạn thanh toán ${d}">${info.days===0?'Hạn hôm nay':'Còn '+(-info.days)+' ngày'} · ${d}</span></div>`;
+  return `<div class="meta-line" style="white-space:nowrap">Hạn ${d}</div>`;
+}
+function computeReconAlerts(){
+  const out = {mods:{}, any:false, overdueTotal:0, overdueCount:0, missingCount:0, soonCount:0};
+  if(!reconAlertAudience()) return out;
+  const today = reconStartOfToday();
+  const visible = new Set(visibleTabs().map(t=>t.id));
+  RECON_ALERT_MODS.forEach(m=>{
+    const res = {overdue:[], soon:[], missing:[], owedOverdue:0};
+    out.mods[m.key] = res;
+    if(!hasModuleAccess(m.key) || !visible.has(m.tab)) return;
+    const ents = m.entities(), list = m.list();
+    const byId = new Map(ents.map(e=>[e.id, e]));
+    const listByEnt = new Map();
+    list.forEach(r=>{ const k = r[m.idField]; if(!listByEnt.has(k)) listByEnt.set(k, []); listByEnt.get(k).push(r); });
+    list.forEach(r=>{
+      const e = byId.get(r[m.idField]); if(!e) return;
+      const day = reconPayDueDay(e); if(!day) return;
+      const due = reconDueDate(r.toDate, day); if(!due) return;
+      let owed = 0; try{ owed = Number(m.calc(r).stillOwed)||0; }catch(err){ return; }
+      if(owed <= 0.5) return;
+      const days = Math.round((today-due)/86400000);
+      if(days>0){ res.overdue.push({r, e, due, days, owed}); res.owedOverdue += owed; }
+      else if(days>=-3) res.soon.push({r, e, due, days, owed});
+    });
+    res.overdue.sort((a,b)=>b.days-a.days);
+    res.soon.sort((a,b)=>b.days-a.days);
+    // Tháng đã kết thúc (3 tháng gần nhất) có phát sinh nhưng chưa có kỳ đối soát nào bao phủ — xét MỌI đối tác
+    // (trừ đối tác đã tắt "Không đối soát hàng tháng"), gộp thành 1 dòng / đối tác
+    const missByEnt = new Map();
+    for(let k=1;k<=3;k++){
+      const ms = new Date(today.getFullYear(), today.getMonth()-k, 1);
+      const me = new Date(today.getFullYear(), today.getMonth()-k+1, 0);
+      const fromS = reconIsoLocal(ms), toS = reconIsoLocal(me);
+      ents.forEach(e=>{
+        if(e.reconMode==='off') return; // đối tác được người dùng chủ động đánh dấu "không đối soát hàng tháng"
+        const periods = listByEnt.get(e.id) || [];
+        if(periods.some(r=> r.fromDate<=toS && r.toDate>=fromS)) return;
+        let act = 0; try{ act = Number(m.activity(e.id, ms, me))||0; }catch(err){}
+        if(act>0){
+          const label = String(ms.getMonth()+1).padStart(2,'0')+'/'+ms.getFullYear();
+          let g = missByEnt.get(e.id); if(!g){ g = {e, labels:[], act:0}; missByEnt.set(e.id, g); }
+          g.labels.push(label); g.act += act;
+        }
+      });
+    }
+    res.missing = Array.from(missByEnt.values()); // gộp mỗi đối tác 1 dòng (liệt kê các tháng thiếu)
+    out.overdueCount += res.overdue.length; out.overdueTotal += res.owedOverdue;
+    out.soonCount += res.soon.length; out.missingCount += res.missing.length;
+  });
+  out.any = (out.overdueCount + out.soonCount + out.missingCount) > 0;
+  return out;
+}
+function reconBadgeHTML(res){
+  if(!res) return '';
+  const n = res.overdue.length + res.missing.length;
+  return n>0 ? `<span class="alert-dot" title="${res.overdue.length} kỳ đối soát quá hạn thanh toán · ${res.missing.length} đối tác chưa lập kỳ đối soát">${n}</span>` : '';
+}
+// Danh sách dòng cảnh báo (dùng chung cho dải cảnh báo trong trang Đối soát CK và hộp nhắc lúc đăng nhập)
+function reconToggleMore(btn){
+  const box = btn.parentElement; const open = box.dataset.open!=='1';
+  box.dataset.open = open?'1':'0';
+  box.querySelectorAll('.recon-extra').forEach(x=>{ x.style.display = open?'':'none'; });
+  btn.textContent = open ? 'Thu gọn ▲' : btn.dataset.label;
+}
+function reconAlertLinesHTML(m, res, max){
+  const fmtD = d=>d.toLocaleDateString('vi-VN');
+  // Hiện tối đa `max` dòng mỗi nhóm; phần còn lại ẩn sẵn, bấm "Xem thêm" để mở toàn bộ (bấm lại để thu gọn)
+  const block = (title, color, arr, rowFn)=>{
+    if(!arr.length) return '';
+    const rows = arr.map((x,i)=>{
+      const h = rowFn(x);
+      return i<max ? h : h.replace('<div ','<div class="recon-extra" style="display:none;');
+    }).join('');
+    const btn = arr.length>max ? `<button type="button" class="btn btn-ghost" data-label="Xem thêm ${arr.length-max} dòng ▼" onclick="reconToggleMore(this)" style="font-size:12px;padding:3px 10px;margin-top:4px">Xem thêm ${arr.length-max} dòng ▼</button>` : '';
+    return `<div data-open="0"><div style="margin:8px 0 2px"><b style="color:${color}">${title}</b></div>${rows}${btn}</div>`;
+  };
+  const rowOf = (inner)=>`<div style="font-size:13px;padding:2px 0">${inner}</div>`;
+  return block(`Quá hạn thanh toán (${res.overdue.length} kỳ · còn phải thu ${fmt(res.owedOverdue)}đ)`, 'var(--rust)', res.overdue,
+      x=>rowOf(`• <b>${escHtml(x.e.name)}</b> — kỳ ${escHtml(x.r.fromDate)} → ${escHtml(x.r.toDate)}: còn <b>${fmt(x.owed)}đ</b>, hạn ${fmtD(x.due)} <span class="stamp warn">quá ${x.days} ngày</span>`))
+    + block(`Sắp đến hạn (${res.soon.length} kỳ)`, 'var(--amber)', res.soon,
+      x=>rowOf(`• <b>${escHtml(x.e.name)}</b> — kỳ ${escHtml(x.r.fromDate)} → ${escHtml(x.r.toDate)}: còn <b>${fmt(x.owed)}đ</b>, hạn ${fmtD(x.due)}${x.days===0?' (hôm nay)':' (còn '+(-x.days)+' ngày)'}`))
+    + block(`Cần xem — chưa lập kỳ đối soát (${res.missing.length} đối tác)`, 'var(--amber)', res.missing,
+      x=>rowOf(`• <b>${escHtml(x.e.name)}</b> — thiếu kỳ đối soát tháng <b>${x.labels.slice().reverse().join(', ')}</b> (phát sinh ${fmt(x.act)}đ)`));
+}
+// Dải cảnh báo đặt ở đầu trang Đối soát CK của từng module
+function reconAlertBannerHTML(modKey){
+  recomputeBadgeCacheIfNeeded();
+  const ra = badgeCache.reconAlerts; const m = RECON_ALERT_MODS.find(x=>x.key===modKey);
+  const res = ra && ra.mods && ra.mods[modKey];
+  if(!m || !res || (!res.overdue.length && !res.soon.length && !res.missing.length)) return '';
+  const severe = res.overdue.length;
+  return `<div class="panel" style="border-color:${severe?'var(--rust)':'var(--gold-text)'};background:${severe?'var(--rust-soft)':'var(--gold-soft)'}">
+    <div class="panel-body">
+      <div style="font-weight:700;font-size:14px">${severe?'⚠':'🔔'} Cảnh báo thanh toán đối soát — ${escHtml(m.label)}</div>
+      ${reconAlertLinesHTML(m, res, 3)}
+      <div class="meta-line" style="margin-top:6px">Hạn thanh toán đặt riêng cho từng đối tác ở Danh mục (cột "Hạn thanh toán"). Đối tác chưa đặt hạn thì không bị báo quá hạn (vẫn bị báo thiếu kỳ). Đối tác không đối soát hàng tháng: chọn "Không đối soát hàng tháng" ở Danh mục để tắt báo thiếu kỳ.</div>
+    </div></div>`;
+}
+// Hộp nhắc khi đăng nhập (Admin/Quản lý/Kế toán) — chờ tới khi dữ liệu các module đã đồng bộ xong mới hiện, tránh
+// tính trên dữ liệu mẫu chưa kịp tải; mỗi lần đăng nhập chỉ hiện 1 lần (F5 trong cùng tab không hiện lại).
+let reconAlertPending = false;
+function reconAlertSessionKey(){ return 'reconAlertShown:'+currentUserId+':'+todayISO(); }
+function clearReconAlertFlags(){
+  reconAlertPending = false;
+  try{ Object.keys(sessionStorage).filter(k=>k.startsWith('reconAlertShown:')).forEach(k=>sessionStorage.removeItem(k)); }catch(e){}
+}
+function reconAlertDataReady(){
+  if(fb.status!=='connected') return true;
+  return branchesForCurrentUser().every(b=>fb.loaded[b]);
+}
+function maybeShowReconAlert(){
+  if(!reconAlertPending || !currentUser() || !reconAlertDataReady()) return;
+  reconAlertPending = false;
+  try{ sessionStorage.setItem(reconAlertSessionKey(), '1'); }catch(e){}
+  badgeCacheDirty = true; recomputeBadgeCacheIfNeeded();
+  const ra = badgeCache.reconAlerts;
+  if(!ra || !ra.any) return;
+  const body = RECON_ALERT_MODS.map(m=>{
+    const res = ra.mods[m.key]; if(!res || (!res.overdue.length && !res.soon.length && !res.missing.length)) return '';
+    return `<div style="border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:10px">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><b>${escHtml(m.label)}</b><button class="btn btn-ghost" data-recon-goto="${m.tab}" style="font-size:12px;padding:4px 10px">Xem đối soát →</button></div>
+      ${reconAlertLinesHTML(m, res, 4)}</div>`;
+  }).join('');
+  setTimeout(()=>{
+    openModal('Nhắc thanh toán đối soát CK',
+      `Tổng hợp: ${ra.overdueCount} kỳ quá hạn thanh toán (còn phải thu ${fmt(ra.overdueTotal)}đ) · ${ra.soonCount} kỳ sắp đến hạn · ${ra.missingCount} đối tác chưa lập kỳ đối soát (3 tháng gần nhất).`,
+      body, (el)=>{
+        el.querySelectorAll('[data-recon-goto]').forEach(b=> b.addEventListener('click', ()=>{ closeModal(); activeTab = b.dataset.reconGoto; renderAll(); }));
+      });
+  }, 350);
+}
+let badgeCacheSig = '';
 function recomputeBadgeCacheIfNeeded(){
-  if(!badgeCacheDirty) return;
+  const sig = currentUserId+'|'+todayISO(); // đổi tài khoản / sang ngày mới cũng phải tính lại (cảnh báo hạn thanh toán phụ thuộc ngày + quyền)
+  if(!badgeCacheDirty && sig===badgeCacheSig) return;
+  badgeCacheSig = sig;
+  const reconAlerts = computeReconAlerts();
   badgeCache = {
+    reconAlerts,
+    reconNcc: reconBadgeHTML(reconAlerts.mods.ncc), reconNh: reconBadgeHTML(reconAlerts.mods.nh), reconBh: reconBadgeHTML(reconAlerts.mods.bh),
     insAlert: insAlertBadgeHTML(),
     renewal: renewalAlertBadgeHTML(),
     nccRequests: requestBadgeHTML(scopedObjsFor('supplierId', state.suppliers), 'ncc'),
@@ -1874,6 +2057,7 @@ function resetInactivityTimer(){
   inactivityTimer = setTimeout(autoLogoutIdle, INACTIVITY_LIMIT_MINUTES*60*1000);
 }
 async function autoLogoutIdle(){
+  clearReconAlertFlags();
   if(!currentUserId) return;
   const menu = document.getElementById('userMenu'); if(menu) menu.classList.remove('open');
   closeModal();
@@ -2334,6 +2518,9 @@ function representativeContract(obj, entityLabel){
     return 3;
   };
   return [...list].sort((a,b)=> rank(a)-rank(b))[0];
+}
+function payDueCellHTML(x, editable){
+  return `<div style="display:flex;align-items:center;gap:5px;white-space:nowrap"><span class="meta-line">Ngày</span><input class="cell-edit num" data-field="payDueDay" data-id="${x.id}" type="number" min="1" max="31" step="1" value="${reconPayDueDay(x)||''}" placeholder="—" ${editable?'':'disabled'} style="width:54px"><span class="meta-line">hàng tháng</span></div><select class="cell-edit" data-field="reconMode" data-id="${x.id}" ${editable?'':'disabled'} style="margin-top:4px;font-size:12px" title="Chọn 'Không đối soát hàng tháng' nếu đối tác này không đối soát theo tháng — sẽ không bị cảnh báo thiếu kỳ"><option value="" ${x.reconMode==='off'?'':'selected'}>Đối soát hàng tháng</option><option value="off" ${x.reconMode==='off'?'selected':''}>Không đối soát hàng tháng</option></select>`;
 }
 function contractBadgeHTML(obj, entityLabel){
   const all = contractList(obj, entityLabel);
@@ -4035,7 +4222,9 @@ function renderNav(){
       html += `<div class="nav-group-items">`;
       while(i<tabs.length && tabs[i].section===section){
         const t = tabs[i];
-        const badge = t.id==='bh_transactions' ? badgeCache.insAlert
+        const badge = t.id==='bh_transactions' ? (badgeCache.insAlert||'')+(badgeCache.reconBh||'')
+          : t.id==='transactions' ? (badgeCache.reconNcc||'')
+          : t.id==='nh_transactions' ? (badgeCache.reconNh||'')
           : t.id==='bh_renewal' ? badgeCache.renewal
           : t.id==='ncc_requests' ? badgeCache.nccRequests
           : t.id==='nh_requests' ? badgeCache.nhRequests
@@ -4097,7 +4286,7 @@ function subTabsHTML(){
   const visibleIds = new Set(visibleTabs().map(t=>t.id));
   const filtered = group.filter(g=>visibleIds.has(g.id));
   if(filtered.length<2) return ''; // chỉ còn 0-1 subtab (vd Đối tác bị ẩn bớt) thì khỏi hiện thanh subtab
-  return `<div class="subtabs">${filtered.map(g=>`<div class="subtab-item ${g.id===activeTab?'active':''}" data-subtab="${g.id}">${g.label}${g.id==='bh_allocation'?badgeCache.insAlert:''}</div>`).join('')}</div>`;
+  return `<div class="subtabs">${filtered.map(g=>`<div class="subtab-item ${g.id===activeTab?'active':''}" data-subtab="${g.id}">${g.label}${g.id==='bh_allocation'?badgeCache.insAlert:g.id==='reconcile'?(badgeCache.reconNcc||''):g.id==='nh_reconcile'?(badgeCache.reconNh||''):g.id==='bh_reconcile'?(badgeCache.reconBh||''):''}</div>`).join('')}</div>`;
 }
 function bindSubTabs(c){
   c.querySelectorAll('[data-subtab]').forEach(el=>{
@@ -4121,7 +4310,7 @@ function renderUserChip(){
   `;
   chip.onclick = (e)=>{ e.stopPropagation(); menu.classList.toggle('open'); };
   menu.querySelector('#menuChangePw').onclick = (e)=>{ e.stopPropagation(); menu.classList.remove('open'); openChangePasswordModal(u.id); };
-  menu.querySelector('#menuLogout').onclick = (e)=>{ e.stopPropagation(); menu.classList.remove('open'); currentUserId = null; clearTimeout(inactivityTimer); saveSession(); syncBranchesForCurrentUser(); renderAll(); };
+  menu.querySelector('#menuLogout').onclick = (e)=>{ e.stopPropagation(); menu.classList.remove('open'); currentUserId = null; clearReconAlertFlags(); clearTimeout(inactivityTimer); saveSession(); syncBranchesForCurrentUser(); renderAll(); };
 }
 
 /* Đổi mật khẩu cho chính tài khoản đang đăng nhập (mọi vai trò đều dùng được, kể cả Admin).
@@ -4193,6 +4382,7 @@ function renderAll(){
       dashPill.style.display = 'none';
     }
   }
+  maybeShowReconAlert();
   const syncingBanner = document.getElementById('syncingBanner');
   if(syncingBanner) syncingBanner.style.display = branchesStillSyncing.size>0 ? '' : 'none';
   if(activeTab==='dashboard') renderDashboard(c);
@@ -4326,6 +4516,7 @@ function renderLoginScreen(){
     // cơ chế renderAll() trong subscribeBranch()), người dùng thấy số liệu tự lấp đầy dần chứ không phải
     // đứng yên "đơ" như trước. Chỉ báo nhỏ "Đang đồng bộ dữ liệu..." trên đầu trang sẽ tự hiện/ẩn đúng lúc.
     screen.remove();
+    reconAlertPending = true; // nhắc đối soát chưa thanh toán sau khi dữ liệu đồng bộ xong (xem maybeShowReconAlert)
     renderAll();
     syncBranchesForCurrentUser();
   };
@@ -5053,7 +5244,7 @@ function renderSuppliers(c){
     return;
   }
   tbl.innerHTML = `
-    <thead><tr><th>STT</th><th class="wrap">Tên NCC</th><th>Nhóm hàng</th><th>Xếp hạng</th><th>Trạng thái</th><th>Hợp đồng</th><th></th></tr></thead>
+    <thead><tr><th>STT</th><th class="wrap">Tên NCC</th><th>Nhóm hàng</th><th>Xếp hạng</th><th>Trạng thái</th><th title="Ngày trong tháng phải thanh toán đối soát (hạn của kỳ = ngày này của tháng liền sau tháng kết thúc kỳ). Để trống = không theo dõi hạn.">Hạn thanh toán</th><th>Hợp đồng</th><th></th></tr></thead>
     <tbody>${state.suppliers.map((s,idx)=>`
       <tr data-rowid="${s.id}">
         <td>${idx+1}</td>
@@ -5061,6 +5252,7 @@ function renderSuppliers(c){
         <td><input class="cell-edit" data-field="category" data-id="${s.id}" value="${escAttr(s.category||'')}" ${editable?'':'disabled'}></td>
         <td><select class="cell-edit" data-field="priority" data-id="${s.id}" ${editable?'':'disabled'}>${['P1','P2','P3','P4','P5'].map(p=>`<option ${s.priority===p?'selected':''}>${p}</option>`).join('')}</select></td>
         <td><select class="cell-edit" data-field="status" data-id="${s.id}" ${editable?'':'disabled'}>${['Đang sử dụng','Theo dõi','Thử nghiệm','Ngừng sử dụng'].map(p=>`<option ${s.status===p?'selected':''}>${p}</option>`).join('')}</select></td>
+        <td>${payDueCellHTML(s, editable)}</td>
         <td>${contractBadgeHTML(s, 'NCC')}</td>
         <td>${editable?`<button class="row-del" data-del="${s.id}" title="Xoá NCC">✕</button>`:''}</td>
       </tr>`).join('')}</tbody>`;
@@ -5173,7 +5365,7 @@ function wireCellEdits(tbl, arr, entityName, labelFn){
       if(el.dataset.field==='vehicle') el.value = val;
       if(entityName) logActivity('update', entityName, `${labelFn?labelFn(item):item.id}: ${el.dataset.field} "${before}" → "${val}"`);
       saveState();
-      if(['name','supplierId','type','threshold','rate','startDate','endDate','confirmed','product'].includes(el.dataset.field)) renderAll();
+      if(['name','supplierId','type','threshold','rate','startDate','endDate','confirmed','product','payDueDay','reconMode'].includes(el.dataset.field)) renderAll();
     });
   });
 }
@@ -5915,6 +6107,7 @@ function renderReconcile(c){
   const canPay = canEdit('reconcile_pay');
   const supplierOptions = state.suppliers.map(s=>`<option value="${s.id}">${escHtml(s.name)}</option>`).join('');
   c.innerHTML = `
+    ${reconAlertBannerHTML('ncc')}
     <div class="panel-row">
     ${editable ? `
     <div class="panel">
@@ -6054,7 +6247,8 @@ function renderReconTable(editable, canPay){
       const confirmedDis = ((editable && !lockedForMe) || (isPartnerSelf && !r.locked)) ? '' : 'disabled';
       const rowDis = (editable && !lockedForMe) ? '' : 'disabled';
       const canDelRow = editable && (!r.locked || currentRole()==='Admin');
-      const mainRow = `<tr>
+      const dueInfo = reconDueInfo('ncc', r, rc.stillOwed);
+      const mainRow = `<tr class="${reconRowClass(dueInfo)}">
         <td>${escHtml(r.period)}</td>
         <td class="wrap">${s?escHtml(s.name):'<em>(đã xoá)</em>'}</td>
         <td>${r.fromDate}</td><td>${r.toDate}</td>
@@ -6069,7 +6263,7 @@ function renderReconTable(editable, canPay){
           </button>
         </td>
         <td class="num" style="color:${rc.diff<0?'var(--rust)':'var(--forest)'}">${fmt(rc.diff)}</td>
-        <td class="num" style="font-weight:700">${fmt(rc.stillOwed)}</td>
+        <td class="num" style="font-weight:700">${fmt(rc.stillOwed)}${reconDueBadgeHTML(dueInfo)}</td>
         <td><span class="stamp ${status.cls}">${status.label}</span></td>
         <td>${lockActionCellHTML(r, editable)}</td>
         <td>${canDelRow?`<button class="row-del" data-del="${r.id}">✕</button>`:''}</td>
@@ -6438,13 +6632,14 @@ function renderBankSuppliers(c){
     return;
   }
   tbl.innerHTML = `
-    <thead><tr><th>STT</th><th class="wrap">Tên ngân hàng</th><th>Đầu mối liên hệ</th><th>Trạng thái</th><th>Hợp đồng</th><th></th></tr></thead>
+    <thead><tr><th>STT</th><th class="wrap">Tên ngân hàng</th><th>Đầu mối liên hệ</th><th>Trạng thái</th><th title="Ngày trong tháng phải thanh toán đối soát (hạn của kỳ = ngày này của tháng liền sau tháng kết thúc kỳ). Để trống = không theo dõi hạn.">Hạn thanh toán</th><th>Hợp đồng</th><th></th></tr></thead>
     <tbody>${state.banks.map((b,idx)=>`
       <tr data-rowid="${b.id}">
         <td>${idx+1}</td>
         <td class="wrap"><input class="cell-edit" data-field="name" data-id="${b.id}" value="${escAttr(b.name)}" ${editable?'':'disabled'}></td>
         <td><input class="cell-edit" data-field="contact" data-id="${b.id}" value="${escAttr(b.contact||'')}" ${editable?'':'disabled'}></td>
         <td><select class="cell-edit" data-field="status" data-id="${b.id}" ${editable?'':'disabled'}>${['Đang hợp tác','Theo dõi','Thử nghiệm','Ngừng hợp tác'].map(p=>`<option ${b.status===p?'selected':''}>${p}</option>`).join('')}</select></td>
+        <td>${payDueCellHTML(b, editable)}</td>
         <td>${contractBadgeHTML(b, 'NH')}</td>
         <td>${editable?`<button class="row-del" data-del="${b.id}" title="Xoá ngân hàng">✕</button>`:''}</td>
       </tr>`).join('')}</tbody>`;
@@ -7483,6 +7678,7 @@ function renderBankReconcile(c){
   const canPay = canEdit('nh_reconcile_pay');
   const bankOptions = state.banks.map(b=>`<option value="${b.id}">${escHtml(b.name)}</option>`).join('');
   c.innerHTML = `
+    ${reconAlertBannerHTML('nh')}
     <div class="panel-row">
     ${editable ? `
     <div class="panel">
@@ -7607,7 +7803,8 @@ function renderBankReconTable(editable, canPay){
       const confirmedDis = ((editable && !lockedForMe) || (isPartnerSelf && !r.locked)) ? '' : 'disabled';
       const rowDis = (editable && !lockedForMe) ? '' : 'disabled';
       const canDelRow = editable && (!r.locked || currentRole()==='Admin');
-      const mainRow = `<tr>
+      const dueInfo = reconDueInfo('nh', r, rc.stillOwed);
+      const mainRow = `<tr class="${reconRowClass(dueInfo)}">
         <td>${escHtml(r.period)}</td>
         <td class="wrap">${b?escHtml(b.name):'<em>(đã xoá)</em>'}</td>
         <td>${r.fromDate}</td><td>${r.toDate}</td>
@@ -7620,7 +7817,7 @@ function renderBankReconTable(editable, canPay){
           </button>
         </td>
         <td class="num" style="color:${rc.diff<0?'var(--rust)':'var(--forest)'}">${fmt(rc.diff)}</td>
-        <td class="num" style="font-weight:700">${fmt(rc.stillOwed)}</td>
+        <td class="num" style="font-weight:700">${fmt(rc.stillOwed)}${reconDueBadgeHTML(dueInfo)}</td>
         <td><span class="stamp ${status.cls}">${status.label}</span></td>
         <td>${lockActionCellHTML(r, editable)}</td>
         <td>${canDelRow?`<button class="row-del" data-del="${r.id}">✕</button>`:''}</td>
@@ -7865,7 +8062,7 @@ function renderInsSuppliers(c){
   }
   const dis = editable?'':'disabled';
   tbl.innerHTML = `
-    <thead><tr><th>STT</th><th class="wrap">Tên NCC bảo hiểm</th><th class="wrap" title="Để trống = tự tính là 1 hãng riêng (mặc định). Đặt CÙNG 1 tên cho nhiều NCC (VD 'DBV (TI)' và 'DBV (NonTI)' cùng ghi 'DBV') để trang Phân bổ đơn vị GỘP LẠI thành 1 dòng duy nhất, cộng dồn doanh số và chỉ cần đặt 1 chỉ tiêu % chung — KHÔNG ảnh hưởng gì tới Doanh số/Đối soát CK/Hoa hồng, các mục đó vẫn tính riêng theo đúng NCC đã chọn.">Nhóm phân bổ</th><th class="num" title="Tỷ lệ hoa hồng ĐANG áp dụng cho hôm nay, cả Cấp mới lẫn Tái tục — gộp từ tab &quot;Lịch sử hoa hồng&quot; (nếu có mốc) hoặc tỷ lệ mặc định lúc tạo NCC. Tái tục ghi &quot;(= cấp mới)&quot; nghĩa là NCC chưa khai báo mốc Tái tục riêng, đang tự dùng chung tỷ lệ Cấp mới. Bấm nút Sửa để đổi, không sửa trực tiếp được ở đây nữa — tránh 2 nơi lệch số nhau.">BHVC</th><th class="num" title="Tỷ lệ hoa hồng ĐANG áp dụng cho hôm nay, cả Cấp mới lẫn Tái tục — gộp từ tab &quot;Lịch sử hoa hồng&quot; (nếu có mốc) hoặc tỷ lệ mặc định lúc tạo NCC. Tái tục ghi &quot;(= cấp mới)&quot; nghĩa là NCC chưa khai báo mốc Tái tục riêng, đang tự dùng chung tỷ lệ Cấp mới. Bấm nút Sửa để đổi, không sửa trực tiếp được ở đây nữa — tránh 2 nơi lệch số nhau.">BHDS</th><th class="wrap">Điều khoản nổi bật</th><th>Trạng thái</th><th>Hợp đồng</th><th></th></tr></thead>
+    <thead><tr><th>STT</th><th class="wrap">Tên NCC bảo hiểm</th><th class="wrap" title="Để trống = tự tính là 1 hãng riêng (mặc định). Đặt CÙNG 1 tên cho nhiều NCC (VD 'DBV (TI)' và 'DBV (NonTI)' cùng ghi 'DBV') để trang Phân bổ đơn vị GỘP LẠI thành 1 dòng duy nhất, cộng dồn doanh số và chỉ cần đặt 1 chỉ tiêu % chung — KHÔNG ảnh hưởng gì tới Doanh số/Đối soát CK/Hoa hồng, các mục đó vẫn tính riêng theo đúng NCC đã chọn.">Nhóm phân bổ</th><th class="num" title="Tỷ lệ hoa hồng ĐANG áp dụng cho hôm nay, cả Cấp mới lẫn Tái tục — gộp từ tab &quot;Lịch sử hoa hồng&quot; (nếu có mốc) hoặc tỷ lệ mặc định lúc tạo NCC. Tái tục ghi &quot;(= cấp mới)&quot; nghĩa là NCC chưa khai báo mốc Tái tục riêng, đang tự dùng chung tỷ lệ Cấp mới. Bấm nút Sửa để đổi, không sửa trực tiếp được ở đây nữa — tránh 2 nơi lệch số nhau.">BHVC</th><th class="num" title="Tỷ lệ hoa hồng ĐANG áp dụng cho hôm nay, cả Cấp mới lẫn Tái tục — gộp từ tab &quot;Lịch sử hoa hồng&quot; (nếu có mốc) hoặc tỷ lệ mặc định lúc tạo NCC. Tái tục ghi &quot;(= cấp mới)&quot; nghĩa là NCC chưa khai báo mốc Tái tục riêng, đang tự dùng chung tỷ lệ Cấp mới. Bấm nút Sửa để đổi, không sửa trực tiếp được ở đây nữa — tránh 2 nơi lệch số nhau.">BHDS</th><th class="wrap">Điều khoản nổi bật</th><th>Trạng thái</th><th title="Ngày trong tháng phải thanh toán đối soát (hạn của kỳ = ngày này của tháng liền sau tháng kết thúc kỳ). Để trống = không theo dõi hạn.">Hạn thanh toán</th><th>Hợp đồng</th><th></th></tr></thead>
     <tbody>${state.insurers.map((ins,idx)=>{
       const rows = insRateRowsFor(ins.id).length;
       const rateCellHTML = (product)=>{
@@ -7890,6 +8087,7 @@ function renderInsSuppliers(c){
         <td class="num">${rateCellHTML('BHDS')}</td>
         <td class="wrap"><input class="cell-edit" data-field="terms" data-id="${ins.id}" value="${escAttr(ins.terms||'')}" ${dis}></td>
         <td><select class="cell-edit" data-field="status" data-id="${ins.id}" ${dis}>${['Đang hợp tác','Theo dõi','Thử nghiệm','Ngừng hợp tác'].map(p=>`<option ${ins.status===p?'selected':''}>${p}</option>`).join('')}</select></td>
+        <td>${payDueCellHTML(ins, editable)}</td>
         <td>${contractBadgeHTML(ins, 'NCC Bảo hiểm')}</td>
         <td>${editable?`<button class="row-del" data-del="${ins.id}" title="Xoá NCC">✕</button>`:''}</td>
       </tr>`;
@@ -9669,6 +9867,7 @@ function renderInsReconcile(c){
   const canPay = canEdit('bh_reconcile_pay');
   const insOptions = state.insurers.map(i=>`<option value="${i.id}">${escHtml(i.name)}</option>`).join('');
   c.innerHTML = `
+    ${reconAlertBannerHTML('bh')}
     <div class="panel-row">
     ${editable ? `
     <div class="panel">
@@ -9790,7 +9989,8 @@ function renderInsReconTable(editable, canPay){
       const confirmedDis = ((editable && !lockedForMe) || (isPartnerSelf && !r.locked)) ? '' : 'disabled';
       const rowDis = (editable && !lockedForMe) ? '' : 'disabled';
       const canDelRow = editable && (!r.locked || currentRole()==='Admin');
-      const mainRow = `<tr>
+      const dueInfo = reconDueInfo('bh', r, rc.stillOwed);
+      const mainRow = `<tr class="${reconRowClass(dueInfo)}">
         <td>${escHtml(r.period)}</td>
         <td class="wrap">${ins?escHtml(ins.name):'<em>(đã xoá)</em>'}</td>
         <td>${r.fromDate}</td><td>${r.toDate}</td>
@@ -9803,7 +10003,7 @@ function renderInsReconTable(editable, canPay){
           </button>
         </td>
         <td class="num" style="color:${rc.diff<0?'var(--rust)':'var(--forest)'}">${fmt(rc.diff)}</td>
-        <td class="num" style="font-weight:700">${fmt(rc.stillOwed)}</td>
+        <td class="num" style="font-weight:700">${fmt(rc.stillOwed)}${reconDueBadgeHTML(dueInfo)}</td>
         <td><span class="stamp ${status.cls}">${status.label}</span></td>
         <td>${lockActionCellHTML(r, editable)}</td>
         <td>${canDelRow?`<button class="row-del" data-del="${r.id}">✕</button>`:''}</td>
@@ -12302,6 +12502,7 @@ function migrateContractsRequestsToRecordsV1(){
   currentUserId = (session && session.currentUserId && state.accounts.some(a=>a.id===session.currentUserId))
     ? session.currentUserId : null;
   applyTheme(currentTheme()); // đồng bộ icon nút bấm (🌙/☀️) đúng theo trạng thái đã áp dụng sẵn từ script sớm trong <head>
+  if(currentUserId){ try{ if(!sessionStorage.getItem(reconAlertSessionKey())) reconAlertPending = true; }catch(e){} }
   setStoragePill(storageMode);
   resetInactivityTimer(); // nếu phiên đăng nhập cũ còn hiệu lực (đã có currentUserId), bắt đầu đếm luôn từ lúc mở trang
   // HIỆN MÀN HÌNH NGAY LẬP TỨC ở đây — trước đây "await syncBranchesForCurrentUser()" chặn đứng cả bước vẽ
@@ -12324,6 +12525,7 @@ function migrateContractsRequestsToRecordsV1(){
     // lần nữa, nếu đúng là còn phiên hợp lệ mà trước đó bị bỏ lỡ thì tự đăng nhập lại, không bắt gõ tay nữa.
     if(!currentUserId && session && session.currentUserId && state.accounts.some(a=>a.id===session.currentUserId)){
       currentUserId = session.currentUserId;
+      try{ if(!sessionStorage.getItem(reconAlertSessionKey())) reconAlertPending = true; }catch(e){}
       resetInactivityTimer();
       renderAll();
       syncBranchesForCurrentUser(); // vừa xác định lại được tài khoản -> tải thêm đúng module của họ (Admin/module cụ thể)
