@@ -670,6 +670,7 @@
   /* Bảng doanh thu bảo hiểm theo hãng: dùng độ rộng cột cố định (colgroup) thay vì để trình duyệt
      tự giãn cột theo input — tránh cột "Phân bổ"/"DV" bị kéo quá rộng so với nhu cầu thực tế. */
   #insRevenueTable{ table-layout:fixed; width:100%; }
+  @media (max-width:900px){ #insRevenueTable{ min-width:1100px; } } /* điện thoại: giữ độ rộng đủ cho các cột, bảng tự cuộn ngang thay vì ép cột đè nhau */
   #insRevenueTable input.cell-edit.money{ min-width:0; }
   #insRevenueTable input.cell-edit{ font-size:12.5px; }
 
@@ -828,7 +829,7 @@
   .role-badge.Nhan-vien{ background:#E7ECF3; color:#3C557A; }
 
   .locked-note{
-    display:flex; align-items:center; gap:8px; padding:10px 14px; border-radius:8px;
+    display:block; line-height:1.5; padding:10px 14px; border-radius:8px;
     background:var(--tint); border:1px dashed var(--line); color:var(--slate); font-size:12px; margin-bottom:14px;
   }
 
