@@ -701,6 +701,23 @@
     .btn{ padding:10px 16px; min-height:40px; }
     .row-del{ padding:6px 9px; font-size:16px; }
     .nav-item{ padding:11px 12px; }
+    /* Thanh trên cùng quá rộng trên điện thoại (Tìm kiếm + Năm + Firebase + tài khoản đặt hàng ngang) làm tràn
+       ngang -> trình duyệt tự thu nhỏ cả trang, nội dung chỉ chiếm nửa màn hình. Cho tự xuống dòng gọn lại. */
+    .topbar{ flex-wrap:wrap; gap:8px; position:static; } /* thanh cao 3 dòng -> không ghim, đỡ chiếm màn hình khi cuộn */
+    .sidebar:not(.mobile-open){ box-shadow:none; }
+    .subtabs{ overflow-x:auto; -webkit-overflow-scrolling:touch; scrollbar-width:none; }
+    .subtab-item{ white-space:nowrap; flex:0 0 auto; }
+    .topbar > div:first-child{ flex:1 1 100% !important; }
+    .topbar-right{ flex:1 1 100% !important; flex-wrap:wrap; gap:8px; min-width:0; max-width:100%; }
+    .topbar-right .btn{ padding:7px 10px; min-height:36px; font-size:12.5px; }
+    .user-chip-wrap{ min-width:0; max-width:100%; margin-left:auto; }
+    .user-chip{ max-width:100%; overflow:hidden; }
+    .user-chip *{ min-width:0; }
+    .storage-pill{ font-size:11px; padding:5px 9px; }
+  }
+  @media (max-width:520px){
+    .topbar-right #globalSearchBtn{ font-size:0; padding:7px 11px; }
+    .topbar-right #globalSearchBtn::before{ content:'🔍'; font-size:15px; }
   }
 
 
