@@ -1111,7 +1111,7 @@ const BRANCH_META_FIELDS = {
   ncc:    ['nextSupplierNo','monitoring','reportDate'],
   nh:     ['nextBankNo'],
   bh:     ['insAllocAlertThreshold','nextInsNo','insRenewalAlertDays','insRenewalAutoSnoozeDays','insAllocMonthLocks','renewalDismissedSuggestions'],
-  shared: ['units','driveUploadUrl','driveUploadSecret','emailNotifyEnabled','editPerms','editPermsRecAcc'],
+  shared: ['units','driveUploadUrl','driveUploadSecret','emailNotifyEnabled','editPerms','editPermsRecAcc','reconMute'],
 };
 // Toàn bộ field của 1 nhánh (gộp cả 2 loại trên) — dùng ở những chỗ chỉ cần biết "nhánh này có field gì"
 // mà không cần phân biệt loại (VD: reset dữ liệu khi unsubscribe, kiểm tra tên module hợp lệ, sao lưu).
@@ -1817,7 +1817,21 @@ function reconDueBadgeHTML(info){
   if(info.status==='soon') return `<div><span class="stamp pending" title="Hạn thanh toán ${d}">${info.days===0?'Hạn hôm nay':'Còn '+(-info.days)+' ngày'} · ${d}</span></div>`;
   return `<div class="meta-line" style="white-space:nowrap">Hạn ${d}</div>`;
 }
-function computeReconAlerts(){
+/* ---- Tắt cảnh báo đối soát (CHỈ tài khoản duongld được bật/tắt; áp dụng cho mọi người xem cảnh báo) ----
+   state.reconMute = { until:'YYYY-MM-DD' | '', items:{ [khoá]:true }, months:{ ['<mod>|YYYY-MM']:true } }
+   - until : tắt toàn bộ cảnh báo của các kỳ/tháng đã kết thúc tới ngày này (các tháng/kỳ PHÁT SINH SAU vẫn cảnh báo bình thường)
+   - months: tắt cả tháng (theo từng module)
+   - items : tắt từng kỳ đối soát ('<mod>|r|<id kỳ>') hoặc từng đối tác-tháng thiếu kỳ ('<mod>|m|<id đối tác>|YYYY-MM') */
+function canMuteReconAlerts(){ const u = currentUser(); return !!(u && u.username==='duongld'); }
+function reconMuteState(){ if(!state.reconMute) state.reconMute = {until:'', items:{}, months:{}}; if(!state.reconMute.items) state.reconMute.items = {}; if(!state.reconMute.months) state.reconMute.months = {}; return state.reconMute; }
+function reconMuteReason(modKey, itemKey, ym, endIso){
+  const mu = state.reconMute; if(!mu) return '';
+  if(mu.until && endIso && endIso <= mu.until) return 'all';
+  if(mu.months && mu.months[modKey+'|'+ym]) return 'month';
+  if(mu.items && mu.items[itemKey]) return 'item';
+  return '';
+}
+function computeReconAlerts(ignoreMute){
   const out = {mods:{}, any:false, overdueTotal:0, overdueCount:0, missingCount:0, soonCount:0};
   if(!reconAlertAudience()) return out;
   const today = reconStartOfToday();
@@ -1837,8 +1851,13 @@ function computeReconAlerts(){
       let owed = 0; try{ owed = Number(m.calc(r).stillOwed)||0; }catch(err){ return; }
       if(owed <= 0.5) return;
       const days = Math.round((today-due)/86400000);
-      if(days>0){ res.overdue.push({r, e, due, days, owed}); res.owedOverdue += owed; }
-      else if(days>=-3) res.soon.push({r, e, due, days, owed});
+      if(days>0 || days>=-3){
+        const key = m.key+'|r|'+r.id;
+        const reason = reconMuteReason(m.key, key, String(r.toDate||'').slice(0,7), r.toDate);
+        if(reason && !ignoreMute) return;
+        const it = {r, e, due, days, owed, key, reason, ym:String(r.toDate||'').slice(0,7)};
+        if(days>0){ res.overdue.push(it); if(!reason) res.owedOverdue += owed; } else res.soon.push(it);
+      }
     });
     res.overdue.sort((a,b)=>b.days-a.days);
     res.soon.sort((a,b)=>b.days-a.days);
@@ -1856,8 +1875,12 @@ function computeReconAlerts(){
         let act = 0; try{ act = Number(m.activity(e.id, ms, me))||0; }catch(err){}
         if(act>0){
           const label = String(ms.getMonth()+1).padStart(2,'0')+'/'+ms.getFullYear();
-          let g = missByEnt.get(e.id); if(!g){ g = {e, labels:[], act:0}; missByEnt.set(e.id, g); }
-          g.labels.push(label); g.act += act;
+          const ym = ms.getFullYear()+'-'+String(ms.getMonth()+1).padStart(2,'0');
+          const key = m.key+'|m|'+e.id+'|'+ym;
+          const reason = reconMuteReason(m.key, key, ym, toS);
+          if(reason && !ignoreMute) return;
+          let g = missByEnt.get(e.id); if(!g){ g = {e, labels:[], keys:[], act:0, months:[]}; missByEnt.set(e.id, g); }
+          g.labels.push(label); g.keys.push(key); g.act += act; g.months.push({ym, label, key, reason, act});
         }
       });
     }
@@ -1892,14 +1915,70 @@ function reconAlertLinesHTML(m, res, max){
     const btn = arr.length>max ? `<button type="button" class="btn btn-ghost" data-label="Xem thêm ${arr.length-max} dòng ▼" onclick="reconToggleMore(this)" style="font-size:12px;padding:3px 10px;margin-top:4px">Xem thêm ${arr.length-max} dòng ▼</button>` : '';
     return `<div data-open="0"><div style="margin:8px 0 2px"><b style="color:${color}">${title}</b></div>${rows}${btn}</div>`;
   };
-  const rowOf = (inner)=>`<div style="font-size:13px;padding:2px 0">${inner}</div>`;
+  const muteBtn = keys=> canMuteReconAlerts() ? `<button type="button" class="btn btn-ghost" data-recon-mute="${keys.join(';')}" title="Tắt cảnh báo mục này (chỉ tài khoản duongld)" style="font-size:11px;padding:1px 8px;margin-left:6px">🔕 Tắt</button>` : '';
+  const rowOf = (inner, keys)=>`<div style="font-size:13px;padding:2px 0">${inner}${keys?muteBtn(keys):''}</div>`;
   return block(`Quá hạn thanh toán (${res.overdue.length} kỳ · còn phải thu ${fmt(res.owedOverdue)}đ)`, 'var(--rust)', res.overdue,
-      x=>rowOf(`• <b>${escHtml(x.e.name)}</b> — kỳ ${escHtml(x.r.fromDate)} → ${escHtml(x.r.toDate)}: còn <b>${fmt(x.owed)}đ</b>, hạn ${fmtD(x.due)} <span class="stamp warn">quá ${x.days} ngày</span>`))
+      x=>rowOf(`• <b>${escHtml(x.e.name)}</b> — kỳ ${escHtml(x.r.fromDate)} → ${escHtml(x.r.toDate)}: còn <b>${fmt(x.owed)}đ</b>, hạn ${fmtD(x.due)} <span class="stamp warn">quá ${x.days} ngày</span>`, [x.key]))
     + block(`Sắp đến hạn (${res.soon.length} kỳ)`, 'var(--amber)', res.soon,
-      x=>rowOf(`• <b>${escHtml(x.e.name)}</b> — kỳ ${escHtml(x.r.fromDate)} → ${escHtml(x.r.toDate)}: còn <b>${fmt(x.owed)}đ</b>, hạn ${fmtD(x.due)}${x.days===0?' (hôm nay)':' (còn '+(-x.days)+' ngày)'}`))
+      x=>rowOf(`• <b>${escHtml(x.e.name)}</b> — kỳ ${escHtml(x.r.fromDate)} → ${escHtml(x.r.toDate)}: còn <b>${fmt(x.owed)}đ</b>, hạn ${fmtD(x.due)}${x.days===0?' (hôm nay)':' (còn '+(-x.days)+' ngày)'}`, [x.key]))
     + block(`Cần xem — chưa lập kỳ đối soát (${res.missing.length} đối tác)`, 'var(--amber)', res.missing,
-      x=>rowOf(`• <b>${escHtml(x.e.name)}</b> — thiếu kỳ đối soát tháng <b>${x.labels.slice().reverse().join(', ')}</b> (CK/hoa hồng phải hưởng ${fmt(x.act)}đ)`));
+      x=>rowOf(`• <b>${escHtml(x.e.name)}</b> — thiếu kỳ đối soát tháng <b>${x.labels.slice().reverse().join(', ')}</b> (CK/hoa hồng phải hưởng ${fmt(x.act)}đ)`, x.keys));
 }
+function reconMuteCommit(){ saveState(); badgeCacheDirty = true; renderAll(); }
+function reconMuteSet(keys, on){
+  if(!canMuteReconAlerts()) { toast('Chỉ tài khoản duongld được tắt/bật cảnh báo đối soát'); return; }
+  const mu = reconMuteState();
+  keys.forEach(k=>{ if(on) mu.items[k]=true; else delete mu.items[k]; });
+}
+function reconMuteManagerHTML(){
+  const ra = computeReconAlerts(true); const mu = reconMuteState();
+  const mods = RECON_ALERT_MODS.map(m=>({m, res:ra.mods[m.key]})).filter(x=>x.res && (x.res.overdue.length||x.res.soon.length||x.res.missing.length));
+  const reasonTxt = r=> r==='all'?'đã tắt (toàn bộ)':(r==='month'?'đã tắt (theo tháng)':'');
+  const chk = (key, label, reason)=>`<label style="display:flex;gap:8px;align-items:flex-start;font-size:13px;padding:2px 0;${reason&&reason!=='item'?'opacity:.6':''}"><input type="checkbox" data-mute-item="${key}" ${reason?'checked':''} ${reason&&reason!=='item'?'disabled':''} style="margin-top:3px"><span>${label}${reason&&reason!=='item'?` <i class="meta-line">— ${reasonTxt(reason)}</i>`:''}</span></label>`;
+  let html = `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
+      <button type="button" class="btn btn-danger-ghost" data-mute-all="1">🔕 Tắt toàn bộ đến hôm nay (${new Date().toLocaleDateString('vi-VN')})</button>
+      <button type="button" class="btn btn-ghost" data-mute-reset="1">↺ Bật lại tất cả</button>
+    </div>
+    <div class="meta-line" style="margin-bottom:10px">${mu.until?`Đang tắt toàn bộ các kỳ/tháng kết thúc tới hết <b>${new Date(mu.until+'T00:00:00').toLocaleDateString('vi-VN')}</b>. `:''}Các kỳ/tháng phát sinh SAU thời điểm này vẫn cảnh báo bình thường. Tick = tắt mục đó.</div>`;
+  if(!mods.length) html += `<div class="meta-line">Không có mục cảnh báo nào.</div>`;
+  mods.forEach(({m,res})=>{
+    const months = new Map();
+    const addM = (ym,label)=>{ if(ym) months.set(ym,label); };
+    res.overdue.concat(res.soon).forEach(x=> addM(x.ym, x.ym.slice(5)+'/'+x.ym.slice(0,4)));
+    res.missing.forEach(g=> g.months.forEach(x=> addM(x.ym, x.label)));
+    const chips = Array.from(months.keys()).sort().reverse().map(ym=>{
+      const on = !!mu.months[m.key+'|'+ym];
+      return `<button type="button" class="btn ${on?'btn-primary':'btn-ghost'}" data-mute-month="${m.key}|${ym}" style="font-size:12px;padding:3px 10px">${on?'🔕 ':''}${months.get(ym)}</button>`;
+    }).join(' ');
+    html += `<div style="border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:10px">
+      <b>${escHtml(m.label)}</b>
+      <div class="meta-line" style="margin:6px 0 4px">Tắt theo tháng (bấm để bật/tắt cả tháng):</div><div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">${chips}</div>`
+      + res.overdue.map(x=>chk(x.key, `<b>${escHtml(x.e.name)}</b> — kỳ ${escHtml(x.r.fromDate)} → ${escHtml(x.r.toDate)}: quá hạn ${x.days} ngày, còn ${fmt(x.owed)}đ`, x.reason)).join('')
+      + res.soon.map(x=>chk(x.key, `<b>${escHtml(x.e.name)}</b> — kỳ ${escHtml(x.r.fromDate)} → ${escHtml(x.r.toDate)}: sắp đến hạn, còn ${fmt(x.owed)}đ`, x.reason)).join('')
+      + res.missing.map(g=> g.months.map(x=>chk(x.key, `<b>${escHtml(g.e.name)}</b> — thiếu kỳ đối soát tháng ${x.label} (CK/hoa hồng ${fmt(x.act)}đ)`, x.reason)).join('')).join('')
+      + `</div>`;
+  });
+  return html;
+}
+function openReconMuteManager(){
+  if(!canMuteReconAlerts()) return;
+  openModal('Quản lý tắt cảnh báo đối soát', 'Chỉ tài khoản duongld được thay đổi. Cài đặt áp dụng cho tất cả người xem cảnh báo.', reconMuteManagerHTML(), (el)=>{
+    const refresh = ()=>{ reconMuteCommit(); const sc = el.querySelector('.modal-body')||el; const top = sc.scrollTop; openReconMuteManager(); const n = document.querySelector('#activeModal .modal-body'); if(n) n.scrollTop = top; };
+    el.querySelectorAll('[data-mute-item]').forEach(i=> i.addEventListener('change', ()=>{ reconMuteSet([i.dataset.muteItem], i.checked); refresh(); }));
+    el.querySelectorAll('[data-mute-month]').forEach(b=> b.addEventListener('click', ()=>{ const mu = reconMuteState(); const k=b.dataset.muteMonth; if(mu.months[k]) delete mu.months[k]; else mu.months[k]=true; refresh(); }));
+    const all = el.querySelector('[data-mute-all]'); if(all) all.addEventListener('click', ()=>{ if(!confirm('Tắt cảnh báo toàn bộ các kỳ/tháng đã kết thúc tới hôm nay?')) return; reconMuteState().until = todayISO(); logActivity('update','Đối soát CK','Tắt cảnh báo đối soát toàn bộ đến '+todayISO()); refresh(); });
+    const rs = el.querySelector('[data-mute-reset]'); if(rs) rs.addEventListener('click', ()=>{ state.reconMute = {until:'', items:{}, months:{}}; logActivity('update','Đối soát CK','Bật lại toàn bộ cảnh báo đối soát'); refresh(); });
+  });
+}
+// Bấm "🔕 Tắt" ở từng dòng cảnh báo / "Quản lý tắt cảnh báo" (uỷ quyền sự kiện cho cả banner lẫn hộp nhắc đăng nhập)
+document.addEventListener('click', (ev)=>{
+  const t = ev.target.closest && ev.target.closest('[data-recon-mute],[data-recon-mute-open]'); if(!t) return;
+  if(t.dataset.reconMuteOpen){ openReconMuteManager(); return; }
+  reconMuteSet(String(t.dataset.reconMute).split(';').filter(Boolean), true);
+  logActivity('update','Đối soát CK','Tắt cảnh báo đối soát 1 mục');
+  const row = t.parentElement; if(row) row.remove();
+  reconMuteCommit();
+});
 // Dải cảnh báo đặt ở đầu trang Đối soát CK của từng module
 function reconAlertBannerHTML(modKey){
   recomputeBadgeCacheIfNeeded();
@@ -1911,6 +1990,7 @@ function reconAlertBannerHTML(modKey){
     <div class="panel-body">
       <div style="font-weight:700;font-size:14px">${severe?'⚠':'🔔'} Cảnh báo thanh toán đối soát — ${escHtml(m.label)}</div>
       ${reconAlertLinesHTML(m, res, 3)}
+      ${canMuteReconAlerts()?`<div style="margin-top:8px"><button type="button" class="btn btn-ghost" data-recon-mute-open="1" style="font-size:12px;padding:4px 12px">🔕 Quản lý tắt cảnh báo</button></div>`:''}
       <div class="meta-line" style="margin-top:6px">Hạn thanh toán đặt riêng cho từng đối tác ở Danh mục (cột "Hạn thanh toán"). Đối tác chưa đặt hạn thì không bị báo quá hạn (vẫn bị báo thiếu kỳ nếu tháng đó có chiết khấu/hoa hồng > 0). Đối tác không đối soát hàng tháng: chọn "Không đối soát hàng tháng" ở Danh mục để tắt báo thiếu kỳ.</div>
     </div></div>`;
 }
